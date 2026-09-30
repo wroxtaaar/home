@@ -771,6 +771,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
 
     let started = false;
     let readyTimeout = 0;
+    let triedNativeAudioFallback = false;
 
     const finish = () => {
       if (requestId !== alternateAudioRequestRef.current || started) return;
@@ -828,6 +829,29 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
 
     const handleAudioError = () => {
       if (requestId !== alternateAudioRequestRef.current || started) return;
+
+      // The FFmpeg audio-only stream uses the same canonical Seedr file id and
+      // is the reliable browser path. If it fails for a particular Seedr
+      // rendition, make one final attempt through Seedr's native MP3 endpoint.
+      if (!triedNativeAudioFallback && String(audio.dataset.playbackProtocol || '') === 'ffmpeg-audio-fallback') {
+        triedNativeAudioFallback = true;
+        setTrackNotice('Retrying native Seedr audio…');
+        void api.getSeedrNativeAudioUrl(fileId)
+          .then(({ url }) => {
+            if (requestId !== alternateAudioRequestRef.current) return;
+            const resolved = url.startsWith('/') ? API_BASE + url : url;
+            audio.dataset.playbackProtocol = 'native-seedr-audio';
+            audio.dataset.playbackStart = String(safePosition);
+            audio.src = resolved;
+            audio.load();
+          })
+          .catch(() => {
+            // Fall through to the terminal error below.
+            handleAudioError();
+          });
+        return;
+      }
+
       if (readyTimeout) window.clearTimeout(readyTimeout);
       audio.removeEventListener('loadedmetadata', startTogether);
       audio.removeEventListener('loadeddata', startTogether);
@@ -855,16 +879,11 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       }
     }, 15000);
 
-    const useNativeSeedrAudio =
-      audioTracks.length <= 1 ||
-      trackIndex === primaryAudioIndexRef.current;
-    const audioRequest = useNativeSeedrAudio
-      ? api.getSeedrNativeAudioUrl(fileId).then(({ url }) => ({
-          url: url.startsWith('/') ? API_BASE + url : url,
-          protocol: 'native-seedr-audio',
-          start: safePosition,
-        }))
-      : api.getSeedrAudioPresentationUrl(fileId, trackIndex, safePosition);
+    // Use the backend FFmpeg audio-only stream as the primary browser path.
+    // It maps the exact embedded audio stream by index and works with the same
+    // canonical Seedr file id used by the video presentation. The native Seedr
+    // MP3 endpoint remains a one-time fallback if this stream cannot start.
+    const audioRequest = api.getSeedrAudioPresentationUrl(fileId, trackIndex, safePosition);
 
     void audioRequest
       .then(({ url, protocol, start }) => {
@@ -873,6 +892,8 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
 
         audio.dataset.playbackProtocol = String(protocol || '');
         audio.dataset.playbackStart = String(Number(start) || 0);
+        audio.crossOrigin = 'anonymous';
+        audio.preload = 'auto';
         audio.src = url;
         audio.load();
       })
@@ -1252,7 +1273,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
           />
         )}
 
-        <audio ref={alternateAudioRef} preload="auto" className="hidden" aria-hidden="true" />
+        <audio ref={alternateAudioRef} crossOrigin="anonymous" preload="auto" className="hidden" aria-hidden="true" />
 
         {/* Mini Controls */}
         <div className="flex items-center justify-between pt-1">
