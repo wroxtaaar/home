@@ -16,7 +16,7 @@ import libtorrent as lt
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 APP_NAME = "Torrent Studio API"
@@ -1730,6 +1730,9 @@ def parse_size(value: str) -> int:
 
 @app.get("/")
 async def root():
+    ui = Path("/app/frontend/dist/index.html")
+    if ui.is_file():
+        return FileResponse(ui)
     return {"name": APP_NAME, "status": "ok"}
 
 @app.on_event("startup")
@@ -3546,3 +3549,19 @@ async def search_torrent_add(body: dict[str, Any]):
         )
     )
     return {"added": True, **result}
+
+
+# Serve the compiled React SPA from the same Render service. API routes above
+# keep their normal routing; non-API paths fall back to index.html for client-side routing.
+@app.get("/{full_path:path}")
+async def frontend_fallback(full_path: str):
+    if full_path.startswith("api/") or full_path in {"health", "docs", "redoc", "openapi.json"}:
+        raise HTTPException(404, "Not found")
+    dist = Path("/app/frontend/dist")
+    requested = dist / full_path
+    if requested.is_file():
+        return FileResponse(requested)
+    index = dist / "index.html"
+    if index.is_file():
+        return FileResponse(index)
+    raise HTTPException(404, "Not found")
