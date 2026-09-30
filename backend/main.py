@@ -5418,7 +5418,13 @@ async def seedr_video_media(
     if not current_seedr_token():
         raise HTTPException(503, "Seedr is not configured")
 
-    requested_audio_index = audio if audio is not None else 0
+    # Explicit audio selection uses the browser-compatible FFmpeg remux
+    # path. It copies H.264 video when possible and converts the selected
+    # audio to AAC inside fragmented MP4, fixing MKV/E-AC3/DTS browser audio.
+    if audio is not None:
+        return await _stream_selected_audio(file_id, audio)
+
+    requested_audio_index = 0
     upstream_url = await seedr_v2_video_url(
         file_id,
         audio_index=requested_audio_index,
