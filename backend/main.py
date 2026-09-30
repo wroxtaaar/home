@@ -4421,12 +4421,15 @@ async def seedr_v2_request(path: str) -> Any:
         )
     return data
 
-async def seedr_v2_video_url(file_id: str) -> str:
-    """Use Seedr V2 current presentation URL, with direct-download fallback."""
+async def seedr_v2_video_url(file_id: str, audio_index: int | None = None) -> str:
+    """Resolve Seedr's browser presentation, optionally selecting an audio rendition."""
     if not file_id:
         return ""
     try:
-        payload = seedr_data(await seedr_v2_request(f"/presentations/file/{quote(file_id)}/video"))
+        presentation_path = f"/presentations/file/{quote(file_id)}/video"
+        if audio_index is not None and audio_index >= 0:
+            presentation_path += "?" + urlencode({"audio": str(audio_index)})
+        payload = seedr_data(await seedr_v2_request(presentation_path))
         if isinstance(payload, dict):
             link = payload.get("link")
             link_url = link.get("url") if isinstance(link, dict) else ""
@@ -4434,7 +4437,11 @@ async def seedr_v2_video_url(file_id: str) -> str:
             if url.startswith(("http://", "https://")):
                 return url
     except HTTPException:
-        pass
+        if audio_index is not None:
+            return ""
+
+    if audio_index is not None:
+        return ""
 
     try:
         payload = seedr_data(await seedr_v2_request(f"/download/file/{quote(file_id)}/url"))
@@ -4637,13 +4644,7 @@ async def seedr_file_stream(
     type: str = Query("video"),
     name: str = Query(""),
 ):
-    """
-    Resolve a fresh Seedr playback URL for the browser.
-
-    Render performs only the authenticated Seedr API lookup. The returned
-    signed URL is consumed by the browser directly, so media bytes do not
-    pass through Render.
-    """
+    """Resolve Seedr playback while keeping browser media compatible."""
     if not current_seedr_token():
         raise HTTPException(503, "Seedr is not configured")
 
@@ -4656,48 +4657,19 @@ async def seedr_file_stream(
         if not presentation_url:
             raise HTTPException(502, "Seedr did not return a browser playback URL")
 
-        is_hls = await _presentation_is_hls(presentation_url)
-        logger.info(
-            "Seedr direct browser stream resolved: file=%s protocol=%s",
-            resolved_id,
-            "hls" if is_hls else "direct",
-        )
         return {
-            "url": presentation_url,
+            # Use the Range-aware same-origin endpoint for Chromium playback.
+            # It explicitly asks Seedr for audio rendition 0, fixing silent
+            # direct presentations while preserving seek/duration behavior.
+            "url": "/api/seedr/media/video/" + quote(resolved_id, safe=""),
+            # Keep the real Seedr URL as the external-player fallback.
             "externalUrl": presentation_url,
             "name": name or resolved_id,
             "resolvedFileId": resolved_id,
-            "protocol": "hls" if is_hls else "direct",
+            "protocol": "direct",
         }
 
     if type == "audio":
-        try:
-            payload = seedr_data(
-                await seedr_v2_request(
-                    f"/presentations/file/{quote(resolved_id)}/audio"
-                )
-            )
-            audio_url = ""
-            if isinstance(payload, dict):
-                link = payload.get("link")
-                link_url = link.get("url") if isinstance(link, dict) else ""
-                audio_url = str(
-                    payload.get("url")
-                    or payload.get("stream_url")
-                    or link_url
-                    or ""
-                ).strip()
-            if audio_url.startswith(("http://", "https://")):
-                return {
-                    "url": audio_url,
-                    "externalUrl": audio_url,
-                    "name": name or resolved_id,
-                    "resolvedFileId": resolved_id,
-                    "protocol": "direct",
-                }
-        except HTTPException:
-            pass
-
         result = await download_url(resolved_id)
         return {
             "url": result["url"],
