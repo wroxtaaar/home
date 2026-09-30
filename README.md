@@ -1,57 +1,38 @@
-# Torrent Studio — Render + Seedr
+# Torrent Studio — Vercel + Render + Seedr
 
-Torrent Studio uses each user's own Seedr account for cloud torrent transfers and storage.
+Clean split deployment of the full Torrent Studio UI.
 
 ## Architecture
 
-- **frontend/** — React + Vite.
-- **backend/** — FastAPI.
-- **Torrent search** — fast search/indexer endpoints.
+- **frontend/** — React + Vite, deployed to Vercel.
+- **backend/** — FastAPI, deployed to Render.
+- **1337x** — torrent search.
 - **Seedr** — cloud torrent storage/transfers.
-- No developer Seedr storage is used for a normal connected user.
+- No qBittorrent, Prowlarr, FlareSolverr, local torrent storage, or local torrent streaming on Render.
 
-## Seedr account connection
+## Vercel
 
-The app uses Seedr's device authorization flow:
+Set the project Root Directory to `frontend`.
 
-1. Create a Seedr account at [seedr.cc](https://www.seedr.cc/).
-2. Return to Torrent Studio and choose **Connect Seedr account**.
-3. Torrent Studio requests a Seedr device code.
-4. Open the Seedr authorization page and enter the displayed code.
-5. After approval, Torrent Studio receives the user's Seedr access token on the backend and associates it with that browser session.
-6. Torrents, quota, files, downloads, and streaming use that connected Seedr account.
+Environment variable:
 
-For users who already created a Seedr account with Google/Facebook, Seedr may require setting a password through its password-reset flow before device approval. The password is entered only on Seedr, never in Torrent Studio.
-
-Torrent Studio never asks the user for their Seedr password.
-
-Seedr's current settings page exposes **Add Device Code** under **Extensions, API & External Access**, and Seedr says its REST API uses OAuth2 for third-party integrations. citeturn160665search1turn160665search2
-
-The exact device-code endpoints used by the implementation are the currently reachable Seedr device-code endpoints; the live code endpoint returns a device code, user code, verification URL, expiry, and polling interval. citeturn594779view0
+```
+VITE_API_URL=https://YOUR-RENDER-SERVICE.onrender.com
+```
 
 ## Render
 
-Set the service Root Directory to the repository root (`.`). Render builds both the React frontend and FastAPI backend from the single Dockerfile and serves them from the same Render URL.
+Set the service Root Directory to `backend`.
 
-For the normal per-user flow, no personal `SEEDR_API_TOKEN` or shared `SEEDR_LIBRARY_FOLDER_ID` is required. Set `SEEDR_SESSION_SECRET` to a stable random secret so encrypted personal Seedr sessions survive backend restarts. If it is omitted, personal connections reset when the backend process restarts.
-
-Optional settings:
+Environment variables:
 
 ```
-SEEDR_DEVICE_CLIENT_ID=seedr_xbmc
-SEEDR_SESSION_TTL_SECONDS=2592000
-SEEDR_SESSION_SECRET=<long-random-secret>
-CORS_ORIGINS=https://YOUR-RENDER-SERVICE.onrender.com
+SEEDR_API_TOKEN=<your Seedr PAT>
+SEEDR_LIBRARY_FOLDER_ID=88718944
+SEEDR_MAX_SIZE_GB=5
 ```
 
-A legacy developer token can only be used when explicitly enabled with:
-
-```
-ALLOW_LEGACY_SEEDR_TOKEN=true
-SEEDR_API_TOKEN=<developer Seedr token>
-```
-
-Do not enable the legacy mode for the normal multi-user deployment.
+The Seedr token is a secret. Do not commit it to Git.
 
 ## Local development
 
@@ -74,16 +55,15 @@ npm run dev
 
 Then set `VITE_API_URL=http://127.0.0.1:8000` for the frontend.
 
-## Main Seedr API routes
+## API
 
-- `GET /api/seedr/session`
-- `POST /api/seedr/connect/start`
-- `GET /api/seedr/connect/status`
-- `POST /api/seedr/connect/disconnect`
+- `GET /api/search?q=...`
 - `POST /api/seedr/add`
+- `POST /api/seedr/tasks/prepare`
+- `GET /api/seedr/tasks`
+- `GET /api/seedr/tasks/:id`
 - `GET /api/seedr/quota`
-- `GET /api/seedr/library`
 - `GET /api/seedr/files`
 - `GET /api/seedr/files/:id/download`
 
-The repository also contains compatibility endpoints used by the existing UI. They do not start a qBittorrent process or create shared local torrent storage.
+The preserved UI contains additional compatibility endpoints for its existing panels. Those endpoints do not start a qBittorrent process or create local torrent storage.

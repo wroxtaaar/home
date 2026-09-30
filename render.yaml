@@ -1,23 +1,14 @@
 services:
   - type: web
-    name: home
-    runtime: docker
-    repo: https://github.com/wroxtaaar/home
-    branch: main
-    plan: free
-    region: singapore
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
-    healthCheckPath: /api/health
-    autoDeployTrigger: commit
+    name: torrent-studio-render-seedr
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: SEEDR_API_TOKEN
         sync: false
-      - key: SEEDR_SESSION_SECRET
-        sync: false
-      - key: ALLOW_LEGACY_SEEDR_TOKEN
-        value: "true"
-      - key: GITHUB_FEEDBACK_TOKEN
-        sync: false
-      - key: GITHUB_FEEDBACK_REPO
-        value: wroxtaaar/home
+      - key: SEEDR_LIBRARY_FOLDER_ID
+        value: "88718944"
+      - key: SEEDR_MAX_SIZE_GB
+        value: "5"

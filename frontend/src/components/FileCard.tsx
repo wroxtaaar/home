@@ -7,7 +7,6 @@ import {
   Image as ImageIcon,
   File,
   Play,
-  Loader2,
   Download,
   Copy,
   Check,
@@ -28,10 +27,6 @@ interface FileCardProps {
   onMove: (file: StorageFile) => void;
   canEdit?: boolean;
   canDelete?: boolean;
-  streamLoading?: boolean;
-  onSeedrDownload?: (file: StorageFile) => void | Promise<void>;
-  onSeedrCopy?: (file: StorageFile) => void | Promise<void>;
-  onSeedrDelete?: (file: StorageFile) => void | Promise<void>;
 }
 
 export const FileCard: React.FC<FileCardProps> = ({
@@ -41,28 +36,16 @@ export const FileCard: React.FC<FileCardProps> = ({
   onRename,
   onMove,
   canEdit = true,
-  canDelete = true,
-  streamLoading = false,
-  onSeedrDownload,
-  onSeedrCopy,
-  onSeedrDelete
+  canDelete = true
 }) => {
   const [copied, setCopied] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
 
-  const copyLink = async () => {
-    try {
-      if (file.ownerId === 'seedr' && onSeedrCopy) {
-        await onSeedrCopy(file);
-      } else {
-        const directUrl = window.location.origin + file.downloadUrl;
-        await navigator.clipboard.writeText(directUrl);
-      }
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Parent handler reports the actual Seedr/API error.
-    }
+  const copyLink = () => {
+    const directUrl = window.location.origin + file.downloadUrl;
+    navigator.clipboard.writeText(directUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   const getIcon = () => {
@@ -121,36 +104,23 @@ export const FileCard: React.FC<FileCardProps> = ({
         {file.isStreamable && (
           <button
             onClick={() => onPlay(file)}
-            disabled={streamLoading}
-            className="px-2.5 py-1.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 text-xs font-semibold flex items-center justify-center gap-1.5 transition tap-target disabled:opacity-60 disabled:cursor-wait"
-            title={streamLoading ? "Preparing stream…" : "Stream in Browser"}
+            className="px-2.5 py-1.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 text-xs font-semibold flex items-center gap-1.5 transition tap-target"
+            title="Stream in Browser"
           >
-            {streamLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5 fill-current translate-x-px" />}
-            <span className="hidden sm:inline">{streamLoading ? 'Preparing…' : 'Stream'}</span>
+            <Play className="w-3.5 h-3.5 fill-current" />
+            <span className="hidden sm:inline">Stream</span>
           </button>
         )}
 
-        {/* Direct Download */}
-        {file.ownerId === 'seedr' && onSeedrDownload ? (
-          <button
-            type="button"
-            onClick={() => void onSeedrDownload(file)}
-            className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition tap-target flex items-center justify-center"
-            title="Download from Seedr"
-            aria-label="Download from Seedr"
-          >
-            <Download className="w-4 h-4" />
-          </button>
-        ) : (
-          <a
-            href={file.downloadUrl}
-            download={file.name}
-            className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition tap-target flex items-center justify-center"
-            title="Direct Download Link"
-          >
-            <Download className="w-4 h-4" />
-          </a>
-        )}
+        {/* Direct Download Link */}
+        <a
+          href={file.downloadUrl}
+          download={file.name}
+          className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition tap-target flex items-center justify-center"
+          title="Direct Download Link"
+        >
+          <Download className="w-4 h-4" />
+        </a>
 
         {/* Copy Direct Link */}
         <button
@@ -164,17 +134,9 @@ export const FileCard: React.FC<FileCardProps> = ({
         {/* Quick Delete File */}
         {canDelete && (
           <button
-            type="button"
-            onClick={() => {
-              if (file.ownerId === 'seedr' && onSeedrDelete) {
-                void onSeedrDelete(file);
-              } else {
-                onDelete(file.id);
-              }
-            }}
+            onClick={() => onDelete(file.id)}
             className="p-2 rounded-xl bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 transition tap-target flex items-center justify-center"
             title="Delete File"
-            aria-label="Delete File"
           >
             <Trash2 className="w-4 h-4" />
           </button>
@@ -196,90 +158,42 @@ export const FileCard: React.FC<FileCardProps> = ({
                 onClick={() => setShowMenu(false)}
               />
               <div className="absolute right-0 top-full mt-1.5 z-30 w-44 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl py-1 text-xs">
-                {file.ownerId === 'seedr' ? (
+                {canEdit && (
                   <>
-                    {onSeedrDownload && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowMenu(false);
-                          void onSeedrDownload(file);
-                        }}
-                        className="w-full px-3 py-2 text-left hover:bg-slate-800 text-slate-300 flex items-center gap-2"
-                      >
-                        <Download className="w-3.5 h-3.5 text-cyan-400" />
-                        <span>Download from Seedr</span>
-                      </button>
-                    )}
-                    {onSeedrCopy && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowMenu(false);
-                          void onSeedrCopy(file);
-                        }}
-                        className="w-full px-3 py-2 text-left hover:bg-slate-800 text-slate-300 flex items-center gap-2"
-                      >
-                        <Copy className="w-3.5 h-3.5 text-cyan-400" />
-                        <span>Copy Seedr Link</span>
-                      </button>
-                    )}
-                    {canDelete && onSeedrDelete && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowMenu(false);
-                          void onSeedrDelete(file);
-                        }}
-                        className="w-full px-3 py-2 text-left hover:bg-rose-500/10 text-rose-400 flex items-center gap-2 border-t border-slate-800"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        <span>Delete from Seedr</span>
-                      </button>
-                    )}
+                    <button
+                      onClick={() => {
+                        setShowMenu(false);
+                        onMove(file);
+                      }}
+                      className="w-full px-3 py-2 text-left hover:bg-slate-800 text-slate-300 flex items-center gap-2"
+                    >
+                      <FolderInput className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Move File</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setShowMenu(false);
+                        onRename(file);
+                      }}
+                      className="w-full px-3 py-2 text-left hover:bg-slate-800 text-slate-300 flex items-center gap-2"
+                    >
+                      <Edit2 className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Rename</span>
+                    </button>
                   </>
-                ) : (
-                  <>
-                    {canEdit && (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setShowMenu(false);
-                            onMove(file);
-                          }}
-                          className="w-full px-3 py-2 text-left hover:bg-slate-800 text-slate-300 flex items-center gap-2"
-                        >
-                          <FolderInput className="w-3.5 h-3.5 text-cyan-400" />
-                          <span>Move File</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setShowMenu(false);
-                            onRename(file);
-                          }}
-                          className="w-full px-3 py-2 text-left hover:bg-slate-800 text-slate-300 flex items-center gap-2"
-                        >
-                          <Edit2 className="w-3.5 h-3.5 text-amber-400" />
-                          <span>Rename</span>
-                        </button>
-                      </>
-                    )}
-                    {canDelete && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowMenu(false);
-                          onDelete(file.id);
-                        }}
-                        className="w-full px-3 py-2 text-left hover:bg-rose-500/10 text-rose-400 flex items-center gap-2 border-t border-slate-800"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        <span>Delete File</span>
-                      </button>
-                    )}
-                  </>
+                )}
+
+                {canDelete && (
+                  <button
+                    onClick={() => {
+                      setShowMenu(false);
+                      onDelete(file.id);
+                    }}
+                    className="w-full px-3 py-2 text-left hover:bg-rose-500/10 text-rose-400 flex items-center gap-2 border-t border-slate-800"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete File</span>
+                  </button>
                 )}
               </div>
             </>

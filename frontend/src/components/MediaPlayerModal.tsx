@@ -29,15 +29,13 @@ interface MediaPlayerModalProps {
   onClose: () => void;
   isMinimized: boolean;
   onToggleMinimize: () => void;
-  onPlaybackStarted?: () => void;
 }
 
 export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
   file,
   onClose,
   isMinimized,
-  onToggleMinimize,
-  onPlaybackStarted
+  onToggleMinimize
 }) => {
   const [isPlaying, setIsPlaying] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
@@ -90,12 +88,16 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       ? file.streamUrl.replace('/api/torrents/stream/', '/api/torrents/direct-stream/')
       : file.streamUrl;
 
-    // Use the resolved Seedr browser URL. The backend now decides whether
-    // this is HLS or a direct presentation, matching the working reference.
+    // Seedr supplies the exact HLS URL that external players use (e.g. MX
+    // Player). Try that URL first in Hls.js; if browser CORS blocks it, fall
+    // back automatically to our Render same-origin proxy.
+    // Browser playback must use the backend URL. The backend decides whether the
+    // Seedr presentation is HLS or a direct video stream and provides the proper
+    // same-origin endpoint. Keep externalStreamUrl only for VLC/MX Player.
     const preferredSeedrUrl = file.streamUrl || file.externalStreamUrl || directBaseUrl;
-    // Keep the video element on Seedr's original presentation. Browser-incompatible
-    // MKV audio is handled by the separate Seedr audio endpoint below.
-    const streamUrl = preferredSeedrUrl;
+    const streamUrl = selectedAudioIndex !== undefined
+      ? `${preferredSeedrUrl}${preferredSeedrUrl.includes('?') ? '&' : '?'}audio=${encodeURIComponent(String(selectedAudioIndex))}`
+      : preferredSeedrUrl;
     const fallbackStreamUrl = file.externalStreamUrl && file.streamUrl !== file.externalStreamUrl
       ? file.streamUrl
       : '';
@@ -104,7 +106,6 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     const restorePlaying = resumePlayingRef.current || (!media.paused && duration > 0);
 
     const handleLoaded = () => {
-    onPlaybackStarted?.();
       if (Number.isFinite(restoreTime) && restoreTime > 0 && Number.isFinite(media.duration)) {
         const safeTime = Math.min(restoreTime, Math.max(0, media.duration - 0.25));
         try {
@@ -132,7 +133,6 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     const isHlsStream =
       /\.m3u8(?:$|\?)/i.test(streamUrl) ||
       streamUrl.includes('/api/seedr/hls/') ||
-      streamUrl.includes('/api/seedr/hls-master/') ||
       streamUrl.includes('/api/media/hls/');
 
     if (isHlsStream && isVideo && Hls.isSupported()) {
@@ -200,82 +200,32 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       media.load();
       hlsActiveRef.current = false;
     };
-  }, [file?.id, file?.streamUrl, file?.externalStreamUrl, isVideo]);
+  }, [file?.id, file?.streamUrl, file?.externalStreamUrl, isVideo, selectedAudioIndex]);
 
   useEffect(() => {
     if (!file || !isVideo) return;
 
-    const isSeedr = file.streamUrl.includes('/api/seedr/');
-    const mediaInfoUrl = isSeedr
-      ? `/api/seedr/media-info/${encodeURIComponent(file.id)}`
-      : file.streamUrl.includes('/api/torrents/')
-        ? (() => {
-            const match = file.streamUrl.match(/\/api\/torrents\/(?:stream|direct-stream)\/([^/]+)\/(\d+)/);
-            return match ? `/api/torrents/media-info/${match[1]}/${match[2]}` : '';
-          })()
-        : `/api/files/media-info/${encodeURIComponent(file.id)}`;
+    const mediaInfoUrl = file.streamUrl.includes('/api/torrents/')
+      ? (() => {
+          const match = file.streamUrl.match(/\/api\/torrents\/(?:stream|direct-stream)\/([^/]+)\/(\d+)/);
+          return match ? `/api/torrents/media-info/${match[1]}/${match[2]}` : '';
+        })()
+      : `/api/files/media-info/${encodeURIComponent(file.id)}`;
 
     if (!mediaInfoUrl) return;
 
     let cancelled = false;
-    setSelectedAudioIndex(undefined);
-
     fetch(mediaInfoUrl)
       .then(response => response.ok ? response.json() : null)
       .then(data => {
         if (cancelled || !data) return;
-        const tracks = Array.isArray(data.audioTracks) ? data.audioTracks : [];
-        setAudioTracks(tracks);
+        setAudioTracks(Array.isArray(data.audioTracks) ? data.audioTracks : []);
         setSubtitleTracks(Array.isArray(data.subtitleTracks) ? data.subtitleTracks : []);
-
-        if (isSeedr && tracks.length > 0) {
-          const defaultTrack = tracks.find((track: any) => track.default) || tracks[0];
-          setSelectedAudioIndex(Number(defaultTrack.index));
-        }
       })
       .catch(error => console.warn('[MEDIA] track metadata unavailable:', error));
 
     return () => { cancelled = true; };
   }, [file?.id, file?.streamUrl, isVideo]);
-
-  useEffect(() => {
-    if (!file || !isVideo || !file.streamUrl.includes('/api/seedr/') || selectedAudioIndex === undefined) return;
-
-    const audio = audioRef.current;
-    const video = videoRef.current;
-    if (!audio || !video) return;
-
-    const start = Math.max(0, resumeTimeRef.current || video.currentTime || 0);
-    const audioUrl = `/api/seedr/media/audio/${encodeURIComponent(file.id)}?track=${encodeURIComponent(String(selectedAudioIndex))}&start=${encodeURIComponent(start.toFixed(3))}`;
-
-    video.muted = true;
-    audio.preload = 'auto';
-    audio.src = audioUrl;
-    audio.load();
-
-    const onAudioReady = () => {
-      try { audio.currentTime = Math.min(start, Math.max(0, audio.duration - 0.1)); } catch {}
-      if (resumePlayingRef.current || !video.paused) audio.play().catch(() => {});
-      setTrackNotice('');
-    };
-    const onAudioError = () => {
-      console.warn('[MEDIA] Seedr audio track failed; restoring native video audio');
-      video.muted = false;
-      setTrackNotice('');
-    };
-
-    audio.addEventListener('loadedmetadata', onAudioReady, { once: true });
-    audio.addEventListener('error', onAudioError, { once: true });
-
-    return () => {
-      audio.pause();
-      audio.removeAttribute('src');
-      audio.load();
-      audio.removeEventListener('loadedmetadata', onAudioReady);
-      audio.removeEventListener('error', onAudioError);
-      video.muted = false;
-    };
-  }, [file?.id, file?.streamUrl, isVideo, selectedAudioIndex]);
 
   useEffect(() => {
     const track = subtitleTrackRef.current?.track;
@@ -301,10 +251,8 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     if (!mediaRef.current) return;
     if (isPlaying) {
       mediaRef.current.pause();
-      if (isVideo) audioRef.current?.pause();
     } else {
       mediaRef.current.play();
-      if (isVideo) audioRef.current?.play().catch(() => {});
     }
     setIsPlaying(!isPlaying);
   };
@@ -315,20 +263,13 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     setCurrentTime(time);
     if (mediaRef.current) {
       mediaRef.current.currentTime = time;
-      if (isVideo && audioRef.current && !audioRef.current.paused) {
-        try { audioRef.current.currentTime = time; } catch {}
-      }
     }
   };
 
   // Skip
   const skip = (seconds: number) => {
     if (!mediaRef.current) return;
-    const nextTime = Math.max(0, Math.min(duration, mediaRef.current.currentTime + seconds));
-    mediaRef.current.currentTime = nextTime;
-    if (isVideo && audioRef.current && !audioRef.current.paused) {
-      try { audioRef.current.currentTime = nextTime; } catch {}
-    }
+    mediaRef.current.currentTime = Math.max(0, Math.min(duration, mediaRef.current.currentTime + seconds));
   };
 
   // Volume
@@ -336,19 +277,18 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     const val = parseFloat(e.target.value);
     setVolume(val);
     setIsMuted(val === 0);
-    if (mediaRef.current) mediaRef.current.volume = val;
-    if (isVideo && audioRef.current) audioRef.current.volume = val;
+    if (mediaRef.current) {
+      mediaRef.current.volume = val;
+    }
   };
 
   const toggleMute = () => {
     if (!mediaRef.current) return;
     if (isMuted) {
       mediaRef.current.volume = volume || 0.8;
-      if (isVideo && audioRef.current) audioRef.current.volume = volume || 0.8;
       setIsMuted(false);
     } else {
       mediaRef.current.volume = 0;
-      if (isVideo && audioRef.current) audioRef.current.volume = 0;
       setIsMuted(true);
     }
   };
@@ -471,17 +411,14 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
 
         {/* Hidden or small video preview */}
         {isVideo ? (
-          <>
-            <video
-              ref={videoRef}
-              src={file.streamUrl || file.externalStreamUrl}
-              className="w-full h-32 object-contain bg-black rounded-lg"
-              onTimeUpdate={onTimeUpdate}
-              onLoadedMetadata={onLoadedMetadata}
-              onEnded={() => setIsPlaying(false)}
-            />
-            {file.streamUrl.includes('/api/seedr/') && <audio ref={audioRef} preload="none" className="hidden" />}
-          </>
+          <video
+            ref={videoRef}
+            src={file.streamUrl || file.externalStreamUrl}
+            className="w-full h-32 object-contain bg-black rounded-lg"
+            onTimeUpdate={onTimeUpdate}
+            onLoadedMetadata={onLoadedMetadata}
+            onEnded={() => setIsPlaying(false)}
+          />
         ) : (
           <audio
             ref={audioRef}
@@ -534,9 +471,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
 
   // Full Player Modal
   return (
-    <>
-      {isVideo && file.streamUrl.includes('/api/seedr/') && <audio ref={audioRef} preload="none" className="hidden" />}
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 md:p-6 bg-black/80 backdrop-blur-md">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 md:p-6 bg-black/80 backdrop-blur-md">
       <div
         ref={containerRef}
         className="relative w-full max-w-4xl bg-slate-900 border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[95vh]"
@@ -819,6 +754,5 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
         </div>
       </div>
     </div>
-    </>
   );
 };
