@@ -90,10 +90,8 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       ? file.streamUrl.replace('/api/torrents/stream/', '/api/torrents/direct-stream/')
       : file.streamUrl;
 
-    // For Chromium playback, prefer the backend Range-aware Seedr media
-    // endpoint. It requests the primary audio rendition explicitly, which
-    // avoids the silent-audio issue seen with Seedr's raw presentation URL.
-    // externalStreamUrl remains the VLC/MX Player fallback.
+    // Use the resolved Seedr browser URL. The backend now decides whether
+    // this is HLS or a direct presentation, matching the working reference.
     const preferredSeedrUrl = file.streamUrl || file.externalStreamUrl || directBaseUrl;
     const streamUrl = selectedAudioIndex !== undefined
       ? `${preferredSeedrUrl}${preferredSeedrUrl.includes('?') ? '&' : '?'}audio=${encodeURIComponent(String(selectedAudioIndex))}`
@@ -134,6 +132,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     const isHlsStream =
       /\.m3u8(?:$|\?)/i.test(streamUrl) ||
       streamUrl.includes('/api/seedr/hls/') ||
+      streamUrl.includes('/api/seedr/hls-master/') ||
       streamUrl.includes('/api/media/hls/');
 
     if (isHlsStream && isVideo && Hls.isSupported()) {
