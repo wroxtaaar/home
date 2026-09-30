@@ -4637,57 +4637,77 @@ async def seedr_file_stream(
     type: str = Query("video"),
     name: str = Query(""),
 ):
-    if not SEEDR_TOKEN:
+    """
+    Resolve a fresh Seedr playback URL for the browser.
+
+    Render performs only the authenticated Seedr API lookup. The returned
+    signed URL is consumed by the browser directly, so media bytes do not
+    pass through Render.
+    """
+    if not current_seedr_token():
         raise HTTPException(503, "Seedr is not configured")
 
     resolved_id = await resolve_seedr_stream_id(file_id, name)
+    if not resolved_id:
+        raise HTTPException(404, "Seedr playback file could not be resolved")
 
     if type == "video":
-        # Seedr normally uses HLS for browser playback, but some presentation
-        # URLs are already directly playable by a native browser <video>.
-        # Detect that case and proxy it through our same-origin Range-aware
-        # endpoint. Keep HLS for presentations that actually return a
-        # manifest.
         presentation_url = await seedr_v2_video_url(resolved_id)
-        if presentation_url and not await _presentation_is_hls(presentation_url):
-            return {
-                "url": "/api/seedr/media/video/" + quote(resolved_id, safe=""),
-                "externalUrl": presentation_url,
-                "name": name or resolved_id,
-                "resolvedFileId": resolved_id,
-                "protocol": "direct",
-            }
+        if not presentation_url:
+            raise HTTPException(502, "Seedr did not return a browser playback URL")
 
+        is_hls = await _presentation_is_hls(presentation_url)
+        logger.info(
+            "Seedr direct browser stream resolved: file=%s protocol=%s",
+            resolved_id,
+            "hls" if is_hls else "direct",
+        )
+        return {
+            "url": presentation_url,
+            "externalUrl": presentation_url,
+            "name": name or resolved_id,
+            "resolvedFileId": resolved_id,
+            "protocol": "hls" if is_hls else "direct",
+        }
+
+    if type == "audio":
         try:
-            await _fetch_seedr_hls_manifest(resolved_id)
-            return {
-                "url": "/api/seedr/hls/" + quote(resolved_id, safe=""),
-                "externalUrl": presentation_url or _seedr_media_url(resolved_id, "video"),
-                "name": name or resolved_id,
-                "resolvedFileId": resolved_id,
-                "protocol": "hls",
-            }
-        except HTTPException:
-            # If the presentation URL exists but HLS preparation failed,
-            # still expose the direct proxy as a last resort. The browser
-            # will receive the same Seedr presentation URL we verified.
-            if presentation_url:
+            payload = seedr_data(
+                await seedr_v2_request(
+                    f"/presentations/file/{quote(resolved_id)}/audio"
+                )
+            )
+            audio_url = ""
+            if isinstance(payload, dict):
+                link = payload.get("link")
+                link_url = link.get("url") if isinstance(link, dict) else ""
+                audio_url = str(
+                    payload.get("url")
+                    or payload.get("stream_url")
+                    or link_url
+                    or ""
+                ).strip()
+            if audio_url.startswith(("http://", "https://")):
                 return {
-                    "url": "/api/seedr/media/video/" + quote(resolved_id, safe=""),
-                    "externalUrl": presentation_url,
+                    "url": audio_url,
+                    "externalUrl": audio_url,
                     "name": name or resolved_id,
                     "resolvedFileId": resolved_id,
                     "protocol": "direct",
                 }
-            raise
+        except HTTPException:
+            pass
 
-    return {
-        "url": "/api/seedr/media/audio/" + quote(resolved_id, safe=""),
-        "externalUrl": _seedr_media_url(resolved_id, "audio"),
-        "name": name or resolved_id,
-        "resolvedFileId": resolved_id,
-        "protocol": "mp3",
-    }
+        result = await download_url(resolved_id)
+        return {
+            "url": result["url"],
+            "externalUrl": result["url"],
+            "name": name or result.get("name") or resolved_id,
+            "resolvedFileId": resolved_id,
+            "protocol": "direct",
+        }
+
+    raise HTTPException(400, "Unsupported Seedr media type")
 
 
 @app.get("/api/seedr/hls/{file_id}")
