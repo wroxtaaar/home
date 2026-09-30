@@ -9,21 +9,22 @@ permissions:
 
 jobs:
   replace:
-    if: !contains(github.event.head_commit.message, '[source-copy]')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout home
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Replace repository with source branch
+      - name: Replace repository contents
         env:
           SOURCE_REPO: https://github.com/wroxtaaar/Torrent-Studio-Vercel-Render-Seedr.git
           SOURCE_BRANCH: fix-seedr-direct-browser-stream
         run: |
           set -e
-          rm -rf ./* ./.??* 2>/dev/null || true
           git clone --depth 1 --branch "$SOURCE_BRANCH" "$SOURCE_REPO" /tmp/source
           rm -rf /tmp/source/.git
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
           cp -a /tmp/source/. .
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
