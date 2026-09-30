@@ -5432,15 +5432,34 @@ async def seedr_video_media_stats(file_id: str):
     }
 
 @app.get("/api/seedr/media/video/{file_id}")
-async def seedr_video_media(file_id: str, request: Request):
-    if not SEEDR_TOKEN:
+async def seedr_video_media(
+    file_id: str,
+    request: Request,
+    audio: int | None = Query(None, ge=0),
+):
+    """Range-aware browser playback proxy for Seedr's video presentation.
+
+    The normal path explicitly asks Seedr for audio rendition 0. This keeps
+    the browser video element audible even when Seedr's generic presentation
+    does not expose a usable default audio rendition to Chromium.
+    """
+    if not current_seedr_token():
         raise HTTPException(503, "Seedr is not configured")
 
-    upstream_url = await seedr_v2_video_url(file_id)
+    requested_audio_index = audio if audio is not None else 0
+    upstream_url = await seedr_v2_video_url(
+        file_id,
+        audio_index=requested_audio_index,
+    )
+    if not upstream_url and audio is None:
+        upstream_url = await seedr_v2_video_url(file_id)
     if not upstream_url:
         raise HTTPException(404, "Seedr returned no video presentation URL")
 
-    headers = {"Accept": "video/*,application/octet-stream,*/*"}
+    headers = {
+        "Accept": "video/*,application/octet-stream,*/*",
+        "Accept-Encoding": "identity",
+    }
     range_header = request.headers.get("range")
     if range_header:
         headers["Range"] = range_header
@@ -5479,7 +5498,8 @@ async def seedr_video_media(file_id: str, request: Request):
 
     async def body_stream():
         try:
-            async for chunk in response.aiter_bytes():
+            async for chunk in response.aiter_raw():
+                _record_media_bytes(file_id, len(chunk))
                 yield chunk
         finally:
             await response.aclose()
@@ -5493,6 +5513,16 @@ async def seedr_video_media(file_id: str, request: Request):
     )
 
 
+
+
+@app.get("/api/seedr/media/audio/{file_id}")
+async def seedr_audio_media(
+    file_id: str,
+    request: Request,
+    track: int = Query(0, ge=0),
+    start: float = Query(0.0, ge=0.0),
+):
+    return await seedr_audio_media_route(file_id, request, track=track, start=start)
 
 async def seedr_audio_media_route(
     file_id: str,
