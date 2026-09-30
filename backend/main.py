@@ -4636,7 +4636,7 @@ async def seedr_file_stream(
     type: str = Query("video"),
     name: str = Query(""),
 ):
-    """Resolve Seedr playback while keeping browser media compatible."""
+    """Resolve Seedr playback using its presentation/HLS logic."""
     if not current_seedr_token():
         raise HTTPException(503, "Seedr is not configured")
 
@@ -4646,20 +4646,34 @@ async def seedr_file_stream(
 
     if type == "video":
         presentation_url = await seedr_v2_video_url(resolved_id)
-        if not presentation_url:
-            raise HTTPException(502, "Seedr did not return a browser playback URL")
+        if presentation_url and not await _presentation_is_hls(presentation_url):
+            return {
+                "url": "/api/seedr/media/video/" + quote(resolved_id, safe=""),
+                "externalUrl": presentation_url,
+                "name": name or resolved_id,
+                "resolvedFileId": resolved_id,
+                "protocol": "direct",
+            }
 
-        return {
-            # Use the Range-aware same-origin endpoint for Chromium playback.
-            # It explicitly asks Seedr for audio rendition 0, fixing silent
-            # direct presentations while preserving seek/duration behavior.
-            "url": "/api/seedr/media/video/" + quote(resolved_id, safe=""),
-            # Keep the real Seedr URL as the external-player fallback.
-            "externalUrl": presentation_url,
-            "name": name or resolved_id,
-            "resolvedFileId": resolved_id,
-            "protocol": "direct",
-        }
+        try:
+            await _fetch_seedr_hls_manifest(resolved_id)
+            return {
+                "url": "/api/seedr/hls/" + quote(resolved_id, safe=""),
+                "externalUrl": presentation_url or _seedr_media_url(resolved_id, "video"),
+                "name": name or resolved_id,
+                "resolvedFileId": resolved_id,
+                "protocol": "hls",
+            }
+        except HTTPException:
+            if presentation_url:
+                return {
+                    "url": "/api/seedr/media/video/" + quote(resolved_id, safe=""),
+                    "externalUrl": presentation_url,
+                    "name": name or resolved_id,
+                    "resolvedFileId": resolved_id,
+                    "protocol": "direct",
+                }
+            raise
 
     if type == "audio":
         result = await download_url(resolved_id)
