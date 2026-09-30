@@ -855,7 +855,16 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       }
     }, 15000);
 
-    void api.getSeedrAudioPresentationUrl(fileId, trackIndex, safePosition)
+    const singleAudioFile = audioTracks.length <= 1;
+    const audioRequest = singleAudioFile
+      ? api.getSeedrNativeAudioUrl(fileId).then(({ url }) => ({
+          url: url.startsWith('/') ? API_BASE + url : url,
+          protocol: 'native-seedr-audio',
+          start: safePosition,
+        }))
+      : api.getSeedrAudioPresentationUrl(fileId, trackIndex, safePosition);
+
+    void audioRequest
       .then(({ url, protocol, start }) => {
         if (requestId !== alternateAudioRequestRef.current) return;
         if (!url) throw new Error('Seedr returned an empty audio playback URL');
@@ -973,15 +982,24 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     const primary = primaryAudioIndexRef.current;
 
     if (!isMultiAudio) {
-      // Single-audio files stay entirely on Seedr's native video+audio
-      // presentation. Do not create a second audio request here: Seedr's
-      // legacy MP3 endpoint can reject session credentials, while the native
-      // video presentation is the lowest-load and properly synchronized path.
-      if (alternateAudioIndexRef.current !== undefined || companionAudioModeRef.current !== null) {
-        clearAlternateAudio(true);
+      // Some Seedr V2 presentations arrive in Chromium without a usable
+      // embedded audio track. Keep the video on Seedr's native Range stream,
+      // but attach Seedr's prepared native audio rendition as a companion
+      // track. This avoids video transcoding and restores sound reliably.
+      const position = Number.isFinite(media.currentTime) ? media.currentTime : currentTime;
+      const shouldPlay = !media.paused || isPlaying;
+      const primaryIndex = primary !== undefined ? primary : 0;
+
+      if (
+        companionAudioModeRef.current === 'alternate' &&
+        alternateAudioIndexRef.current === primaryIndex &&
+        alternateAudioRef.current?.src
+      ) {
+        media.muted = true;
+        return;
       }
-      media.volume = isMutedRef.current ? 0 : volume;
-      media.muted = isMutedRef.current;
+
+      loadAlternateAudio(primaryIndex, position, shouldPlay);
       return;
     }
 
