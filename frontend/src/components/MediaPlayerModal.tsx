@@ -90,11 +90,11 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       ? file.streamUrl.replace('/api/torrents/stream/', '/api/torrents/direct-stream/')
       : file.streamUrl;
 
-    // The backend resolves a short-lived signed Seedr URL. Prefer that
-    // external URL for playback so the browser pulls media bytes directly
-    // from Seedr instead of through Render. Same-origin URLs remain supported
-    // for other media/file types.
-    const preferredSeedrUrl = file.externalStreamUrl || file.streamUrl || directBaseUrl;
+    // For Chromium playback, prefer the backend Range-aware Seedr media
+    // endpoint. It requests the primary audio rendition explicitly, which
+    // avoids the silent-audio issue seen with Seedr's raw presentation URL.
+    // externalStreamUrl remains the VLC/MX Player fallback.
+    const preferredSeedrUrl = file.streamUrl || file.externalStreamUrl || directBaseUrl;
     const streamUrl = selectedAudioIndex !== undefined
       ? `${preferredSeedrUrl}${preferredSeedrUrl.includes('?') ? '&' : '?'}audio=${encodeURIComponent(String(selectedAudioIndex))}`
       : preferredSeedrUrl;
