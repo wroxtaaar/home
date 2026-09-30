@@ -1,0 +1,14 @@
+frontend/
+.git/
+.github/
+README.md
+vercel.json
+.vercel/
+node_modules/
+**/node_modules/
+**/dist/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
