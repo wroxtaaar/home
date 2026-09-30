@@ -5,3 +5,4 @@ beautifulsoup4>=4.13,<5
 
 
 libtorrent==2.0.15
+cryptography>=44,<47
