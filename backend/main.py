@@ -2603,7 +2603,7 @@ async def search_torrents_csv(query: str, limit: int) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=SEARCH_SOURCE_TIMEOUT_SECONDS, follow_redirects=True) as client:
             response = await client.get(
                 "https://torrents-csv.com/service/search",
-                params={"q": query, "size": min(limit, 50), "type": "torrent"},
+                params={"q": query, "size": min(max(limit * 4, 100), 200), "type": "torrent"},
                 headers={"Accept": "application/json", "User-Agent": "TorrentStudio/1.0"},
             )
             response.raise_for_status()
@@ -2849,7 +2849,7 @@ async def search_1337x(query: str, limit: int = 50, allow_series_fallback: bool 
     # listing search. The direct fallback fetches only a few listing pages,
     # filters the 100 MB–5 GB range locally, then resolves magnets for the
     # highest-seeded candidates.
-    if allow_series_fallback and len(results) < 8:
+    if allow_series_fallback and len(results) < min(limit, 30):
         try:
             direct_results = await asyncio.wait_for(
                 search_1337x_direct(query, limit=50, pages=3),
