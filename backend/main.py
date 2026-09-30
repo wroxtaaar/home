@@ -1,8 +1,11 @@
 import asyncio
 import base64
+import contextvars
+import secrets
 from datetime import datetime, timezone
 from collections import deque
 import json
+import hashlib
 import logging
 import os
 import re
@@ -16,6 +19,7 @@ from urllib.parse import parse_qs, quote, unquote, urlencode, urljoin, urlsplit
 
 import httpx
 import libtorrent as lt
+from cryptography.fernet import Fernet, InvalidToken
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,18 +28,42 @@ from pydantic import BaseModel
 
 APP_NAME = "Torrent Studio API"
 logger = logging.getLogger("torrent-studio")
+GITHUB_FEEDBACK_TOKEN = os.getenv("GITHUB_FEEDBACK_TOKEN", "").strip()
+GITHUB_FEEDBACK_REPO = os.getenv("GITHUB_FEEDBACK_REPO", "wroxtaaar/new-test").strip()
 SEEDR_BASE = "https://www.seedr.cc/api/v0.1/p"
 SEEDR_MEDIA_BASE = "https://www.seedr.cc/api"
 SEEDR_V2_BASE = "https://v2.seedr.cc/api/v0.1/p"
+SEEDR_PAT_BASE = "https://www.seedr.cc/api/v0.1/p"
+# Legacy developer-level Seedr credentials remain supported only when explicitly enabled.
+# Normal requests use a per-browser Seedr connection established through device auth.
 SEEDR_TOKEN = os.getenv("SEEDR_API_TOKEN", "").strip()
-SEEDR_LIBRARY_FOLDER_ID = os.getenv("SEEDR_LIBRARY_FOLDER_ID", "").strip()
+ALLOW_LEGACY_SEEDR_TOKEN = os.getenv("ALLOW_LEGACY_SEEDR_TOKEN", "false").strip().lower() in {"1", "true", "yes", "on"}
+# A shared folder ID cannot be used safely across different users. Personal
+# connections always start at each Seedr account's own root folder.
+SEEDR_LIBRARY_FOLDER_ID = "0"
+SEEDR_DEVICE_CLIENT_ID = os.getenv("SEEDR_DEVICE_CLIENT_ID", "seedr_xbmc").strip() or "seedr_xbmc"
+SEEDR_DEVICE_CODE_URL = "https://www.seedr.cc/api/device/code"
+SEEDR_DEVICE_AUTHORIZE_URL = "https://www.seedr.cc/api/device/authorize"
+SEEDR_SESSION_COOKIE = os.getenv("SEEDR_SESSION_COOKIE", "torrent_studio_seedr_session").strip() or "torrent_studio_seedr_session"
+SEEDR_SESSION_TTL_SECONDS = int(float(os.getenv("SEEDR_SESSION_TTL_SECONDS", str(30 * 24 * 60 * 60))))
+SEEDR_SESSION_SECRET = os.getenv("SEEDR_SESSION_SECRET", "").strip()
+if SEEDR_SESSION_SECRET:
+    _seedr_fernet_key = base64.urlsafe_b64encode(hashlib.sha256(SEEDR_SESSION_SECRET.encode("utf-8")).digest())
+else:
+    _seedr_fernet_key = Fernet.generate_key()
+    logger.warning("SEEDR_SESSION_SECRET is not configured; personal Seedr connections will reset on backend restart.")
+_seedr_fernet = Fernet(_seedr_fernet_key)
+
+_seedr_sessions: dict[str, dict[str, Any]] = {}
+_seedr_request_token: contextvars.ContextVar[str] = contextvars.ContextVar("seedr_request_token", default="")
+_seedr_request_session_id: contextvars.ContextVar[str] = contextvars.ContextVar("seedr_request_session_id", default="")
 SEARCH_STOPWORDS = {"the", "a", "an", "movie", "film", "series", "season", "episode", "web", "show", "tv"}
 TORRENT_SEARCH_API_URL = os.getenv("TORRENT_SEARCH_API_URL", "https://torrent-search-api-ujfa.onrender.com").rstrip("/")
 KNABEN_API_URL = os.getenv("KNABEN_API_URL", "https://api.knaben.org/v1").rstrip("/")
 TORRENT_METADATA_API_URL = os.getenv("TORRENT_METADATA_API_URL", "https://torrentmeta.fly.dev").rstrip("/")
 FAST_SEARCH_TEST_URL = os.getenv("FAST_SEARCH_TEST_URL", "https://torrent-search-test.onrender.com").rstrip("/")
 SEARCH_SOURCE_TIMEOUT_SECONDS = float(os.getenv("SEARCH_SOURCE_TIMEOUT_SECONDS", "2.25"))
-SEARCH_TOTAL_TIMEOUT_SECONDS = float(os.getenv("SEARCH_TOTAL_TIMEOUT_SECONDS", "2.75"))
+SEARCH_TOTAL_TIMEOUT_SECONDS = float(os.getenv("SEARCH_TOTAL_TIMEOUT_SECONDS", "3.5"))
 SEARCH_GRACE_SECONDS = float(os.getenv("SEARCH_GRACE_SECONDS", "0.2"))
 SEARCH_CACHE_SECONDS = float(os.getenv("SEARCH_CACHE_SECONDS", "60"))
 FAST_SEARCH_TRACKERS = (
@@ -114,13 +142,204 @@ async def handle_seedr_error(request: Request, exc: SeedrError):
         },
     )
 
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", "").split(",")
+    if origin.strip()
+]
+CORS_ORIGIN_REGEX = os.getenv(
+    "CORS_ORIGIN_REGEX",
+    r"https://([a-zA-Z0-9-]+\.)*vercel\.app|https://([a-zA-Z0-9-]+\.)*onrender\.com|http://localhost(:\d+)?|http://127\.0\.0\.1(:\d+)?",
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=CORS_ORIGINS,
+    allow_origin_regex=CORS_ORIGIN_REGEX,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+def _seedr_empty_session() -> dict[str, Any]:
+    now = time.time()
+    return {
+        "csrf_token": secrets.token_urlsafe(32),
+        "access_token": "",
+        "refresh_token": "",
+        "token_type": "Bearer",
+        "auth_mode": "legacy",
+        "device": None,
+        "created_at": now,
+        "last_seen": now,
+    }
+
+def _seedr_new_session() -> tuple[str, dict[str, Any]]:
+    session_id = secrets.token_urlsafe(32)
+    session = _seedr_empty_session()
+    _seedr_sessions[session_id] = session
+    return session_id, session
+
+def _seedr_get_session(session_id: str) -> dict[str, Any]:
+    return _seedr_sessions.setdefault(session_id, _seedr_empty_session())
+
+def _seedr_session_cookie_value(session_id: str, session: dict[str, Any]) -> str:
+    payload = {
+        "v": 1,
+        "sid": session_id,
+        "csrf": str(session.get("csrf_token") or ""),
+        "access": str(session.get("access_token") or ""),
+        "refresh": str(session.get("refresh_token") or ""),
+        "type": str(session.get("token_type") or "Bearer"),
+        "mode": str(session.get("auth_mode") or "legacy"),
+        "device": session.get("device") if isinstance(session.get("device"), dict) else None,
+        "created": float(session.get("created_at") or time.time()),
+        "last": time.time(),
+    }
+    encrypted = _seedr_fernet.encrypt(
+        json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    )
+    return "v1." + encrypted.decode("ascii")
+
+def _seedr_restore_session(raw_cookie: str) -> tuple[str, dict[str, Any]] | None:
+    if not raw_cookie.startswith("v1."):
+        return None
+    try:
+        payload = json.loads(_seedr_fernet.decrypt(raw_cookie[3:].encode("ascii")).decode("utf-8"))
+        if not isinstance(payload, dict):
+            return None
+        session_id = str(payload.get("sid") or "").strip()
+        csrf_token = str(payload.get("csrf") or "").strip()
+        if not session_id or not csrf_token:
+            return None
+        now = time.time()
+        last_seen = float(payload.get("last") or 0)
+        if not last_seen or now - last_seen > SEEDR_SESSION_TTL_SECONDS:
+            return None
+        return session_id, {
+            "csrf_token": csrf_token,
+            "access_token": normalize_seedr_token(str(payload.get("access") or "")),
+            "refresh_token": str(payload.get("refresh") or "").strip(),
+            "token_type": str(payload.get("type") or "Bearer").strip() or "Bearer",
+            "auth_mode": str(payload.get("mode") or "legacy").strip().lower() or "legacy",
+            "device": payload.get("device") if isinstance(payload.get("device"), dict) else None,
+            "created_at": float(payload.get("created") or now),
+            "last_seen": now,
+        }
+    except (InvalidToken, ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+def current_seedr_token() -> str:
+    """Return the Seedr token for the current request's connected account."""
+    token = _seedr_request_token.get().strip()
+    if token:
+        return normalize_seedr_token(token)
+    if ALLOW_LEGACY_SEEDR_TOKEN and SEEDR_TOKEN:
+        return normalize_seedr_token(SEEDR_TOKEN)
+    return ""
+
+def _seedr_session_token(session_id: str) -> str:
+    session = _seedr_sessions.get(session_id)
+    return normalize_seedr_token(str(session.get("access_token") or "")) if session else ""
+
+
+def _seedr_session_auth_mode(session_id: str) -> str:
+    session = _seedr_sessions.get(session_id)
+    mode = str(session.get("auth_mode") or "legacy").strip().lower() if session else "legacy"
+    return mode if mode in {"legacy", "pat"} else "legacy"
+
+
+def _seedr_session_fingerprint(session_id: str) -> str:
+    """Short non-secret identifier for correlating session logs."""
+    if not session_id:
+        return "none"
+    return hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:12]
+
+def _clear_seedr_session_token(session_id: str | None = None) -> None:
+    sid = session_id or _seedr_request_session_id.get().strip()
+    if not sid:
+        return
+    session = _seedr_sessions.get(sid)
+    if not session:
+        return
+    session["access_token"] = ""
+    session["refresh_token"] = ""
+    session["token_type"] = "Bearer"
+    session["auth_mode"] = "legacy"
+    session["device"] = None
+    session["last_seen"] = time.time()
+
+@app.middleware("http")
+async def attach_seedr_session(request: Request, call_next):
+    raw_cookie = str(request.cookies.get(SEEDR_SESSION_COOKIE) or "").strip()
+    restored = _seedr_restore_session(raw_cookie)
+    is_new = False
+
+    if restored:
+        session_id, restored_session = restored
+        _seedr_sessions[session_id] = restored_session
+    elif raw_cookie in _seedr_sessions:
+        session_id = raw_cookie
+    else:
+        session_id, _ = _seedr_new_session()
+        is_new = True
+
+    session = _seedr_get_session(session_id)
+    session["last_seen"] = time.time()
+
+    token_ctx = _seedr_request_token.set(_seedr_session_token(session_id))
+    session_ctx = _seedr_request_session_id.set(session_id)
+    try:
+        path = request.url.path or ""
+        method = request.method.upper()
+        if path.startswith("/api/seedr/") and method not in {"GET", "HEAD", "OPTIONS"}:
+            if not _seedr_session_csrf_ok(request):
+                response = JSONResponse(
+                    status_code=403,
+                    content={"error": "Seedr session security check failed.", "code": "SEEDR_CSRF_INVALID"},
+                )
+            else:
+                response = await call_next(request)
+        else:
+            response = await call_next(request)
+    finally:
+        _seedr_request_token.reset(token_ctx)
+        _seedr_request_session_id.reset(session_ctx)
+
+    is_https = (
+        request.url.scheme.lower() == "https"
+        or str(request.headers.get("x-forwarded-proto") or "").lower() == "https"
+    )
+    response.set_cookie(
+        SEEDR_SESSION_COOKIE,
+        _seedr_session_cookie_value(session_id, session),
+        max_age=SEEDR_SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=is_https,
+        samesite="none" if is_https else "lax",
+        path="/",
+    )
+
+    now = time.time()
+    if len(_seedr_sessions) > 2000:
+        stale = [
+            sid for sid, item in _seedr_sessions.items()
+            if now - float(item.get("last_seen") or now) > SEEDR_SESSION_TTL_SECONDS
+        ]
+        for sid in stale:
+            _seedr_sessions.pop(sid, None)
+
+    return response
+
+def _seedr_session_csrf_ok(request: Request) -> bool:
+    session_id = _seedr_request_session_id.get().strip()
+    session = _seedr_sessions.get(session_id)
+    if not session:
+        return False
+    expected = str(session.get("csrf_token") or "")
+    supplied = str(request.headers.get("X-Torrent-Studio-CSRF") or "")
+    return bool(expected and supplied and secrets.compare_digest(expected, supplied))
+
 
 @app.middleware("http")
 async def add_timing_allow_origin(request: Request, call_next):
@@ -129,6 +348,13 @@ async def add_timing_allow_origin(request: Request, call_next):
     response = await call_next(request)
     response.headers["Timing-Allow-Origin"] = "*"
     return response
+
+class FeedbackRequest(BaseModel):
+    type: str
+    rating: int | None = None
+    message: str
+    name: str | None = None
+
 
 class MagnetRequest(BaseModel):
     magnet: str
@@ -812,7 +1038,7 @@ def normalize_seedr_token(value: str) -> str:
 
 def seedr_access_token() -> str:
     """Access token used only by Seedr's legacy resource.php API."""
-    return normalize_seedr_token(SEEDR_TOKEN)
+    return normalize_seedr_token(current_seedr_token())
 
 
 async def legacy_seedr_request(
@@ -821,7 +1047,7 @@ async def legacy_seedr_request(
     body: dict[str, Any] | None = None,
 ) -> Any:
     """Call Seedr's documented legacy resource API using form data."""
-    if not SEEDR_TOKEN:
+    if not current_seedr_token():
         raise HTTPException(503, "Seedr is not configured")
 
     access_token = seedr_access_token()
@@ -910,7 +1136,7 @@ async def legacy_seedr_list_contents(folder_id: str = "0") -> Any:
     filesystem endpoint while still permitting list_contents through Seedr's
     legacy resource API.
     """
-    if not SEEDR_TOKEN:
+    if not current_seedr_token():
         raise HTTPException(503, "Seedr is not configured")
 
     access_token = seedr_access_token()
@@ -974,7 +1200,7 @@ async def legacy_seedr_list_contents(folder_id: str = "0") -> Any:
 
 async def seedr_root_request() -> Any:
     """Fetch the Seedr account root using Seedr's dedicated root endpoint."""
-    if not SEEDR_TOKEN:
+    if not current_seedr_token():
         raise HTTPException(503, "Seedr is not configured")
 
     url = "https://www.seedr.cc/api/folder"
@@ -1065,16 +1291,19 @@ def seedr_error_message(status_code: int, data: Any, raw: str) -> str:
     return seedr_problem(status_code, data, raw)[2]
 
 async def seedr_request(path: str, method: str = "GET", body: Any = None, form: bool = False, base_url: str = SEEDR_BASE) -> Any:
-    if not SEEDR_TOKEN:
+    if not current_seedr_token():
         raise SeedrError(
             "SEEDR_TOKEN_MISSING",
             503,
-            "Seedr API token is not configured. Set SEEDR_API_TOKEN in Render.",
+            "No Seedr account is connected to this browser session.",
         )
 
     request_path = str(path).lstrip("/")
-    url = f"{str(base_url).rstrip("/")}/{request_path}"
-    token = normalize_seedr_token(SEEDR_TOKEN)
+    selected_base_url = base_url
+    if base_url == SEEDR_BASE and _seedr_session_auth_mode(_seedr_request_session_id.get().strip()) == "pat":
+        selected_base_url = SEEDR_PAT_BASE
+    url = f"{str(selected_base_url).rstrip("/")}/{request_path}"
+    token = normalize_seedr_token(current_seedr_token())
 
     kwargs: dict[str, Any] = {}
     if body is not None:
@@ -1089,11 +1318,8 @@ async def seedr_request(path: str, method: str = "GET", body: Any = None, form: 
 
     async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
         tried_tokens: list[str] = []
+        # Never fall back from one browser session to another Seedr credential.
         candidates = [token]
-        # The legacy helper may discover a token hidden in a base64 JSON export.
-        legacy = seedr_access_token()
-        if legacy and legacy != token:
-            candidates.append(legacy)
 
         last_status = 0
         last_data: Any = None
@@ -1109,12 +1335,66 @@ async def seedr_request(path: str, method: str = "GET", body: Any = None, form: 
                 "Accept": "application/json",
                 **headers_base,
             }
-            response = await client.request(method, url, headers=headers, **kwargs)
+            request_started = time.monotonic()
+            logger.info(
+                "Seedr API request start: session=%s mode=%s method=%s url=%s "
+                "token_present=%s token_length=%s token_fingerprint=%s body_keys=%s",
+                _seedr_session_fingerprint(_seedr_request_session_id.get().strip()),
+                _seedr_session_auth_mode(_seedr_request_session_id.get().strip()),
+                method,
+                url,
+                bool(token),
+                len(token),
+                hashlib.sha256(token.encode("utf-8")).hexdigest()[:12] if token else "none",
+                sorted(body.keys()) if isinstance(body, dict) else [],
+            )
+            try:
+                response = await client.request(method, url, headers=headers, **kwargs)
+            except Exception as exc:
+                elapsed_ms = int((time.monotonic() - request_started) * 1000)
+                logger.exception(
+                    "Seedr API transport failure: session=%s mode=%s method=%s url=%s "
+                    "elapsed_ms=%s exception_type=%s exception=%s",
+                    _seedr_session_fingerprint(_seedr_request_session_id.get().strip()),
+                    _seedr_session_auth_mode(_seedr_request_session_id.get().strip()),
+                    method,
+                    url,
+                    elapsed_ms,
+                    type(exc).__name__,
+                    str(exc)[:1000],
+                )
+                raise SeedrError(
+                    "SEEDR_NETWORK_ERROR",
+                    502,
+                    f"Seedr request could not be completed: {type(exc).__name__}: {str(exc)[:500]}",
+                ) from exc
+
+            elapsed_ms = int((time.monotonic() - request_started) * 1000)
             raw = response.text
             try:
                 data = response.json() if raw else None
             except Exception:
                 data = raw
+
+            response_request_id = (
+                response.headers.get("x-request-id")
+                or response.headers.get("x-correlation-id")
+                or response.headers.get("cf-ray")
+                or ""
+            )
+            logger.info(
+                "Seedr API response: session=%s mode=%s method=%s path=%s status=%s "
+                "elapsed_ms=%s response_bytes=%s content_type=%s provider_request_id=%s",
+                _seedr_session_fingerprint(_seedr_request_session_id.get().strip()),
+                _seedr_session_auth_mode(_seedr_request_session_id.get().strip()),
+                method,
+                request_path,
+                response.status_code,
+                elapsed_ms,
+                len(raw.encode("utf-8", errors="ignore")),
+                response.headers.get("content-type", ""),
+                response_request_id[:200],
+            )
 
             if response.status_code < 400:
                 if isinstance(data, dict):
@@ -1129,17 +1409,23 @@ async def seedr_request(path: str, method: str = "GET", body: Any = None, form: 
 
             last_status, last_data, last_raw = response.status_code, data, raw
             logger.warning(
-                "Seedr API request failed: method=%s path=%s status=%s response=%s",
+                "Seedr API request failed: session=%s mode=%s method=%s path=%s url=%s "
+                "status=%s elapsed_ms=%s token_length=%s token_fingerprint=%s "
+                "provider_request_id=%s response_json=%s response_body=%s",
+                _seedr_session_fingerprint(_seedr_request_session_id.get().strip()),
+                _seedr_session_auth_mode(_seedr_request_session_id.get().strip()),
                 method,
                 request_path,
+                url,
                 response.status_code,
-                (raw[:500] if raw else "<empty>"),
+                elapsed_ms,
+                len(token),
+                hashlib.sha256(token.encode("utf-8")).hexdigest()[:12] if token else "none",
+                response_request_id[:200],
+                json.dumps(data, ensure_ascii=False, default=str)[:4000] if isinstance(data, (dict, list)) else "<not-json>",
+                raw[:4000] if raw else "<empty>",
             )
 
-            # If a token-export wrapper was copied into Render, retry once with
-            # its extracted access_token before classifying it as rejected.
-            if response.status_code == 401 and candidate != candidates[-1]:
-                continue
             break
 
     code, status_code, detail = seedr_problem(last_status, last_data, last_raw)
@@ -1501,7 +1787,7 @@ async def _cleanup_seedr_job(tid: str, job: dict[str, Any]) -> bool:
         except Exception:
             return False
 
-    if not folder_id or not folder_id.isdigit() or folder_id == SEEDR_LIBRARY_FOLDER_ID:
+    if not folder_id or not folder_id.isdigit() or folder_id == "0":
         return False
 
     # Stop the Seedr task first so an active transfer cannot keep rebuilding
@@ -1604,7 +1890,7 @@ def _safe_download_filename(filename: str, fallback: str) -> str:
 
 async def _stream_seedr_download(url: str):
     client = httpx.AsyncClient(timeout=None, follow_redirects=True)
-    request = client.build_request("GET", url, headers={"Accept": "*/*"})
+    request = client.build_request("GET", url, headers={"Accept": "*/*", "Accept-Encoding": "identity"})
     response = await client.send(request, stream=True)
 
     if response.status_code >= 400:
@@ -1621,7 +1907,7 @@ async def _stream_seedr_download(url: str):
 
     async def body():
         try:
-            async for chunk in response.aiter_bytes(1024 * 1024):
+            async for chunk in response.aiter_raw():
                 yield chunk
         finally:
             await response.aclose()
@@ -1702,101 +1988,6 @@ async def seedr_file_subtitle(
     )
 
 
-OPEN_SUBTITLES_API_KEY = os.getenv("OPENSUBTITLES_API_KEY", "").strip()
-OPEN_SUBTITLES_API_URL = "https://api.opensubtitles.com/api/v1"
-OPEN_SUBTITLES_USER_AGENT = os.getenv("OPENSUBTITLES_USER_AGENT", "Torrent-Studio v1.0").strip() or "Torrent-Studio v1.0"
-_downloaded_subtitles: dict[str, tuple[float, str, str]] = {}
-
-
-async def _opensubtitles_request(method: str, path: str, *, params: dict[str, str] | None = None, json_body: dict[str, Any] | None = None) -> Any:
-    if not OPEN_SUBTITLES_API_KEY:
-        raise HTTPException(503, "OpenSubtitles is not configured. Add OPENSUBTITLES_API_KEY to Render.")
-    headers = {"Api-Key": OPEN_SUBTITLES_API_KEY, "User-Agent": OPEN_SUBTITLES_USER_AGENT, "Accept": "application/json"}
-    async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
-        response = await client.request(method, OPEN_SUBTITLES_API_URL + path, params=params, json=json_body, headers=headers)
-    if response.status_code >= 400:
-        detail = response.text[:500] or f"OpenSubtitles HTTP {response.status_code}"
-        try:
-            body = response.json()
-            detail = str(body.get("message") or body.get("error") or detail)
-        except Exception:
-            pass
-        raise HTTPException(response.status_code, detail)
-    try:
-        return response.json()
-    except Exception as exc:
-        raise HTTPException(502, "OpenSubtitles returned an invalid response") from exc
-
-
-@app.get("/api/subtitles/search")
-async def search_subtitles(query: str = Query(..., min_length=1, max_length=300), language: str = Query("en", max_length=10)):
-    payload = await _opensubtitles_request(
-        "GET", "/subtitles",
-        params={"query": query.strip(), "languages": language.strip().lower() or "en", "order_by": "download_count", "order_direction": "desc"},
-    )
-    results = []
-    for item in payload.get("data", []) if isinstance(payload, dict) else []:
-        if not isinstance(item, dict):
-            continue
-        attrs = item.get("attributes") or {}
-        files = attrs.get("files") or []
-        first_file = files[0] if isinstance(files, list) and files else {}
-        if not isinstance(first_file, dict):
-            first_file = {}
-        file_id = str(first_file.get("file_id") or "").strip()
-        if not file_id:
-            continue
-        results.append({
-            "fileId": file_id,
-            "language": str(attrs.get("language") or language or "en"),
-            "release": str(attrs.get("release") or ((attrs.get("feature_details") or {}).get("movie_name")) or "Subtitle"),
-            "downloads": int(attrs.get("download_count") or 0),
-            "format": str(attrs.get("format") or first_file.get("format") or "srt"),
-            "hearingImpaired": bool(attrs.get("hearing_impaired")),
-        })
-        if len(results) >= 20:
-            break
-    return {"results": results}
-
-
-@app.post("/api/subtitles/download")
-async def download_subtitle(payload: dict[str, Any]):
-    file_id = str(payload.get("fileId") or "").strip()
-    if not file_id:
-        raise HTTPException(400, "Subtitle file id is required")
-    result = await _opensubtitles_request("POST", "/download", json_body={"file_id": int(file_id) if file_id.isdigit() else file_id})
-    link = str(result.get("link") or result.get("url") or "").strip()
-    if not link:
-        raise HTTPException(502, "OpenSubtitles did not return a subtitle download link")
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-        response = await client.get(link, headers={"Api-Key": OPEN_SUBTITLES_API_KEY, "User-Agent": OPEN_SUBTITLES_USER_AGENT})
-    if response.status_code >= 400:
-        raise HTTPException(response.status_code, "Could not retrieve the downloaded subtitle")
-    raw = response.content
-    filename = str(result.get("file_name") or result.get("filename") or "subtitle.srt")
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        text = raw.decode("cp1252", errors="replace")
-    if not text.lstrip().startswith("WEBVTT"):
-        text = _srt_to_webvtt(text)
-    token = base64.urlsafe_b64encode(os.urandom(18)).decode("ascii").rstrip("=")
-    _downloaded_subtitles[token] = (time.time() + 900, text, filename)
-    return {"url": "/api/subtitles/content/" + token, "language": str(result.get("language") or "en"), "title": filename.rsplit("/", 1)[-1], "format": "vtt"}
-
-
-@app.get("/api/subtitles/content/{token}")
-async def subtitle_content(token: str):
-    item = _downloaded_subtitles.get(token)
-    if not item:
-        raise HTTPException(404, "Subtitle expired")
-    expires_at, text, _filename = item
-    if expires_at <= time.time():
-        _downloaded_subtitles.pop(token, None)
-        raise HTTPException(404, "Subtitle expired")
-    return Response(content=text, media_type="text/vtt; charset=utf-8", headers={"Cache-Control": "private, max-age=300"})
-
-
 def _search_tokens(value: str) -> list[str]:
     return [token for token in re.findall(r"[a-z0-9]+", value.lower()) if token]
 
@@ -1873,102 +2064,170 @@ X1337_HOSTS = [
 
 
 def _x1337_rows(html_text: str) -> list[dict[str, str]]:
-    """Parse the 1337x search table without requiring the source's API."""
-    start = html_text.find("table-list")
-    if start < 0:
-        return []
-
+    """Parse 1337x search rows across mirror HTML variations."""
+    soup = BeautifulSoup(html_text or "", "html.parser")
     rows: list[dict[str, str]] = []
-    for tr in html_text[start:].split("<tr")[1:]:
-        link_match = re.search(
-            r'href="(/torrent/[^"]+)"[^>]*>([^<]+)</a>',
-            tr,
-            re.IGNORECASE,
-        )
-        if not link_match:
+    seen_paths: set[str] = set()
+
+    for link in soup.find_all("a", href=re.compile(r"^/torrent/")):
+        href = str(link.get("href") or "").strip()
+        if not href or href in seen_paths:
             continue
-        size_match = re.search(
-            r'class="coll-4 size[^"]*">\s*([\d.]+\s*[KMGT]i?B)',
-            tr,
-            re.IGNORECASE,
-        )
-        seeds_match = re.search(
-            r'class="coll-2 seeds[^"]*">\s*([\d,]+)',
-            tr,
-            re.IGNORECASE,
-        )
-        leech_match = re.search(
-            r'class="coll-3 leeches[^"]*">\s*([\d,]+)',
-            tr,
-            re.IGNORECASE,
-        )
+        row = link.find_parent("tr")
+        if row is None:
+            continue
+        title = link.get_text(" ", strip=True)
+        if not title:
+            continue
+        cells = row.find_all("td")
+        cell_text = [cell.get_text(" ", strip=True) for cell in cells]
+        row_text = " ".join(cell_text) or row.get_text(" ", strip=True)
+        size = ""
+        seeders = "0"
+        leechers = "0"
+        for cell in cells:
+            classes = " ".join(cell.get("class") or []).lower()
+            text = cell.get_text(" ", strip=True)
+            size_match = re.search(r"([\d.]+\s*[KMGT]i?B)", text, re.I)
+            if not size and size_match:
+                size = size_match.group(1)
+            number = re.search(r"\d[\d,]*", text)
+            if number and "seed" in classes:
+                seeders = number.group(0).replace(",", "")
+            elif number and ("leech" in classes or "leeches" in classes):
+                leechers = number.group(0).replace(",", "")
+        if not size:
+            size_match = re.search(r"([\d.]+\s*[KMGT]i?B)", row_text, re.I)
+            if size_match:
+                size = size_match.group(1)
+        numeric_cells = [re.sub(r"[^\d,]", "", text) for text in cell_text if re.fullmatch(r"\s*[\d,]+\s*", text or "")]
+        if seeders == "0" and len(numeric_cells) >= 2:
+            seeders = numeric_cells[-2] or "0"
+        if leechers == "0" and len(numeric_cells) >= 1:
+            leechers = numeric_cells[-1] or "0"
+        seen_paths.add(href)
         rows.append({
-            "title": BeautifulSoup(
-                html.unescape(link_match.group(2).strip()), "html.parser"
-            ).get_text(" ", strip=True),
-            "path": link_match.group(1),
-            "size": size_match.group(1) if size_match else "0 B",
-            "seeders": (seeds_match.group(1).replace(",", "") if seeds_match else "0"),
-            "leechers": (leech_match.group(1).replace(",", "") if leech_match else "0"),
+            "title": title,
+            "path": href,
+            "size": size or "0 B",
+            "seeders": seeders,
+            "leechers": leechers,
         })
     return rows
 
-
-async def search_1337x_direct(query: str, limit: int = 30) -> list[dict[str, Any]]:
-    """Search 1337x using working hosts, with detail-page magnet resolution."""
+async def search_1337x_direct(query: str, limit: int = 50, pages: int = 3) -> list[dict[str, Any]]:
+    """Fast 1337x fallback: fetch a few listing pages, filter locally, then resolve only eligible magnets."""
     q, season, episode = _media_search_parts(query)
     if not q:
         return []
 
     encoded = quote(q, safe="").replace("%20", "+")
-    paths = [
-        f"/search/{encoded}/1/",
-        f"/category-search/{encoded}/Movies/1/",
-        f"/category-search/{encoded}/TV/1/",
-    ]
+    user_agent = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/126.0.0.0 Safari/537.36"
+    )
+    headers = {
+        "User-Agent": user_agent,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    minimum_size = 100 * 1024 * 1024
+    maximum_size = 2 * 1024 * 1024 * 1024
 
-    listing_html = ""
-    base = ""
-    used_path = ""
     async with httpx.AsyncClient(
-        timeout=12,
+        timeout=min(SEARCH_SOURCE_TIMEOUT_SECONDS + 0.75, 3.0),
         follow_redirects=True,
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/126.0.0.0 Safari/537.36"
-            ),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        },
+        headers=headers,
     ) as client:
+        base = ""
+        first_html = ""
+        # Find a working 1337x host with one cheap request. Avoid trying every
+        # host/path combination because this function is only a low-result fallback.
         for host in X1337_HOSTS:
-            for path in paths:
-                try:
-                    response = await client.get(f"https://{host}{path}")
-                    if response.status_code >= 400:
-                        continue
-                    if "table-list" not in response.text:
-                        continue
-                    listing_html = response.text
-                    base = f"https://{host}"
-                    used_path = path
-                    break
-                except httpx.HTTPError:
-                    continue
-            if listing_html:
-                break
+            try:
+                response = await client.get(f"https://{host}/search/{encoded}/1/")
+                if response.status_code < 400:
+                    # Mirrors use different HTML wrappers; validate by parsing
+                    # actual torrent rows rather than requiring one CSS class.
+                    parsed_rows = _x1337_rows(response.text)
+                    if parsed_rows:
+                        base = f"https://{host}"
+                        first_html = response.text
+                        logger.info(
+                            "1337x fallback selected host %s for '%s' (%d rows)",
+                            host,
+                            query,
+                            len(parsed_rows),
+                        )
+                        break
+            except httpx.HTTPError:
+                continue
 
-        if not listing_html:
+        if not base:
             return []
 
-        candidates = _x1337_rows(listing_html)
+        paths = [f"/search/{encoded}/{page}/" for page in range(1, max(1, pages) + 1)]
+        listing_pages: list[str] = [first_html]
+
+        async def fetch_listing(path: str) -> str:
+            try:
+                response = await client.get(base + path)
+                if response.status_code < 400 and _x1337_rows(response.text):
+                    return response.text
+            except httpx.HTTPError:
+                pass
+            return ""
+
+        if len(paths) > 1:
+            extra = await asyncio.gather(
+                *(fetch_listing(path) for path in paths[1:]),
+                return_exceptions=True,
+            )
+            listing_pages.extend(
+                html_text for html_text in extra if isinstance(html_text, str) and html_text
+            )
+
         tokens = _search_tokens(q)
-        candidates = [
-            row for row in candidates
-            if all(token in _normalize_title(row["title"]) for token in tokens)
-            and _season_episode_match(row["title"], season, episode)
-        ][: min(max(limit, 1), 30)]
+        candidates: list[dict[str, str]] = []
+        seen_paths: set[str] = set()
+
+        for html_text in listing_pages:
+            for row in _x1337_rows(html_text):
+                path = row.get("path") or ""
+                if not path or path in seen_paths:
+                    continue
+                seen_paths.add(path)
+
+                if not all(token in _normalize_title(row["title"]) for token in tokens):
+                    continue
+                if not _season_episode_match(row["title"], season, episode):
+                    continue
+
+                size_match = re.match(
+                    r"([\d.]+)\s*([KMGT]i?B)",
+                    row.get("size", ""),
+                    re.IGNORECASE,
+                )
+                if not size_match:
+                    continue
+                units = {
+                    "KB": 1024, "KIB": 1024, "MB": 1024**2, "MIB": 1024**2,
+                    "GB": 1024**3, "GIB": 1024**3, "TB": 1024**4, "TIB": 1024**4,
+                }
+                size = int(float(size_match.group(1)) * units[size_match.group(2).upper()])
+                if not minimum_size <= size <= maximum_size:
+                    continue
+
+                row["size_bytes"] = str(size)
+                candidates.append(row)
+
+        # Resolve the highest-value candidates first. This keeps the fallback
+        # useful without turning a low-result search into dozens of detail requests.
+        candidates.sort(
+            key=lambda row: int(row.get("seeders") or 0),
+            reverse=True,
+        )
+        candidates = candidates[: min(max(limit, 1), 30)]
 
         async def fetch_detail(row: dict[str, str]) -> dict[str, Any] | None:
             try:
@@ -1978,31 +2237,25 @@ async def search_1337x_direct(query: str, limit: int = 30) -> list[dict[str, Any
                 return None
 
             match = re.search(
-                r"magnet:\?xt=urn:btih:[^\"'<>\s]+",
+                r"""(?:href|data-href)=[\"'](magnet:\?xt=urn:btih:[^\"']+)[\"']""",
                 response.text,
                 re.IGNORECASE,
             )
-            if not match:
-                return None
-
-            magnet = html.unescape(match.group(0))
-            try:
-                size_text = row["size"]
-                size_match = re.match(
-                    r"([\d.]+)\s*([KMGT]i?B)",
-                    size_text,
+            if match:
+                magnet = html.unescape(match.group(1))
+            else:
+                match = re.search(
+                    r"magnet:\?xt=urn:btih:[^\"'<>\s]+",
+                    response.text,
                     re.IGNORECASE,
                 )
-                units = {"KB": 1024, "KIB": 1024, "MB": 1024**2, "MIB": 1024**2,
-                         "GB": 1024**3, "GIB": 1024**3, "TB": 1024**4, "TIB": 1024**4}
-                size = int(float(size_match.group(1)) * units[size_match.group(2).upper()]) if size_match else 0
-            except Exception:
-                size = 0
-
+                if not match:
+                    return None
+                magnet = html.unescape(match.group(0))
             return {
                 "guid": f"1337x-{info_hash(magnet) or row['path']}",
                 "title": row["title"],
-                "size": size,
+                "size": int(row["size_bytes"]),
                 "seeders": int(row["seeders"] or 0),
                 "leechers": int(row["leechers"] or 0),
                 "indexer": "1337x",
@@ -2016,10 +2269,18 @@ async def search_1337x_direct(query: str, limit: int = 30) -> list[dict[str, Any
                 "category": "Video",
             }
 
-        fetched = await asyncio.gather(*(fetch_detail(row) for row in candidates), return_exceptions=True)
+        fetched = await asyncio.gather(
+            *(fetch_detail(row) for row in candidates),
+            return_exceptions=True,
+        )
 
     results = [item for item in fetched if isinstance(item, dict)]
-    logger.info("1337x direct search '%s': %d results via %s", query, len(results), used_path)
+    logger.info(
+        "1337x direct fallback '%s': %d results from %d listing pages",
+        query,
+        len(results),
+        len(listing_pages),
+    )
     return results
 
 
@@ -2433,7 +2694,7 @@ async def search_apibay(query: str, limit: int) -> dict[str, Any]:
         return {"source": "apibay", "elapsedMs": round((time.monotonic() - started) * 1000), "results": [], "error": str(exc)}
 
 
-async def search_1337x(query: str, limit: int = 50) -> list[dict[str, Any]]:
+async def search_1337x(query: str, limit: int = 50, allow_series_fallback: bool = True) -> list[dict[str, Any]]:
     """Use the proven fast-search-test provider strategy for production search.
 
     Search providers run in parallel and the endpoint has a hard total deadline.
@@ -2447,12 +2708,33 @@ async def search_1337x(query: str, limit: int = 50) -> list[dict[str, Any]]:
     cache_key = (re.sub(r"\s+", " ", query).lower(), limit)
     now = time.monotonic()
     cached = _search_cache.get(cache_key)
-    if cached and now - cached[0] < SEARCH_CACHE_SECONDS:
+    if cached and len(cached[1]) >= 8 and now - cached[0] < SEARCH_CACHE_SECONDS:
         return cached[1]
 
     csv_task = asyncio.create_task(search_torrents_csv(query, limit))
     api_task = asyncio.create_task(search_apibay(query, limit))
+
+    # A plain TV-show title often returns season packs from generic torrent
+    # indexes. Those packs are frequently larger than the UI's 2 GiB Seedr
+    # limit, so enrich generic searches with episode-level EZTV results.
+    # search_tv_eztv already verifies the title against TVmaze before querying
+    # EZTV, so movie searches do not get arbitrary TV results.
+    _title_query, _season, _episode = _media_search_parts(query)
+    has_explicit_tv_part = _season is not None or _episode is not None
+    has_quality_or_year = bool(re.search(
+        r"\b(?:19|20)\d{2}\b|\b(?:2160p|1440p|1080p|720p|480p|4k|8k)\b",
+        query,
+        re.I,
+    ))
+    tv_task = (
+        asyncio.create_task(search_tv_eztv(query, limit))
+        if _title_query and (has_explicit_tv_part or not has_quality_or_year)
+        else None
+    )
+
     tasks = {csv_task, api_task}
+    if tv_task is not None:
+        tasks.add(tv_task)
     providers: list[dict[str, Any]] = []
     deadline = now + SEARCH_TOTAL_TIMEOUT_SECONDS
 
@@ -2478,7 +2760,13 @@ async def search_1337x(query: str, limit: int = 50) -> list[dict[str, Any]]:
                 except Exception as exc:
                     logger.info("Fast search provider failed for '%s': %s", query, exc)
                     continue
-                if isinstance(provider, dict):
+                if isinstance(provider, list):
+                    providers.append({
+                        "source": "1337x",
+                        "elapsedMs": 0,
+                        "results": provider,
+                    })
+                elif isinstance(provider, dict):
                     providers.append(provider)
 
             # Same strategy as the proven test service: once one provider has
@@ -2500,12 +2788,33 @@ async def search_1337x(query: str, limit: int = 50) -> list[dict[str, Any]]:
                                 continue
                             if isinstance(provider, dict):
                                 providers.append(provider)
+
+                # Episode enrichment is the one optional provider we give a
+                # little more time to. Generic indexes can return a large
+                # season pack first, while EZTV can return individual
+                # S01E01/S01E02/... torrents that fit the Seedr size limit.
+                if (
+                    tv_task is not None
+                    and not tv_task.done()
+                    and time.monotonic() < deadline
+                ):
+                    tv_wait = min(1.25, max(0.0, deadline - time.monotonic()))
+                    if tv_wait > 0:
+                        tv_done, _ = await asyncio.wait({tv_task}, timeout=tv_wait)
+                        if tv_done:
+                            try:
+                                provider = await tv_task
+                                if isinstance(provider, dict):
+                                    providers.append(provider)
+                            except Exception as exc:
+                                logger.info("TV episode enrichment failed for '%s': %s", query, exc)
                 break
     finally:
-        for task in (csv_task, api_task):
+        all_tasks = [csv_task, api_task] + ([tv_task] if tv_task is not None else [])
+        for task in all_tasks:
             if not task.done():
                 task.cancel()
-        await asyncio.gather(csv_task, api_task, return_exceptions=True)
+        await asyncio.gather(*all_tasks, return_exceptions=True)
 
     merged: dict[str, dict[str, Any]] = {}
     for provider in providers:
@@ -2517,7 +2826,15 @@ async def search_1337x(query: str, limit: int = 50) -> list[dict[str, Any]]:
             if key and key not in merged:
                 merged[key] = item
 
-    results = list(merged.values())
+    # Keep the server-side search pool focused on torrents that fit the
+    # main Seedr workflow. This prevents tiny samples/extras and oversized
+    # torrents from reaching the client at all.
+    minimum_search_size = 100 * 1024 * 1024
+    maximum_search_size = 2 * 1024 * 1024 * 1024
+    results = [
+        item for item in merged.values()
+        if minimum_search_size <= int(item.get("size") or 0) <= maximum_search_size
+    ]
     results.sort(
         key=lambda item: (
             int(item.get("seeders") or 0),
@@ -2527,10 +2844,64 @@ async def search_1337x(query: str, limit: int = 50) -> list[dict[str, Any]]:
         reverse=True,
     )
     results = results[:limit]
-    _search_cache[cache_key] = (now, results)
-    if len(_search_cache) > 100:
-        oldest = min(_search_cache.items(), key=lambda pair: pair[1][0])[0]
-        _search_cache.pop(oldest, None)
+    # Keep the normal path fast. Only when the primary providers return
+    # fewer than 8 usable torrents do we pay the cost of a direct 1337x
+    # listing search. The direct fallback fetches only a few listing pages,
+    # filters the 100 MB–2 GB range locally, then resolves magnets for the
+    # highest-seeded candidates.
+    if allow_series_fallback and len(results) < 8:
+        try:
+            direct_results = await asyncio.wait_for(
+                search_1337x_direct(query, limit=50, pages=3),
+                timeout=max(2.0, SEARCH_TOTAL_TIMEOUT_SECONDS + 3.0),
+            )
+        except (asyncio.TimeoutError, Exception) as exc:
+            logger.info("1337x fallback failed for '%s': %s", query, exc)
+            direct_results = []
+
+        merged_direct: dict[str, dict[str, Any]] = {}
+        for item in results:
+            key = str(
+                item.get("infoHash")
+                or item.get("magnetUrl")
+                or item.get("title")
+                or ""
+            ).strip().lower()
+            if key:
+                merged_direct[key] = item
+
+        for item in direct_results:
+            if not isinstance(item, dict):
+                continue
+            key = str(
+                item.get("infoHash")
+                or item.get("magnetUrl")
+                or item.get("title")
+                or ""
+            ).strip().lower()
+            if key:
+                merged_direct.setdefault(key, item)
+
+        results = list(merged_direct.values())
+        results.sort(
+            key=lambda item: (
+                int(item.get("seeders") or 0),
+                int(item.get("leechers") or 0),
+                int(item.get("size") or 0),
+            ),
+            reverse=True,
+        )
+        results = results[:limit]
+
+    # Cache only useful result sets. Fewer than 8 results are deliberately
+    # uncached, so every subsequent click performs a fresh search.
+    if len(results) >= 8:
+        _search_cache[cache_key] = (now, results)
+        if len(_search_cache) > 100:
+            oldest = min(_search_cache.items(), key=lambda pair: pair[1][0])[0]
+            _search_cache.pop(oldest, None)
+    else:
+        _search_cache.pop(cache_key, None)
 
     logger.info(
         "Fast search '%s': %d results (providers=%s)",
@@ -2562,7 +2933,7 @@ async def start_seedr_cleanup_worker():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "seedrConfigured": bool(SEEDR_TOKEN), "torrentSearchApi": TORRENT_SEARCH_API_URL}
+    return {"status": "ok", "seedrConfigured": bool(current_seedr_token()), "torrentSearchApi": TORRENT_SEARCH_API_URL}
 
 @app.get("/api/search")
 async def api_search(q: str = Query(..., min_length=1), limit: int = Query(50, ge=1, le=50)):
@@ -2572,9 +2943,426 @@ async def api_search(q: str = Query(..., min_length=1), limit: int = Query(50, g
 async def api_health():
     return {"name": APP_NAME, "status": "ok"}
 
+@app.get("/api/seedr/session")
+async def seedr_session(request: Request):
+    """Initialize/restore the browser session and expose only the CSRF token."""
+    session_id = _seedr_request_session_id.get().strip()
+    session = _seedr_get_session(session_id)
+    token = current_seedr_token()
+    connected = False
+
+    if token:
+        try:
+            token_ctx = _seedr_request_token.set(token)
+            try:
+                await seedr_request("/tasks" if _seedr_session_auth_mode(session_id) == "pat" else "/user")
+            finally:
+                _seedr_request_token.reset(token_ctx)
+            connected = True
+        except Exception:
+            _clear_seedr_session_token(session_id)
+
+    return {
+        "connected": connected,
+        "csrfToken": str(session.get("csrf_token") or ""),
+    }
+
+
+async def _validate_seedr_pat(token: str) -> None:
+    token = normalize_seedr_token(token)
+    if not token:
+        raise SeedrError("SEEDR_PAT_MISSING", 400, "A Seedr Personal Access Token is required.")
+
+    endpoints = (
+        f"{SEEDR_PAT_BASE}/fs/root/contents",
+        f"{SEEDR_PAT_BASE}/tasks",
+        f"{SEEDR_V2_BASE}/fs/root/contents",
+        f"{SEEDR_V2_BASE}/tasks",
+    )
+    saw_unauthorized = False
+
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+        for url in endpoints:
+            try:
+                response = await client.get(
+                    url,
+                    headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                )
+            except httpx.HTTPError as exc:
+                logger.info("Seedr PAT validation transport error: %s", exc)
+                continue
+
+            raw = response.text
+            if 200 <= response.status_code < 300:
+                logger.info("Seedr PAT validation succeeded")
+                return
+
+            if response.status_code == 401:
+                saw_unauthorized = True
+                continue
+
+            if response.status_code in {404, 405, 403}:
+                continue
+
+            try:
+                data = response.json() if raw else {}
+                reason = str(
+                    data.get("error_description")
+                    or data.get("reason_phrase")
+                    or data.get("message")
+                    or data.get("error")
+                    or ""
+                ).strip()
+            except Exception:
+                reason = ""
+
+            raise SeedrError(
+                "SEEDR_PAT_REJECTED",
+                502,
+                reason or f"Seedr PAT validation failed (HTTP {response.status_code}).",
+            )
+
+    if saw_unauthorized:
+        raise SeedrError(
+            "SEEDR_PAT_REJECTED",
+            401,
+            "Seedr rejected the Personal Access Token. Copy a fresh PAT from Seedr and try again.",
+        )
+
+    raise SeedrError(
+        "SEEDR_PAT_VALIDATION_FAILED",
+        502,
+        "Seedr could not validate the Personal Access Token right now.",
+    )
+
+
+@app.post("/api/seedr/connect/pat")
+async def seedr_connect_pat(request: Request):
+    session_id = _seedr_request_session_id.get().strip()
+    session = _seedr_get_session(session_id)
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = None
+
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Request body must be JSON.")
+
+    raw_pat = payload.get("pat") or payload.get("token")
+    if not isinstance(raw_pat, str):
+        raise HTTPException(400, "A Seedr Personal Access Token is required.")
+
+    pat = normalize_seedr_token(raw_pat)
+    if not pat:
+        raise HTTPException(400, "A Seedr Personal Access Token is required.")
+
+    await _validate_seedr_pat(pat)
+
+    session["access_token"] = pat
+    session["refresh_token"] = ""
+    session["token_type"] = "Bearer"
+    session["auth_mode"] = "pat"
+    session["device"] = None
+    session["last_seen"] = time.time()
+
+    logger.info(
+        "Seedr PAT connected: session=%s token_length=%s",
+        _seedr_session_fingerprint(session_id),
+        len(pat),
+    )
+    return {"status": "connected", "connected": True}
+
+
+@app.post("/api/seedr/connect/start")
+async def seedr_connect_start(request: Request):
+    session_id = _seedr_request_session_id.get().strip()
+    session = _seedr_get_session(session_id)
+
+    logger.info(
+        "Seedr connect start: session=%s cookie_present=%s has_device=%s has_token=%s",
+        _seedr_session_fingerprint(session_id),
+        bool(request.cookies.get(SEEDR_SESSION_COOKIE)),
+        bool(isinstance(session.get("device"), dict)),
+        bool(_seedr_session_token(session_id)),
+    )
+
+    token = current_seedr_token()
+    if token:
+        return {"status": "connected", "connected": True}
+
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            response = await client.get(
+                SEEDR_DEVICE_CODE_URL,
+                params={"client_id": SEEDR_DEVICE_CLIENT_ID},
+                headers={"Accept": "application/json"},
+            )
+        raw = response.text
+        try:
+            data = response.json() if raw else {}
+        except Exception:
+            data = {}
+
+        if response.status_code >= 400 or not isinstance(data, dict):
+            detail = seedr_error_message(response.status_code, data, raw)
+            raise SeedrError("SEEDR_DEVICE_CODE_FAILED", 502, detail)
+
+        device_code = str(data.get("device_code") or data.get("deviceCode") or "").strip()
+        user_code = str(data.get("user_code") or data.get("userCode") or "").strip()
+        verification_url = str(
+            data.get("verification_url")
+            or data.get("verificationUrl")
+            or "https://www.seedr.cc/devices"
+        ).strip()
+        expires_in = int(float(data.get("expires_in") or data.get("expiresIn") or 900))
+
+        if not device_code or not user_code:
+            raise SeedrError(
+                "SEEDR_DEVICE_CODE_INVALID",
+                502,
+                "Seedr returned an incomplete device authorization response.",
+            )
+
+        session["device"] = {
+            "device_code": device_code,
+            "user_code": user_code,
+            "verification_url": verification_url,
+            "expires_at": time.time() + max(60, expires_in),
+            "created_at": time.time(),
+        }
+        session["last_seen"] = time.time()
+
+        poll_interval = int(float(data.get("interval") or 5))
+        poll_interval = max(2, min(30, poll_interval))
+        session["device"]["interval"] = poll_interval
+        logger.info(
+            "Seedr connect start stored device: session=%s expires_in=%s interval=%s",
+            _seedr_session_fingerprint(session_id),
+            expires_in,
+            poll_interval,
+        )
+        return {
+            "status": "pending",
+            "connected": False,
+            "userCode": user_code,
+            "verificationUrl": verification_url,
+            "expiresIn": expires_in,
+            "interval": poll_interval,
+        }
+    except SeedrError:
+        raise
+    except Exception as exc:
+        logger.warning("Seedr device-code request failed: %s", exc)
+        raise SeedrError(
+            "SEEDR_DEVICE_CODE_FAILED",
+            502,
+            "Could not start Seedr account authorization right now.",
+        ) from exc
+
+
+def _extract_seedr_access_token(payload: Any) -> str:
+    if isinstance(payload, dict):
+        for key in ("access_token", "accessToken", "token"):
+            candidate = payload.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                normalized = normalize_seedr_token(candidate)
+                if normalized:
+                    return normalized
+
+        for key in ("data", "result", "response"):
+            nested = payload.get(key)
+            token = _extract_seedr_access_token(nested)
+            if token:
+                return token
+    return ""
+
+
+@app.get("/api/seedr/connect/status")
+async def seedr_connect_status(request: Request):
+    session_id = _seedr_request_session_id.get().strip()
+    session = _seedr_get_session(session_id)
+    token = _seedr_session_token(session_id)
+    device = session.get("device")
+
+    logger.info(
+        "Seedr connect status: session=%s cookie_present=%s has_device=%s has_token=%s",
+        _seedr_session_fingerprint(session_id),
+        bool(request.cookies.get(SEEDR_SESSION_COOKIE)),
+        bool(isinstance(device, dict)),
+        bool(token),
+    )
+
+    if token:
+        try:
+            token_ctx = _seedr_request_token.set(token)
+            try:
+                await seedr_request("/user")
+            finally:
+                _seedr_request_token.reset(token_ctx)
+            session["device"] = None
+            return {"status": "connected", "connected": True}
+        except SeedrError as exc:
+            if exc.status_code == 401:
+                _clear_seedr_session_token(session_id)
+            else:
+                return {"status": "pending", "connected": False}
+
+    device = session.get("device")
+    if not isinstance(device, dict):
+        return {
+            "status": "error",
+            "connected": False,
+            "code": "SEEDR_SESSION_LOST",
+            "message": "The Seedr connection session was lost. Start the connection again.",
+        }
+
+    expires_at = float(device.get("expires_at") or 0)
+    if expires_at and time.time() >= expires_at:
+        session["device"] = None
+        return {
+            "status": "expired",
+            "connected": False,
+            "message": "The Seedr authorization code expired. Start a new connection.",
+        }
+
+    device_code = str(device.get("device_code") or "").strip()
+    if not device_code:
+        session["device"] = None
+        return {
+            "status": "error",
+            "connected": False,
+            "message": "Seedr did not provide a usable device code.",
+        }
+
+    try:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+            # Seedr's device authorization endpoint expects the original
+            # device_code. The current Seedr client implementations pass only
+            # device_code here; do not add client_id to this request.
+            response = await client.get(
+                SEEDR_DEVICE_AUTHORIZE_URL,
+                params={"device_code": device_code},
+                headers={"Accept": "application/json"},
+            )
+
+        raw = response.text
+        try:
+            data = response.json() if raw else {}
+        except Exception:
+            data = {}
+
+        access_token = _extract_seedr_access_token(data)
+        logger.info(
+            "Seedr device authorization poll: http=%s token_present=%s error=%s message=%s",
+            response.status_code,
+            bool(access_token),
+            str(data.get("error") or data.get("code") or "")[:120] if isinstance(data, dict) else "",
+            str(
+                (data.get("error_description") or data.get("message") or data.get("error") or "")
+                if isinstance(data, dict) else ""
+            )[:200],
+        )
+        if access_token:
+            refresh_token = ""
+            token_type = "Bearer"
+            if isinstance(data, dict):
+                refresh_token = str(data.get("refresh_token") or data.get("refreshToken") or "").strip()
+                token_type = str(data.get("token_type") or "Bearer").strip() or "Bearer"
+                for key in ("data", "result", "response"):
+                    nested = data.get(key)
+                    if isinstance(nested, dict):
+                        refresh_token = refresh_token or str(
+                            nested.get("refresh_token") or nested.get("refreshToken") or ""
+                        ).strip()
+                        token_type = str(nested.get("token_type") or token_type).strip() or token_type
+
+            session["access_token"] = access_token
+            session["refresh_token"] = refresh_token
+            session["token_type"] = token_type
+            session["device"] = None
+            session["last_seen"] = time.time()
+
+            token_ctx = _seedr_request_token.set(access_token)
+            try:
+                await seedr_request("/user")
+            except SeedrError:
+                _clear_seedr_session_token(session_id)
+                raise
+            finally:
+                _seedr_request_token.reset(token_ctx)
+
+            return {"status": "connected", "connected": True}
+
+        error_code = ""
+        error_message = ""
+        if isinstance(data, dict):
+            error_code = str(data.get("error") or data.get("code") or "").strip().lower()
+            error_message = str(
+                data.get("error_description")
+                or data.get("message")
+                or data.get("error")
+                or ""
+            ).strip()
+
+        pending = (
+            response.status_code in {400, 409, 428}
+            and (
+                not error_code
+                or "pending" in error_code
+                or "authorize" in error_code
+                or "not_authorized" in error_code
+                or "not approved" in error_message.lower()
+            )
+        )
+        if pending:
+            return {
+                "status": "pending",
+                "connected": False,
+                "expiresIn": max(0, int(expires_at - time.time())),
+                "interval": max(2, min(30, int(float(device.get("interval") or 5)))),
+            }
+
+        if response.status_code >= 400:
+            if response.status_code == 401:
+                session["device"] = None
+                return {
+                    "status": "error",
+                    "connected": False,
+                    "message": "Seedr rejected this authorization request.",
+                }
+            return {
+                "status": "error",
+                "connected": False,
+                "message": error_message or seedr_error_message(response.status_code, data, raw),
+            }
+
+        return {
+            "status": "pending",
+            "connected": False,
+            "expiresIn": max(0, int(expires_at - time.time())),
+        }
+    except SeedrError:
+        raise
+    except Exception as exc:
+        logger.info("Seedr device authorization poll failed: %s", exc)
+        return {
+            "status": "pending",
+            "connected": False,
+            "expiresIn": max(0, int(expires_at - time.time())),
+        }
+
+
+@app.post("/api/seedr/connect/disconnect")
+async def seedr_connect_disconnect(request: Request):
+    session_id = _seedr_request_session_id.get().strip()
+    _clear_seedr_session_token(session_id)
+    return {"status": "disconnected", "connected": False}
+
+
 @app.get("/api/seedr/token-diagnostic")
 async def seedr_token_diagnostic():
-    if not SEEDR_TOKEN:
+    if not current_seedr_token():
         return {
             "configured": False,
             "code": "SEEDR_TOKEN_MISSING",
@@ -2583,7 +3371,7 @@ async def seedr_token_diagnostic():
             "checks": {},
         }
 
-    token = normalize_seedr_token(SEEDR_TOKEN)
+    token = normalize_seedr_token(current_seedr_token())
     fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()[:12] if token else None
 
     async def check(path: str) -> dict[str, Any]:
@@ -2601,14 +3389,14 @@ async def seedr_token_diagnostic():
         "tokenLength": len(token),
         "tokenFingerprint": fingerprint,
         "checks": {
-            "user": await check("/user"),
+            "user": await check("/tasks" if _seedr_session_auth_mode(_seedr_request_session_id.get().strip()) == "pat" else "/user"),
         },
     }
 
 
 @app.get("/api/seedr/auth-status")
 async def seedr_auth_status():
-    if not SEEDR_TOKEN:
+    if not current_seedr_token():
         return {
             "configured": False,
             "authenticated": False,
@@ -2620,7 +3408,9 @@ async def seedr_auth_status():
         # The old working integration treats a successful /user call as the
         # authentication test. Do the same here; /user is explicitly documented
         # by Seedr for Bearer-authenticated requests.
-        await seedr_request("/user")
+        await seedr_request(
+            "/tasks" if _seedr_session_auth_mode(_seedr_request_session_id.get().strip()) == "pat" else "/user"
+        )
         return {
             "configured": True,
             "authenticated": True,
@@ -2638,31 +3428,46 @@ async def seedr_auth_status():
 
 @app.get("/api/seedr/quota")
 async def seedr_quota():
-    if not SEEDR_TOKEN:
+    if not current_seedr_token():
         return {"configured": False, "maxSpace": 0, "usedSpace": 0, "remainingSpace": 0}
 
     try:
-        result = seedr_data(await seedr_request("/user"))
+        is_pat = _seedr_session_auth_mode(_seedr_request_session_id.get().strip()) == "pat"
+        result = seedr_data(await seedr_request("/fs/root/contents" if is_pat else "/user"))
         storage = result.get("account", {}).get("storage", {}) if isinstance(result, dict) else {}
         if not isinstance(storage, dict):
             storage = result.get("storage", {}) if isinstance(result, dict) else {}
         result_dict = result if isinstance(result, dict) else {}
-        max_space = int(float(
-            storage.get("limit")
-            or storage.get("max_space")
-            or storage.get("maxSpace")
-            or result_dict.get("max_space", 0)
-            or result_dict.get("space_max", 0)
-            or 0
-        ))
-        used = int(float(
-            storage.get("used")
-            or storage.get("used_space")
-            or storage.get("usedSpace")
-            or result_dict.get("used_space", 0)
-            or result_dict.get("space_used", 0)
-            or 0
-        ))
+        if is_pat:
+            max_space = int(float(
+                result_dict.get("space_max", 0)
+                or result_dict.get("max_space", 0)
+                or result_dict.get("maxSpace", 0)
+                or storage.get("limit", 0)
+            ))
+            used = int(float(
+                result_dict.get("space_used", 0)
+                or result_dict.get("used_space", 0)
+                or result_dict.get("usedSpace", 0)
+                or storage.get("used", 0)
+            ))
+        else:
+            max_space = int(float(
+                storage.get("limit")
+                or storage.get("max_space")
+                or storage.get("maxSpace")
+                or result_dict.get("max_space", 0)
+                or result_dict.get("space_max", 0)
+                or 0
+            ))
+            used = int(float(
+                storage.get("used")
+                or storage.get("used_space")
+                or storage.get("usedSpace")
+                or result_dict.get("used_space", 0)
+                or result_dict.get("space_used", 0)
+                or 0
+            ))
     except SeedrError:
         raise
     except Exception as exc:
@@ -2687,145 +3492,120 @@ async def seedr_quota():
         "remainingSpace": max(0, max_space - used),
     }
 
-def build_seedr_unwanted_bitmap(file_count: int, selected_indexes: list[int]) -> str:
-    """Build Seedr's base64 unwanted-file bitmap from torrent metadata indexes.
+async def _prepare_seedr_space(required_bytes: int) -> list[dict[str, Any]]:
+    """Free the oldest completed Seedr torrent folders when a new torrent needs more space."""
+    required = max(0, int(required_bytes or 0))
+    if required <= 0:
+        return []
 
-    Seedr's documented unwanted API uses one bit per file index. We derive the
-    bitmap from the metadata already shown to the user, so no Seedr task-list
-    or filesystem endpoint is required before selection is applied.
-    """
-    count = max(0, int(file_count))
-    selected = {
-        int(index)
-        for index in selected_indexes
-        if isinstance(index, int) and 0 <= int(index) < count
-    }
-    raw = bytearray((count + 7) // 8)
+    quota = await seedr_quota()
+    remaining = int(quota.get("remainingSpace") or 0)
+    if remaining >= required:
+        return []
 
-    # Seedr's documented bitmap example and the existing integration use
-    # least-significant-bit-first indexing.
-    for index in range(count):
-        if index in selected:
+    library = await get_seedr_metadata_tree(force_refresh=True)
+    folders = [
+        folder for folder in (library.get("folders") or [])
+        if isinstance(folder, dict)
+        and str(folder.get("folderId") or folder.get("id") or "").strip()
+        and str(folder.get("folderId") or folder.get("id") or "").strip() != "0"
+    ]
+
+    # Prefer actual Seedr task timestamps so the oldest completed torrent is
+    # removed first. Fall back to the library order when a provider response
+    # does not expose a timestamp.
+    task_meta: dict[str, dict[str, Any]] = {}
+    active_folder_ids: set[str] = set()
+    try:
+        tasks_payload = seedr_data(await seedr_request("/tasks"))
+        for raw_task in arr(tasks_payload, ("tasks", "torrents", "items")):
+            task = unwrap_seedr_task(seedr_data(raw_task))
+            if not task:
+                continue
+            folder_id = seedr_task_folder_id(task)
+            if not folder_id:
+                continue
+            if not task_complete(task):
+                active_folder_ids.add(str(folder_id))
+            task_meta[str(folder_id)] = task
+    except (HTTPException, SeedrError):
+        pass
+
+    def task_timestamp(task: dict[str, Any]) -> float:
+        for key in (
+            "created_at", "createdAt", "created", "added_at", "addedAt",
+            "time_added", "timeAdded", "timestamp", "date_added", "dateAdded",
+        ):
+            value = task.get(key)
+            if isinstance(value, (int, float)) and value > 0:
+                return float(value if value < 10_000_000_000 else value / 1000)
+            if isinstance(value, str) and value.strip():
+                try:
+                    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                    return parsed.timestamp()
+                except Exception:
+                    continue
+        return 0.0
+
+    candidates: list[tuple[int, float, dict[str, Any]]] = []
+    for index, folder in enumerate(folders):
+        folder_id = str(folder.get("folderId") or folder.get("id") or "").strip()
+        if not folder_id or folder_id in active_folder_ids:
             continue
-        raw[index // 8] |= 1 << (index % 8)
+        task = task_meta.get(folder_id, {})
+        candidates.append((index, task_timestamp(task), folder))
 
-    return base64.b64encode(bytes(raw)).decode("ascii")
+    candidates.sort(key=lambda item: (item[1] if item[1] > 0 else float("inf"), item[0]))
 
+    deleted: list[dict[str, Any]] = []
+    for _, _, folder in candidates:
+        if remaining >= required:
+            break
 
-async def apply_seedr_file_selection(
-    tid: str,
-    file_count: int,
-    selected_indexes: list[int],
-) -> dict[str, Any]:
-    """Apply selection without pause/resume or collection-level task APIs."""
-    bitmap = build_seedr_unwanted_bitmap(file_count, selected_indexes)
+        folder_id = str(folder.get("folderId") or folder.get("id") or "").strip()
+        folder_name = str(folder.get("torrentName") or folder.get("name") or folder_id).strip()
+        folder_size = max(0, int(float(folder.get("totalSize") or 0)))
 
-    try:
-        await seedr_request(
-            f"/tasks/{quote(str(tid))}/unwanted",
-            "POST",
-            {"unwanted": bitmap},
-            base_url=SEEDR_V2_BASE,
-        )
-    except SeedrError as exc:
-        if exc.status_code in (401, 403, 404, 405):
-            raise SeedrError(
-                "SEEDR_SELECTIVE_FILES_UNSUPPORTED",
-                exc.status_code,
-                "This Seedr account/token does not allow the task file-selection endpoint. The torrent was not reported as selectively downloaded.",
-            ) from exc
-        raise
-
-    # Verification is intentionally best-effort. GET /unwanted is not required
-    # for the free-account path because some accounts expose POST but deny the
-    # read-back endpoint. A successful POST is the authoritative write result.
-    return {
-        "applied": True,
-        "fileCount": file_count,
-        "selectedIndexes": sorted(set(selected_indexes)),
-        "unwanted": bitmap,
-    }
-
-
-@app.post("/api/seedr/tasks/add-selected")
-async def seedr_add_selected(request: Request):
-    """Compatibility endpoint for the frontend multi-file Seedr selector.
-    
-    The actual Seedr task/selection implementation lives in seedr_add().
-    Keep this route as the stable JSON contract expected by the UI instead of
-    duplicating Seedr task creation and selection logic.
-    """
-    try:
-        body = await request.json()
-    except Exception as exc:
-        raise HTTPException(400, "Seedr selected-file request must contain valid JSON.") from exc
-
-    if not isinstance(body, dict):
-        raise HTTPException(400, "Seedr selected-file request body must be a JSON object.")
-
-    magnet = str(body.get("magnet") or "").strip()
-    raw_files = body.get("files")
-    selected_indexes = body.get("selectedIndexes")
-
-    if not magnet:
-        raise HTTPException(400, "A magnet link is required.")
-    if not isinstance(raw_files, list) or not raw_files:
-        raise HTTPException(400, "Torrent file metadata is required.")
-    if not isinstance(selected_indexes, list) or not selected_indexes:
-        raise HTTPException(400, "Select at least one file.")
-
-    normalized_manifest: list[dict[str, Any]] = []
-    for position, item in enumerate(raw_files):
-        if not isinstance(item, dict):
-            raise HTTPException(400, "Invalid torrent file metadata.")
         try:
-            index = int(item.get("index", position))
-            size = int(float(item.get("size") or 0))
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(400, "Invalid torrent file metadata.") from exc
-        normalized_manifest.append({
-            "index": index,
-            "name": str(item.get("name") or f"File {index}"),
-            "size": max(0, size),
-            "priority": 1 if index in {int(v) for v in selected_indexes if str(v).strip().lstrip("-").isdigit()} else 0,
-        })
+            await seedr_request(f"/fs/folder/{quote(folder_id)}", "DELETE")
+            deleted.append({
+                "folderId": folder_id,
+                "name": folder_name,
+                "size": folder_size,
+            })
+            remaining += folder_size
+            _seedr_folder_cache.pop(folder_id, None)
+        except (HTTPException, SeedrError) as exc:
+            logger.warning(
+                "Seedr automatic cleanup skipped folder=%s status=%s detail=%s",
+                folder_id,
+                getattr(exc, "status_code", 0),
+                getattr(exc, "detail", str(exc)),
+            )
 
-    try:
-        normalized_selected = sorted({
-            int(value)
-            for value in selected_indexes
-        })
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(400, "Invalid selected file index.") from exc
+    global _seedr_metadata_cache
+    _seedr_metadata_cache = None
+    _seedr_folder_cache.clear()
 
-    result = await seedr_add(
-        MagnetRequest(
-            magnet=magnet,
-            folder_id=body.get("folder_id"),
-            torrent_name=body.get("torrentName"),
-            size=sum(int(item["size"]) for item in normalized_manifest),
-            selected_indexes=normalized_selected,
-            manifest=normalized_manifest,
+    if remaining < required:
+        raise SeedrError(
+            "SEEDR_QUOTA_UNAVAILABLE",
+            413,
+            "Seedr does not have enough space for this torrent, even after removing older completed files.",
         )
-    )
 
-    return {
-        "backend": "seedr",
-        "taskId": result.get("task_id") or result.get("id") or (result.get("task") or {}).get("id"),
-        "created": True,
-        "torrentName": result.get("torrent_name") or body.get("torrentName") or "",
-        "folderId": result.get("folder_id"),
-        "selectedIndexes": normalized_selected,
-        "selectedSize": result.get("selectedSize"),
-        "totalSize": result.get("totalSize"),
-        "writeAccepted": bool(result.get("selectionApplied")),
-        "writeError": result.get("selectionError"),
-        "task": result.get("task"),
-    }
+    logger.info(
+        "Seedr automatic cleanup freed=%s required=%s deleted=%s",
+        sum(int(item.get("size") or 0) for item in deleted),
+        required,
+        len(deleted),
+    )
+    return deleted
+
 
 @app.post("/api/seedr/add")
 async def seedr_add(request: Request):
-    if not SEEDR_TOKEN:
+    if not current_seedr_token():
         raise HTTPException(503, "Seedr is not configured")
 
     # Direct Seedr mode:
@@ -2845,10 +3625,48 @@ async def seedr_add(request: Request):
     if not info_hash(raw_magnet):
         raise HTTPException(400, "A valid BTIH magnet link is required")
 
-    configured_folder = str(SEEDR_LIBRARY_FOLDER_ID).strip()
-    folder = int(configured_folder) if configured_folder.isdigit() else 0
+    requested_folder = str(payload.get("folder_id") or "").strip()
+    folder = int(requested_folder) if requested_folder.isdigit() else 0
+    auto_cleanup = bool(payload.get("auto_cleanup"))
+    required_bytes = max(0, int(float(payload.get("required_bytes") or 0)))
 
-    task = unwrap_seedr_task(await add_task(raw_magnet, folder))
+    session_id = _seedr_request_session_id.get().strip()
+    logger.info(
+        "Seedr add start: session=%s mode=%s magnet_length=%s magnet_info_hash=%s "
+        "requested_folder=%s resolved_folder=%s",
+        _seedr_session_fingerprint(session_id),
+        _seedr_session_auth_mode(session_id),
+        len(raw_magnet),
+        info_hash(raw_magnet),
+        requested_folder or "<none>",
+        folder,
+    )
+
+    deleted_folders: list[dict[str, Any]] = []
+    if auto_cleanup and required_bytes > 0:
+        deleted_folders = await _prepare_seedr_space(required_bytes)
+
+    try:
+        task = unwrap_seedr_task(await add_task(raw_magnet, folder))
+    except SeedrError as exc:
+        logger.exception(
+            "Seedr add failed: session=%s mode=%s code=%s status=%s detail=%s",
+            _seedr_session_fingerprint(session_id),
+            _seedr_session_auth_mode(session_id),
+            exc.code,
+            exc.status_code,
+            exc.detail,
+        )
+        raise
+    except Exception as exc:
+        logger.exception(
+            "Seedr add unexpected failure: session=%s mode=%s exception_type=%s exception=%s",
+            _seedr_session_fingerprint(session_id),
+            _seedr_session_auth_mode(session_id),
+            type(exc).__name__,
+            str(exc)[:2000],
+        )
+        raise
     tid = task_id(task)
     if not tid:
         raise HTTPException(502, "Seedr did not return a task id")
@@ -2857,12 +3675,22 @@ async def seedr_add(request: Request):
     task_name = seedr_task_name(task) or f"Torrent {tid}"
     schedule_seedr_cleanup(str(tid), task_name, task_folder_id)
 
+    logger.info(
+        "Seedr add success: session=%s mode=%s task_id=%s folder_id=%s task_name=%s",
+        _seedr_session_fingerprint(session_id),
+        _seedr_session_auth_mode(session_id),
+        tid,
+        task_folder_id or "<none>",
+        task_name[:300],
+    )
+
     return {
         "backend": "seedr",
         "task_id": int(tid) if tid.isdigit() else tid,
         "id": int(tid) if tid.isdigit() else tid,
         "torrent_name": task_name,
         "folder_id": task_folder_id,
+        "deleted_folders": deleted_folders,
     }
 
 def _seedr_file_folder_id(files: list[dict[str, Any]]) -> str:
@@ -2885,7 +3713,7 @@ def _seedr_effective_task_folder_id(
     if file_folder_id and (
         not task_folder_id
         or file_folder_id != task_folder_id
-        or task_folder_id == SEEDR_LIBRARY_FOLDER_ID
+        or task_folder_id == "0"
     ):
         return file_folder_id
     return task_folder_id
@@ -3226,7 +4054,7 @@ async def build_seedr_metadata_tree(
 async def get_seedr_metadata_tree(force_refresh: bool = False) -> dict[str, Any]:
     global _seedr_metadata_cache, _seedr_metadata_task
 
-    if not SEEDR_TOKEN:
+    if not current_seedr_token():
         return {"configured": False, "root": None, "folders": []}
 
     now = asyncio.get_running_loop().time()
@@ -3248,9 +4076,7 @@ async def get_seedr_metadata_tree(force_refresh: bool = False) -> dict[str, Any]
         # Seedr's account root is exposed through a dedicated endpoint.
         # Keep SEEDR_LIBRARY_FOLDER_ID as an optional override for deployments
         # that want to start from a specific existing folder.
-        root = SEEDR_LIBRARY_FOLDER_ID
-        if not root.isdigit():
-            root = "0"
+        root = "0"
 
         # Resolve human-readable torrent names from Seedr task metadata in one
         # call. The folder contents/counts and task list are independent, so
@@ -3364,7 +4190,7 @@ async def seedr_library_metadata(fresh: bool = Query(False)):
 
 @app.get("/api/seedr/folders/{folder_id}/contents")
 async def seedr_folder_contents(folder_id: str):
-    if not SEEDR_TOKEN:
+    if not current_seedr_token():
         return {"configured": False, "folderId": folder_id, "files": [], "folders": []}
 
     payload = await seedr_folder_payload(folder_id)
@@ -3391,12 +4217,10 @@ async def seedr_folder_contents(folder_id: str):
 async def seedr_files():
     # Backwards-compatible full file endpoint. New UI code uses
     # /api/seedr/library + /api/seedr/folders/{id}/contents instead.
-    if not SEEDR_TOKEN:
+    if not current_seedr_token():
         return {"configured": False, "files": []}
 
-    root = SEEDR_LIBRARY_FOLDER_ID
-    if not root.isdigit():
-        return {"configured": True, "files": []}
+    root = "0"
 
     result = await collect_folder(root, "/Torrent Studio")
     unique: list[dict[str, Any]] = []
@@ -3534,11 +4358,11 @@ def _seedr_media_url(file_id: str, media_type: str) -> str:
         endpoint = f"/media/mp3/{quote(file_id)}"
     else:
         raise HTTPException(400, "Unsupported Seedr media type")
-    return SEEDR_MEDIA_BASE.rstrip("/") + endpoint + "?access_token=" + quote(SEEDR_TOKEN, safe="")
+    return SEEDR_MEDIA_BASE.rstrip("/") + endpoint + "?access_token=" + quote(current_seedr_token(), safe="")
 
 def seedr_v2_bearer_token() -> str:
     """Accept a raw Seedr PAT or MediaFusion-style base64 JSON token."""
-    raw = SEEDR_TOKEN.strip()
+    raw = current_seedr_token().strip()
     if not raw:
         return ""
     try:
@@ -3553,7 +4377,7 @@ def seedr_v2_bearer_token() -> str:
 
 
 async def seedr_v2_request(path: str) -> Any:
-    if not SEEDR_TOKEN:
+    if not current_seedr_token():
         raise HTTPException(503, "Seedr is not configured")
     bearer = seedr_v2_bearer_token()
     if not bearer:
@@ -3576,12 +4400,15 @@ async def seedr_v2_request(path: str) -> Any:
         )
     return data
 
-async def seedr_v2_video_url(file_id: str) -> str:
+async def seedr_v2_video_url(file_id: str, audio_index: int | None = None) -> str:
     """Use Seedr V2 current presentation URL, with direct-download fallback."""
     if not file_id:
         return ""
     try:
-        payload = seedr_data(await seedr_v2_request(f"/presentations/file/{quote(file_id)}/video"))
+        presentation_path = f"/presentations/file/{quote(file_id)}/video"
+        if audio_index is not None and audio_index >= 0:
+            presentation_path += "?" + urlencode({"audio": str(audio_index)})
+        payload = seedr_data(await seedr_v2_request(presentation_path))
         if isinstance(payload, dict):
             link = payload.get("link")
             link_url = link.get("url") if isinstance(link, dict) else ""
@@ -3589,7 +4416,14 @@ async def seedr_v2_video_url(file_id: str) -> str:
             if url.startswith(("http://", "https://")):
                 return url
     except HTTPException:
-        pass
+        # Never fall back to the default presentation for an alternate-audio
+        # request, otherwise the UI can appear to switch while playing the
+        # original audio track again.
+        if audio_index is not None:
+            return ""
+
+    if audio_index is not None:
+        return ""
 
     try:
         payload = seedr_data(await seedr_v2_request(f"/download/file/{quote(file_id)}/url"))
@@ -3791,41 +4625,36 @@ async def seedr_file_stream(
     type: str = Query("video"),
     name: str = Query(""),
 ):
-    if not SEEDR_TOKEN:
+    if not current_seedr_token():
         raise HTTPException(503, "Seedr is not configured")
 
     resolved_id = await resolve_seedr_stream_id(file_id, name)
 
     if type == "video":
-        # Prefer the HLS manifest first. This is important for dual-audio and
-        # subtitle-bearing files because Hls.js can only expose alternate
-        # renditions when the browser receives an HLS master/media playlist.
-        # A direct video presentation is retained as the final fallback.
-        hls_error: HTTPException | None = None
-        presentation_url = ""
-
-        try:
-            await _fetch_seedr_hls_manifest(resolved_id)
-            try:
-                presentation_url = await seedr_v2_video_url(resolved_id)
-            except HTTPException:
-                presentation_url = ""
-            return {
-                "url": "/api/seedr/hls/" + quote(resolved_id, safe=""),
-                "externalUrl": presentation_url or _seedr_media_url(resolved_id, "video"),
-                "name": name or resolved_id,
-                "resolvedFileId": resolved_id,
-                "protocol": "hls",
-            }
-        except HTTPException as exc:
-            hls_error = exc
-
-        # HLS preparation failed, so use the Seedr presentation/direct proxy.
-        # This keeps ordinary single-track files playable even when HLS is
-        # temporarily unavailable.
+        # Restore the tested direct-browser-stream strategy from
+        # fix-seedr-direct-browser-stream:
+        #   1) ask Seedr V2 for its presentation URL;
+        #   2) if it is a browser-playable direct presentation, proxy it with
+        #      Range support;
+        #   3) otherwise use the existing HLS proxy.
         presentation_url = await seedr_v2_video_url(resolved_id)
-        if presentation_url:
+        is_hls_presentation = bool(presentation_url and await _presentation_is_hls(presentation_url))
+
+        # Prefer Seedr's own non-HLS presentation first. This is the full-duration
+        # path: the browser receives the real presentation through a Range-aware
+        # proxy, so the video's native duration/seekable timeline is preserved
+        # even when the source file contains multiple audio tracks.
+        # Alternate audio tracks are switched independently through Seedr V2 by
+        # MediaPlayerModal; Render does not transcode the movie.
+        if (presentation_url and not is_hls_presentation):
+            logger.info(
+                "Seedr playback resolved to direct presentation: file=%s protocol=direct multi_audio_check=skipped",
+                resolved_id,
+            )
             return {
+                # Explicitly request audio track 0 from Seedr's V2
+                # presentation. Some single-audio files expose a silent
+                # default presentation unless the audio rendition is named.
                 "url": "/api/seedr/media/video/" + quote(resolved_id, safe=""),
                 "externalUrl": presentation_url,
                 "name": name or resolved_id,
@@ -3833,7 +4662,46 @@ async def seedr_file_stream(
                 "protocol": "direct",
             }
 
-        raise hls_error or HTTPException(502, "Seedr could not prepare a playable video stream")
+        # Use the synthetic HLS path only when Seedr did not provide a native
+        # non-HLS presentation. This preserves the HLS fallback for files that
+        # need it without forcing compatible multi-audio files through Render.
+        try:
+            dynamic_info = await _get_seedr_dynamic_hls_info(resolved_id)
+        except HTTPException:
+            dynamic_info = None
+
+        if dynamic_info and len(dynamic_info.get("audio") or []) > 1:
+            logger.info(
+                "Seedr playback resolved to HLS multi-audio fallback: file=%s audio_tracks=%d",
+                resolved_id,
+                len(dynamic_info.get("audio") or []),
+            )
+            return {
+                "url": "/api/seedr/hls-master/" + quote(resolved_id, safe=""),
+                "externalUrl": presentation_url or _seedr_media_url(resolved_id, "video"),
+                "name": name or resolved_id,
+                "resolvedFileId": resolved_id,
+                "protocol": "hls-multi-audio",
+            }
+        try:
+            await _fetch_seedr_hls_manifest(resolved_id)
+            return {
+                "url": "/api/seedr/hls/" + quote(resolved_id, safe=""),
+                "externalUrl": presentation_url or _seedr_media_url(resolved_id, "video"),
+                "name": name or resolved_id,
+                "resolvedFileId": resolved_id,
+                "protocol": "hls",
+            }
+        except HTTPException:
+            if presentation_url:
+                return {
+                    "url": "/api/seedr/media/video/" + quote(resolved_id, safe=""),
+                    "externalUrl": presentation_url,
+                    "name": name or resolved_id,
+                    "resolvedFileId": resolved_id,
+                    "protocol": "direct",
+                }
+            raise
 
     return {
         "url": "/api/seedr/media/audio/" + quote(resolved_id, safe=""),
@@ -3845,7 +4713,7 @@ async def seedr_file_stream(
 
 @app.get("/api/seedr/hls/{file_id}")
 async def seedr_hls_manifest(file_id: str):
-    if not SEEDR_TOKEN:
+    if not current_seedr_token():
         raise HTTPException(503, "Seedr is not configured")
 
     manifest, final_url = await _fetch_seedr_hls_manifest(file_id)
@@ -3858,7 +4726,6 @@ async def seedr_hls_manifest(file_id: str):
         media_type="application/vnd.apple.mpegurl",
         headers={
             "Cache-Control": "no-store",
-            "Access-Control-Allow-Origin": "*",
             "X-Content-Type-Options": "nosniff",
         },
     )
@@ -3866,7 +4733,7 @@ async def seedr_hls_manifest(file_id: str):
 
 @app.get("/api/seedr/hls/{file_id}/resource")
 async def seedr_hls_resource(request: Request, file_id: str, u: str = Query(...)):
-    if not SEEDR_TOKEN:
+    if not current_seedr_token():
         raise HTTPException(503, "Seedr is not configured")
 
     target = _decode_hls_target(u)
@@ -3935,6 +4802,629 @@ async def seedr_hls_resource(request: Request, file_id: str, u: str = Query(...)
     )
 
 
+async def _seedr_media_source_url(file_id: str) -> str:
+    result = await download_url(file_id)
+    url = str(result.get("url") or "").strip()
+    if not url:
+        raise HTTPException(502, "Seedr returned no media URL")
+    return url
+
+
+async def _ffprobe_seedr_file(file_id: str) -> dict[str, Any]:
+    """Inspect the original Seedr file without downloading it into Render."""
+    source_url = await _seedr_media_source_url(file_id)
+    command = [
+        "ffprobe",
+        "-v", "error",
+        "-print_format", "json",
+        "-show_streams",
+        "-show_format",
+        "-analyzeduration", "10M",
+        "-probesize", "20M",
+        source_url,
+    ]
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=45)
+    except asyncio.TimeoutError as exc:
+        try:
+            process.kill()
+            await process.wait()
+        except Exception:
+            pass
+        raise HTTPException(504, "Media track inspection timed out") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(503, "FFmpeg is not installed on the media server") from exc
+
+    if process.returncode != 0:
+        detail = stderr.decode("utf-8", errors="replace")[-1000:]
+        raise HTTPException(502, detail or "FFprobe could not inspect the Seedr file")
+
+    try:
+        return json.loads(stdout.decode("utf-8", errors="replace"))
+    except Exception as exc:
+        raise HTTPException(502, "FFprobe returned invalid metadata") from exc
+
+
+_SEEDR_MEDIA_INFO_CACHE_SECONDS = 600
+_seedr_media_info_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def _track_language(stream: dict[str, Any]) -> str:
+    tags = stream.get("tags") if isinstance(stream.get("tags"), dict) else {}
+    return str(tags.get("language") or "").strip().lower()
+
+
+def _track_title(stream: dict[str, Any], fallback: str) -> str:
+    tags = stream.get("tags") if isinstance(stream.get("tags"), dict) else {}
+    return str(tags.get("title") or tags.get("handler_name") or fallback).strip()
+
+
+
+_DYNAMIC_HLS_SEGMENT_SECONDS = 6.0
+_SEEDR_DYNAMIC_HLS_CACHE_SECONDS = 600
+_seedr_dynamic_hls_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_dynamic_hls_segment_semaphore = asyncio.Semaphore(2)
+
+
+async def _get_seedr_dynamic_hls_info(file_id: str) -> dict[str, Any]:
+    """Return cached metadata used to build a lightweight on-demand HLS presentation."""
+    now = asyncio.get_running_loop().time()
+    cached = _seedr_dynamic_hls_cache.get(file_id)
+    if cached and cached[0] > now:
+        return cached[1]
+
+    data = await _ffprobe_seedr_file(file_id)
+    streams = data.get("streams") if isinstance(data, dict) else []
+    if not isinstance(streams, list):
+        streams = []
+
+    video_streams = [
+        stream for stream in streams
+        if isinstance(stream, dict)
+        and str(stream.get("codec_type") or "").lower() == "video"
+    ]
+    audio_streams = [
+        stream for stream in streams
+        if isinstance(stream, dict)
+        and str(stream.get("codec_type") or "").lower() == "audio"
+    ]
+    if not video_streams:
+        raise HTTPException(404, "Seedr file has no video stream")
+    if len(audio_streams) < 2:
+        raise HTTPException(409, "Seedr file does not contain multiple audio tracks")
+
+    format_info = data.get("format") if isinstance(data.get("format"), dict) else {}
+    duration = float(format_info.get("duration") or 0)
+    if duration <= 0:
+        durations = [
+            float(stream.get("duration") or 0)
+            for stream in streams
+            if isinstance(stream, dict)
+        ]
+        duration = max(durations or [0])
+
+    if duration <= 0:
+        raise HTTPException(502, "Seedr media duration could not be determined")
+
+    video = video_streams[0]
+    result = {
+        "duration": duration,
+        "video": {
+            "codec": str(video.get("codec_name") or "").lower(),
+            "width": int(video.get("width") or 0),
+            "height": int(video.get("height") or 0),
+            "bitRate": int(float(video.get("bit_rate") or 0)) if str(video.get("bit_rate") or "").strip() else 0,
+        },
+        "audio": [
+            {
+                "index": index,
+                "language": _track_language(stream),
+                "title": _track_title(stream, ""),
+                "codec": str(stream.get("codec_name") or "").lower(),
+                "channels": int(stream.get("channels") or 0),
+                "default": bool(
+                    (stream.get("disposition") if isinstance(stream.get("disposition"), dict) else {}).get("default")
+                ),
+            }
+            for index, stream in enumerate(audio_streams)
+        ],
+    }
+    _seedr_dynamic_hls_cache[file_id] = (
+        now + _SEEDR_DYNAMIC_HLS_CACHE_SECONDS,
+        result,
+    )
+    return result
+
+
+def _dynamic_hls_track_label(track: dict[str, Any], index: int) -> tuple[str, str]:
+    code = str(track.get("language") or "").strip().lower()
+    language_names = {
+        "en": "English", "eng": "English",
+        "hi": "Hindi", "hin": "Hindi",
+        "fr": "French", "fra": "French",
+        "de": "German", "deu": "German",
+        "es": "Spanish", "spa": "Spanish",
+        "it": "Italian", "ita": "Italian",
+        "pt": "Portuguese", "por": "Portuguese",
+        "ru": "Russian", "rus": "Russian",
+        "ja": "Japanese", "jpn": "Japanese",
+        "ko": "Korean", "kor": "Korean",
+        "zh": "Chinese", "zho": "Chinese",
+        "ar": "Arabic", "ara": "Arabic",
+        "bn": "Bengali", "ben": "Bengali",
+    }
+    language = language_names.get(code, code.upper() if code else f"Audio {index + 1}")
+    title = str(track.get("title") or "").strip()
+    if title and title.lower() != language.lower():
+        return language, f"{language} ({title})"
+    return language, language
+
+
+def _dynamic_hls_playlist(file_id: str, kind: str, track: int | None, info: dict[str, Any]) -> str:
+    duration = float(info["duration"])
+    segment = _DYNAMIC_HLS_SEGMENT_SECONDS
+    count = max(1, int((duration + segment - 1e-6) // segment))
+    if duration > count * segment:
+        count += 1
+
+    lines = [
+        "#EXTM3U",
+        "#EXT-X-VERSION:3",
+        f"#EXT-X-TARGETDURATION:{int(segment)}",
+        "#EXT-X-PLAYLIST-TYPE:VOD",
+        "#EXT-X-MEDIA-SEQUENCE:0",
+    ]
+
+    for index in range(count):
+        start = index * segment
+        length = min(segment, max(0.001, duration - start))
+        if kind == "video":
+            uri = (
+                "/api/seedr/hls-master/"
+                + quote(file_id, safe="")
+                + f"/video/{index}.ts"
+            )
+        else:
+            uri = (
+                "/api/seedr/hls-master/"
+                + quote(file_id, safe="")
+                + f"/audio/{int(track or 0)}/{index}.ts"
+            )
+        lines.extend([f"#EXTINF:{length:.3f},", uri])
+
+    lines.append("#EXT-X-ENDLIST")
+    return "\n".join(lines) + "\n"
+
+
+@app.get("/api/seedr/hls-master/{file_id}")
+async def seedr_dynamic_hls_master(file_id: str):
+    if not current_seedr_token():
+        raise HTTPException(503, "Seedr is not configured")
+
+    info = await _get_seedr_dynamic_hls_info(file_id)
+    audio_group = "seedr-audio"
+    lines = ["#EXTM3U", "#EXT-X-VERSION:3"]
+
+    for index, track in enumerate(info["audio"]):
+        language, label = _dynamic_hls_track_label(track, index)
+        default = "YES" if track.get("default") or (index == 0 and not any(item.get("default") for item in info["audio"])) else "NO"
+        auto_select = "YES"
+        lines.append(
+            "#EXT-X-MEDIA:"
+            f'TYPE=AUDIO,GROUP-ID="{audio_group}",NAME="{label.replace(chr(34), "_")}",'
+            f'LANGUAGE="{language.lower()}",DEFAULT={default},AUTOSELECT={auto_select},'
+            f'URI="/api/seedr/hls-master/{quote(file_id, safe="")}/audio/{index}.m3u8"'
+        )
+
+    video = info["video"]
+    codecs = str(video.get("codec") or "").lower()
+    codec_string = "avc1.42E01E,mp4a.40.2"
+    if codecs in {"h264", "avc1"}:
+        codec_string = "avc1.42E01E,mp4a.40.2"
+    elif codecs in {"hevc", "h265"}:
+        codec_string = "hvc1,mp4a.40.2"
+    elif codecs:
+        codec_string = codecs + ",mp4a.40.2"
+
+    bandwidth = max(500_000, int(video.get("bitRate") or 4_000_000))
+    resolution = ""
+    if int(video.get("width") or 0) and int(video.get("height") or 0):
+        resolution = f',RESOLUTION={int(video["width"])}x{int(video["height"])}'
+
+    lines.extend([
+        f'#EXT-X-STREAM-INF:BANDWIDTH={bandwidth},CODECS="{codec_string}"{resolution},AUDIO="{audio_group}"',
+        f'/api/seedr/hls-master/{quote(file_id, safe="")}/video.m3u8',
+    ])
+    return Response(
+        content="\n".join(lines) + "\n",
+        media_type="application/vnd.apple.mpegurl",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@app.get("/api/seedr/hls-master/{file_id}/video.m3u8")
+async def seedr_dynamic_hls_video_playlist(file_id: str):
+    if not current_seedr_token():
+        raise HTTPException(503, "Seedr is not configured")
+    info = await _get_seedr_dynamic_hls_info(file_id)
+    return Response(
+        content=_dynamic_hls_playlist(file_id, "video", None, info),
+        media_type="application/vnd.apple.mpegurl",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/api/seedr/hls-master/{file_id}/audio/{track}.m3u8")
+async def seedr_dynamic_hls_audio_playlist(file_id: str, track: int):
+    if not current_seedr_token():
+        raise HTTPException(503, "Seedr is not configured")
+    info = await _get_seedr_dynamic_hls_info(file_id)
+    if track < 0 or track >= len(info["audio"]):
+        raise HTTPException(404, "Audio track not found")
+    return Response(
+        content=_dynamic_hls_playlist(file_id, "audio", track, info),
+        media_type="application/vnd.apple.mpegurl",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+async def _run_dynamic_hls_segment(file_id: str, kind: str, segment_index: int, track: int | None = None) -> Response:
+    if not current_seedr_token():
+        raise HTTPException(503, "Seedr is not configured")
+
+    info = await _get_seedr_dynamic_hls_info(file_id)
+    duration = float(info["duration"])
+    segment = _DYNAMIC_HLS_SEGMENT_SECONDS
+    start = segment_index * segment
+    if segment_index < 0 or start >= duration:
+        raise HTTPException(404, "HLS segment not found")
+    length = min(segment, duration - start)
+    source_url = await _seedr_media_source_url(file_id)
+
+    if kind == "audio":
+        if track is None or track < 0 or track >= len(info["audio"]):
+            raise HTTPException(404, "Audio track not found")
+
+        audio_codec = str(info["audio"][track].get("codec") or "").lower()
+        base_command = [
+            "ffmpeg", "-v", "error", "-nostdin",
+            "-ss", f"{start:.3f}",
+            "-i", source_url,
+            "-t", f"{length:.3f}",
+            "-map", f"0:a:{track}",
+            "-vn", "-sn", "-dn",
+        ]
+
+        # Prefer AAC stream-copy on Render Free. If the particular Seedr
+        # source cannot be seek-copied cleanly, retry this segment with the
+        # lightweight AAC encoder instead of returning a 502 to hls.js.
+        copy_audio = audio_codec in {"aac", "mp4a"}
+        if copy_audio:
+            command = base_command + [
+                "-c:a", "copy",
+                "-avoid_negative_ts", "make_zero",
+                "-f", "mpegts",
+                "pipe:1",
+            ]
+        else:
+            command = base_command + [
+                "-c:a", "aac", "-b:a", "192k",
+                "-ac", "2", "-ar", "48000",
+                "-af", "aresample=async=1:first_pts=0",
+                "-avoid_negative_ts", "make_zero",
+                "-f", "mpegts",
+                "pipe:1",
+            ]
+    else:
+        codec = str(info["video"].get("codec") or "").lower()
+        command = [
+            "ffmpeg", "-v", "error", "-nostdin",
+            "-ss", f"{start:.3f}",
+            "-i", source_url,
+            "-t", f"{length:.3f}",
+            "-map", "0:v:0",
+            "-an", "-sn", "-dn",
+        ]
+        if codec in {"h264", "avc1"}:
+            command += [
+                "-c:v", "copy",
+                "-bsf:v", "h264_mp4toannexb",
+            ]
+        else:
+            command += [
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-crf", "23",
+                "-pix_fmt", "yuv420p",
+            ]
+        command += ["-avoid_negative_ts", "make_zero", "-f", "mpegts", "pipe:1"]
+
+    try:
+        # Keep at most two segment jobs active (normally one video + one
+        # audio). This prevents hls.js prefetching from creating a CPU/RAM
+        # spike on the 0.1 CPU / 512 MB Render Free instance.
+        async with _dynamic_hls_segment_semaphore:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await process.communicate()
+
+            # Seedr can expose AAC tracks whose container/timestamps do not
+            # support a clean copy at every seek point. Retry only failed AAC
+            # copies; successful copies remain zero-transcode.
+            if process.returncode != 0 and copy_audio:
+                fallback_command = base_command + [
+                    "-c:a", "aac", "-b:a", "192k",
+                    "-ac", "2", "-ar", "48000",
+                    "-af", "aresample=async=1:first_pts=0",
+                    "-avoid_negative_ts", "make_zero",
+                    "-f", "mpegts",
+                    "pipe:1",
+                ]
+                process = await asyncio.create_subprocess_exec(
+                    *fallback_command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await process.communicate()
+    except FileNotFoundError as exc:
+        raise HTTPException(503, "FFmpeg is not installed on the media server") from exc
+
+    if process.returncode != 0:
+        detail = stderr.decode("utf-8", errors="replace")[-1200:]
+        raise HTTPException(502, detail or "HLS segment generation failed")
+
+    _record_media_bytes(file_id, len(stdout))
+    return Response(
+        content=stdout,
+        media_type="video/mp2t",
+        headers={
+            "Cache-Control": "no-store",
+            "Access-Control-Expose-Headers": "Content-Length",
+        },
+    )
+
+
+@app.get("/api/seedr/hls-master/{file_id}/video/{segment_index}.ts")
+async def seedr_dynamic_hls_video_segment(file_id: str, segment_index: int):
+    return await _run_dynamic_hls_segment(file_id, "video", segment_index)
+
+
+@app.get("/api/seedr/hls-master/{file_id}/audio/{track}/{segment_index}.ts")
+async def seedr_dynamic_hls_audio_segment(file_id: str, track: int, segment_index: int):
+    return await _run_dynamic_hls_segment(file_id, "audio", segment_index, track)
+
+
+
+@app.get("/api/seedr/media-info/{file_id}")
+async def seedr_media_info(file_id: str):
+    if not current_seedr_token():
+        raise HTTPException(503, "Seedr is not configured")
+
+    cached = _seedr_media_info_cache.get(file_id)
+    now = asyncio.get_running_loop().time()
+    if cached and cached[0] > now:
+        return cached[1]
+
+    data = await _ffprobe_seedr_file(file_id)
+    streams = data.get("streams") if isinstance(data, dict) else []
+    if not isinstance(streams, list):
+        streams = []
+
+    language_names = {
+        "en": "English", "eng": "English",
+        "hi": "Hindi", "hin": "Hindi",
+        "fr": "French", "fra": "French",
+        "de": "German", "deu": "German",
+        "es": "Spanish", "spa": "Spanish",
+        "it": "Italian", "ita": "Italian",
+        "pt": "Portuguese", "por": "Portuguese",
+        "ru": "Russian", "rus": "Russian",
+        "ja": "Japanese", "jpn": "Japanese",
+        "ko": "Korean", "kor": "Korean",
+        "zh": "Chinese", "zho": "Chinese",
+        "ar": "Arabic", "ara": "Arabic",
+        "bn": "Bengali", "ben": "Bengali",
+    }
+
+    audio_tracks = []
+    subtitle_tracks = []
+    audio_index = 0
+    subtitle_index = 0
+
+    for stream in streams:
+        if not isinstance(stream, dict):
+            continue
+        codec_type = str(stream.get("codec_type") or "").lower()
+        tags = stream.get("tags") if isinstance(stream.get("tags"), dict) else {}
+        lang = _track_language(stream)
+        title = _track_title(stream, "")
+        disposition = stream.get("disposition") if isinstance(stream.get("disposition"), dict) else {}
+        if codec_type == "audio":
+            language_label = language_names.get(lang, lang.upper() if lang else "")
+            # Keep the raw mix title separate from the language. The frontend
+            # combines them into a clearer label such as "English (BD 5.1)".
+            label = title or language_label or f"Audio {audio_index + 1}"
+            audio_tracks.append({
+                "index": audio_index,
+                "streamIndex": int(stream.get("index") or 0),
+                "language": lang,
+                "title": label,
+                "codec": str(stream.get("codec_name") or "").upper(),
+                "channels": int(stream.get("channels") or 0),
+                "default": bool(disposition.get("default")),
+            })
+            audio_index += 1
+        elif codec_type == "subtitle":
+            codec = str(stream.get("codec_name") or "").lower()
+            # Bitmap subtitle codecs cannot be represented as browser WebVTT.
+            if codec in {"hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"}:
+                continue
+            language_label = language_names.get(lang, lang.upper() if lang else "")
+            label = title or language_label or f"Subtitle {subtitle_index + 1}"
+            subtitle_tracks.append({
+                "index": subtitle_index,
+                "streamIndex": int(stream.get("index") or 0),
+                "language": lang,
+                "title": label,
+                "codec": str(stream.get("codec_name") or "").upper(),
+                "url": f"/api/seedr/media-info/{quote(file_id, safe='')}/subtitle?track={subtitle_index}&name={quote(label, safe='')}",
+            })
+            subtitle_index += 1
+
+    result = {
+        "name": str((data.get("format") or {}).get("filename") or file_id) if isinstance(data, dict) else file_id,
+        "audioTracks": audio_tracks,
+        "subtitleTracks": subtitle_tracks,
+    }
+    _seedr_media_info_cache[file_id] = (now + _SEEDR_MEDIA_INFO_CACHE_SECONDS, result)
+    return result
+
+
+@app.get("/api/seedr/media-info/{file_id}/subtitle")
+async def seedr_embedded_subtitle(
+    file_id: str,
+    track: int = Query(..., ge=0),
+    name: str = Query("subtitle"),
+):
+    if not current_seedr_token():
+        raise HTTPException(503, "Seedr is not configured")
+
+    data = await _ffprobe_seedr_file(file_id)
+    streams = data.get("streams") if isinstance(data, dict) else []
+    subtitle_streams = [
+        stream for stream in streams
+        if isinstance(stream, dict) and str(stream.get("codec_type") or "").lower() == "subtitle"
+        and str(stream.get("codec_name") or "").lower() not in {"hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"}
+    ]
+    if track >= len(subtitle_streams):
+        raise HTTPException(404, "Subtitle track not found")
+
+    source_url = await _seedr_media_source_url(file_id)
+    stream_index = int(subtitle_streams[track].get("index") or 0)
+    command = [
+        "ffmpeg", "-v", "error", "-nostdin",
+        "-i", source_url,
+        "-map", f"0:{stream_index}",
+        "-c:s", "webvtt",
+        "-f", "webvtt",
+        "pipe:1",
+    ]
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=90)
+    except asyncio.TimeoutError as exc:
+        try:
+            process.kill()
+            await process.wait()
+        except Exception:
+            pass
+        raise HTTPException(504, "Subtitle extraction timed out") from exc
+
+    if process.returncode != 0:
+        detail = stderr.decode("utf-8", errors="replace")[-1000:]
+        raise HTTPException(502, detail or "Subtitle extraction failed")
+
+    return Response(
+        content=stdout,
+        media_type="text/vtt; charset=utf-8",
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "no-store",
+            "Content-Disposition": f'inline; filename="{Path(name).name.replace(chr(34), "_")}.vtt"',
+        },
+    )
+
+
+async def _stream_selected_audio(file_id: str, audio_index: int, start: float = 0.0) -> StreamingResponse:
+    data = await _ffprobe_seedr_file(file_id)
+    streams = data.get("streams") if isinstance(data, dict) else []
+    audio_streams = [
+        stream for stream in streams
+        if isinstance(stream, dict) and str(stream.get("codec_type") or "").lower() == "audio"
+    ]
+    if audio_index >= len(audio_streams):
+        raise HTTPException(404, "Audio track not found")
+
+    source_url = await _seedr_media_source_url(file_id)
+    stream = audio_streams[audio_index]
+    video_streams = [
+        item for item in streams
+        if isinstance(item, dict) and str(item.get("codec_type") or "").lower() == "video"
+    ]
+    video_codec = str((video_streams[0] if video_streams else {}).get("codec_name") or "").lower()
+
+    command = [
+        "ffmpeg", "-v", "error", "-nostdin",
+        *([ "-ss", str(max(0.0, start)) ] if start > 0 else []),
+        "-i", source_url,
+        "-map", "0:v:0",
+        "-map", f"0:a:{audio_index}",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+        "-f", "mp4",
+        "pipe:1",
+    ]
+    if video_codec in {"h264", "avc1"}:
+        command[command.index("-c:a"):command.index("-c:a")] = ["-c:v", "copy"]
+    else:
+        command[command.index("-c:a"):command.index("-c:a")] = [
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "23",
+        ]
+
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    async def body():
+        try:
+            while True:
+                chunk = await process.stdout.read(1024 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+            try:
+                await process.wait()
+            except Exception:
+                pass
+
+    return StreamingResponse(
+        body(),
+        media_type="video/mp4",
+        headers={
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "no-store",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+
+
 @app.get("/api/seedr/media/video/{file_id}/stats")
 async def seedr_video_media_stats(file_id: str):
     return {
@@ -3943,15 +5433,32 @@ async def seedr_video_media_stats(file_id: str):
     }
 
 @app.get("/api/seedr/media/video/{file_id}")
-async def seedr_video_media(file_id: str, request: Request):
-    if not SEEDR_TOKEN:
+async def seedr_video_media(
+    file_id: str,
+    request: Request,
+    audio: int | None = Query(None, ge=0),
+    start: float = Query(0.0, ge=0.0),
+):
+    if not current_seedr_token():
         raise HTTPException(503, "Seedr is not configured")
 
-    upstream_url = await seedr_v2_video_url(file_id)
+    if audio is not None:
+        return await _stream_selected_audio(file_id, audio, start=start)
+
+    # Always request the primary audio rendition from Seedr for the
+    # normal browser video path. This is what keeps single-audio files audible
+    # while preserving the native Range-based video timeline. An explicit
+    # non-zero audio query is reserved for the legacy server-side path.
+    requested_audio_index = audio if audio is not None else 0
+    upstream_url = await seedr_v2_video_url(file_id, audio_index=requested_audio_index)
+    if not upstream_url and audio is None:
+        # If Seedr rejects the explicit primary-rendition presentation, fall
+        # back to its normal presentation URL rather than failing playback.
+        upstream_url = await seedr_v2_video_url(file_id)
     if not upstream_url:
         raise HTTPException(404, "Seedr returned no video presentation URL")
 
-    headers = {"Accept": "video/*,application/octet-stream,*/*"}
+    headers = {"Accept": "video/*,application/octet-stream,*/*", "Accept-Encoding": "identity"}
     range_header = request.headers.get("range")
     if range_header:
         headers["Range"] = range_header
@@ -3990,7 +5497,7 @@ async def seedr_video_media(file_id: str, request: Request):
 
     async def body_stream():
         try:
-            async for chunk in response.aiter_bytes():
+            async for chunk in response.aiter_raw():
                 _record_media_bytes(file_id, len(chunk))
                 yield chunk
         finally:
@@ -4005,33 +5512,300 @@ async def seedr_video_media(file_id: str, request: Request):
     )
 
 
-async def seedr_audio_media(file_id: str, request: Request):
-    if not SEEDR_TOKEN:
+@app.get("/api/seedr/media/audio-url/{file_id}")
+async def seedr_audio_presentation_url(
+    file_id: str,
+    track: int = Query(0, ge=0),
+    start: float = Query(0.0, ge=0.0),
+):
+    """Return the reliable audio-only fallback for an embedded audio track.
+
+    Seedr's V2 presentation can return a source that is valid for the main
+    video path but does not consistently expose usable audio to HTMLAudioElement.
+    Keep the main video on the native Range stream and produce only the selected
+    audio track as MP3 when the browser needs it.
+    """
+    if not current_seedr_token():
         raise HTTPException(503, "Seedr is not configured")
 
-    headers = {"Accept": "*/*"}
+    return {
+        "url": "/api/seedr/media/audio/" + quote(file_id, safe="") +
+               "?track=" + quote(str(track), safe="") +
+               "&start=" + quote(f"{max(0.0, start):.3f}", safe=""),
+        "track": track,
+        "fileId": file_id,
+        "protocol": "ffmpeg-audio-fallback",
+        "start": max(0.0, start),
+    }
+
+@app.get("/api/seedr/media/audio-proxy/{file_id}")
+async def seedr_audio_presentation_proxy(
+    file_id: str,
+    request: Request,
+    track: int = Query(0, ge=0),
+):
+    """Proxy Seedr alternate presentation without transcoding."""
+    if not current_seedr_token():
+        raise HTTPException(503, "Seedr is not configured")
+
+    upstream_url = await seedr_v2_video_url(file_id, audio_index=track)
+    if not upstream_url:
+        raise HTTPException(404, "Seedr returned no audio presentation URL")
+
+    headers = {"Accept": "video/*,audio/*,application/octet-stream,*/*", "Accept-Encoding": "identity"}
     range_header = request.headers.get("range")
     if range_header:
         headers["Range"] = range_header
 
-    upstream_url = _seedr_media_url(file_id, "audio")
-    async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
-        response = await client.get(upstream_url, headers=headers)
+    client = httpx.AsyncClient(timeout=60, follow_redirects=True)
+    try:
+        response = await client.send(
+            client.build_request("GET", upstream_url, headers=headers),
+            stream=True,
+        )
+    except Exception:
+        await client.aclose()
+        raise
 
-    return Response(
-        content=response.content,
+    if response.status_code >= 400:
+        body = await response.aread()
+        status = response.status_code
+        content_type = response.headers.get("content-type", "application/octet-stream")
+        await response.aclose()
+        await client.aclose()
+        return Response(
+            content=body,
+            status_code=status,
+            media_type=content_type,
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+    response_headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Accept-Ranges": response.headers.get("accept-ranges", "bytes"),
+        "Cache-Control": "no-store",
+    }
+    for header in ("content-range", "content-length", "etag", "last-modified"):
+        if response.headers.get(header):
+            response_headers[header.title()] = response.headers[header]
+
+    async def body_stream():
+        try:
+            async for chunk in response.aiter_raw():
+                yield chunk
+        finally:
+            await response.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        body_stream(),
+        status_code=response.status_code,
+        media_type=response.headers.get("content-type", "audio/mp4"),
+        headers=response_headers,
+    )
+
+
+@app.get("/api/seedr/media/native-audio/{file_id}")
+async def seedr_native_audio_media_route(
+    file_id: str,
+    request: Request,
+):
+    """Proxy Seedr's native MP3 rendition without FFmpeg.
+
+    Used as the companion audio for single-audio browser playback. The video
+    remains on Seedr's native Range stream while this endpoint carries the
+    already-prepared audio rendition, avoiding server-side transcoding.
+    """
+    if not current_seedr_token():
+        raise HTTPException(503, "Seedr is not configured")
+
+    upstream_url = _seedr_media_url(file_id, "audio")
+    headers = {"Accept": "audio/*,application/octet-stream,*/*", "Accept-Encoding": "identity"}
+    range_header = request.headers.get("range")
+    if range_header:
+        headers["Range"] = range_header
+
+    client = httpx.AsyncClient(timeout=60, follow_redirects=True)
+    try:
+        response = await client.send(
+            client.build_request("GET", upstream_url, headers=headers),
+            stream=True,
+        )
+    except Exception:
+        await client.aclose()
+        raise
+
+    if response.status_code >= 400:
+        body = await response.aread()
+        status = response.status_code
+        content_type = response.headers.get("content-type", "audio/mpeg")
+        await response.aclose()
+        await client.aclose()
+        return Response(
+            content=body,
+            status_code=status,
+            media_type=content_type,
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+    response_headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Accept-Ranges": response.headers.get("accept-ranges", "bytes"),
+        "Cache-Control": "no-store",
+    }
+    for header in ("content-range", "content-length", "etag", "last-modified"):
+        if response.headers.get(header):
+            response_headers[header.title()] = response.headers[header]
+
+    async def body_stream():
+        try:
+            async for chunk in response.aiter_raw():
+                _record_media_bytes(file_id, len(chunk))
+                yield chunk
+        finally:
+            await response.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        body_stream(),
         status_code=response.status_code,
         media_type=response.headers.get("content-type", "audio/mpeg"),
+        headers=response_headers,
+    )
+
+@app.get("/api/seedr/media/audio/{file_id}")
+async def seedr_audio_media_route(
+    file_id: str,
+    request: Request,
+    track: int = Query(0, ge=0),
+    start: float = Query(0.0, ge=0.0),
+):
+    """Stream one embedded audio track as a browser-native MP3 stream.
+
+    The video element remains on Seedr's original full-duration Range stream.
+    This endpoint is only for the alternate audio element, so transcoding is
+    limited to the selected audio track and begins at the requested timestamp.
+    MP3 avoids fragmented-MP4 compatibility issues in HTMLAudioElement.
+    """
+    if not current_seedr_token():
+        raise HTTPException(503, "Seedr is not configured")
+
+    data = await _ffprobe_seedr_file(file_id)
+    streams = data.get("streams") if isinstance(data, dict) else []
+    audio_streams = [
+        stream for stream in streams
+        if isinstance(stream, dict) and str(stream.get("codec_type") or "").lower() == "audio"
+    ]
+    if track >= len(audio_streams):
+        raise HTTPException(404, "Audio track not found")
+
+    source_url = await _seedr_media_source_url(file_id)
+
+    command = [
+        "ffmpeg", "-v", "error", "-nostdin",
+        *(["-ss", str(max(0.0, start))] if start > 0 else []),
+        "-i", source_url,
+        "-map", f"0:a:{track}",
+        "-vn",
+        "-sn",
+        "-dn",
+        "-c:a", "libmp3lame",
+        "-b:a", "160k",
+        "-ar", "48000",
+        "-ac", "2",
+        "-af", "aresample=async=1:first_pts=0",
+        "-f", "mp3",
+        "pipe:1",
+    ]
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(503, "FFmpeg is not installed on the media server") from exc
+
+    async def body():
+        try:
+            while True:
+                chunk = await process.stdout.read(256 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+            try:
+                await process.wait()
+            except Exception:
+                pass
+
+    return StreamingResponse(
+        body(),
+        media_type="audio/mpeg",
         headers={
+            "Accept-Ranges": "none",
+            "Cache-Control": "no-store",
             "Access-Control-Allow-Origin": "*",
-            "Accept-Ranges": response.headers.get("accept-ranges", "bytes"),
-            "Content-Range": response.headers.get("content-range", ""),
+            "X-Audio-Track": str(track),
+            "X-Audio-Start": f"{max(0.0, start):.3f}",
+        },
+    )
+
+@app.get("/api/seedr/files/{file_id}/subtitle")
+async def seedr_file_subtitle(
+    file_id: str,
+    filename: str = Query(""),
+):
+    """Return a Seedr sidecar subtitle as browser-compatible WebVTT."""
+    if not current_seedr_token():
+        raise HTTPException(503, "Seedr is not configured")
+
+    requested_name = Path(filename or "").name
+    extension = requested_name.rsplit(".", 1)[-1].lower() if "." in requested_name else ""
+    if extension not in {"srt", "vtt"}:
+        raise HTTPException(400, "Only SRT and VTT subtitles are supported")
+
+    result = await download_url(file_id)
+    upstream_url = str(result.get("url") or "").strip()
+    if not upstream_url:
+        raise HTTPException(502, "Seedr returned no subtitle URL")
+
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+        response = await client.get(upstream_url)
+        if response.status_code >= 400:
+            raise HTTPException(response.status_code, "Seedr subtitle download failed")
+
+    text = response.content.decode("utf-8-sig", errors="replace")
+    if extension == "srt":
+        # Convert the common SRT timestamp format to WebVTT.
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = re.sub(
+            r"(\d{2}:\d{2}:\d{2}),(\d{3})",
+            r"\1.\2",
+            text,
+        )
+        text = "WEBVTT\n\n" + text.lstrip()
+    elif not text.lstrip().startswith("WEBVTT"):
+        text = "WEBVTT\n\n" + text.lstrip()
+
+    return Response(
+        content=text,
+        media_type="text/vtt; charset=utf-8",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": "inline; filename=\"" + requested_name.replace('"', '_') + "\"",
         },
     )
 
 @app.delete("/api/seedr/tasks/{tid}")
 async def seedr_task_delete(tid: str):
-    if not SEEDR_TOKEN:
+    if not current_seedr_token():
         raise HTTPException(503, "Seedr is not configured")
     global _seedr_metadata_cache
     try:
@@ -4471,7 +6245,7 @@ async def files_compat(
     # is returned separately by /api/folders.
     target_id = folder_id.strip()
     if not target_id:
-        target_id = SEEDR_LIBRARY_FOLDER_ID if folder in {"/", "/Torrent Studio"} else ""
+        target_id = "0" if folder in {"/", "/Torrent Studio"} else ""
 
     if not target_id.isdigit():
         metadata = await get_seedr_metadata_tree()
@@ -4596,6 +6370,94 @@ async def update_cleanup_settings(body: dict[str, Any]):
 @app.post("/api/cleanup/run")
 async def run_cleanup():
     return {"bytesFreed": 0, "filesRemoved": 0, "tempRemoved": 0, "orphansRemoved": 0}
+
+@app.post("/api/feedback")
+async def submit_feedback(body: FeedbackRequest, request: Request):
+    feedback_type = str(body.type or "").strip().lower()
+    if feedback_type not in {"review", "suggestion", "bug"}:
+        raise HTTPException(400, "Invalid feedback type")
+
+    message = str(body.message or "").strip()
+    if len(message) < 5:
+        raise HTTPException(400, "Feedback is too short")
+    if len(message) > 3000:
+        raise HTTPException(400, "Feedback is too long")
+
+    name = str(body.name or "").strip()[:80]
+    rating = int(body.rating) if body.rating is not None else None
+    if feedback_type == "review" and (rating is None or rating < 1 or rating > 5):
+        raise HTTPException(400, "A review rating from 1 to 5 is required")
+    if feedback_type != "review":
+        rating = None
+
+    if not GITHUB_FEEDBACK_TOKEN:
+        raise HTTPException(503, "Feedback is not configured yet")
+
+    repo = GITHUB_FEEDBACK_REPO.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+        raise HTTPException(500, "Feedback repository is not configured correctly")
+
+    label = {"review": "Review", "suggestion": "Suggestion", "bug": "Bug"}[feedback_type]
+    title_prefix = {"review": "Review", "suggestion": "Suggestion", "bug": "Bug report"}[feedback_type]
+    title_text = message.replace("\\n", " ").strip()
+    title_text = re.sub(r"\\s+", " ", title_text)[:90] or "New feedback"
+    title = f"[{title_prefix}] {title_text}"
+
+    submitted_at = datetime.now(timezone.utc).isoformat()
+    forwarded_for = str(request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+    body_lines = [
+        "## Torrent Studio Feedback",
+        "",
+        f"**Type:** {label}",
+    ]
+    if rating is not None:
+        body_lines.append(f"**Rating:** {rating}/5")
+    if name:
+        body_lines.append(f"**Name:** {name}")
+    body_lines.extend([
+        f"**Submitted:** {submitted_at}",
+        "",
+        "### Message",
+        message,
+        "",
+        "---",
+        "_Submitted through the Torrent Studio feedback form._",
+    ])
+    if forwarded_for:
+        # Do not persist or expose the visitor IP in the feedback issue.
+        pass
+
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {GITHUB_FEEDBACK_TOKEN}",
+        "X-GitHub-Api-Version": "2026-03-10",
+        "User-Agent": "Torrent-Studio-Feedback",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            response = await client.post(
+                f"https://api.github.com/repos/{repo}/issues",
+                headers=headers,
+                json={"title": title, "body": "\\n".join(body_lines)},
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("Feedback submission failed: %s", exc)
+        raise HTTPException(502, "Feedback service is temporarily unavailable")
+
+    if response.status_code != 201:
+        try:
+            detail = response.json().get("message")
+        except Exception:
+            detail = None
+        logger.warning("GitHub feedback submission failed: HTTP %s %s", response.status_code, detail or "")
+        raise HTTPException(502, "Feedback could not be submitted right now")
+
+    try:
+        issue = response.json()
+    except Exception:
+        issue = {}
+    return {"submitted": True, "issueUrl": issue.get("html_url")}
+
 
 @app.get("/api/qbt/settings")
 async def qbt_settings():
