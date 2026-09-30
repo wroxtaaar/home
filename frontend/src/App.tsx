@@ -24,7 +24,6 @@ import {
   Search,
   Filter,
   Moon,
-  Sun,
   ShieldCheck,
   AlertTriangle,
   RefreshCw,
@@ -32,13 +31,13 @@ import {
   Users,
   ChevronRight,
   Sparkles,
-  Layers,
   ArrowUpDown,
   ExternalLink,
   Film,
   Music,
   CheckCircle2,
-  Loader2
+  Loader2,
+  MessageSquare
 } from 'lucide-react';
 
 import {
@@ -53,8 +52,8 @@ import {
   UserPermission
 } from './types/index.ts';
 
-import { api } from './api/client.ts';
-import { formatBytes, formatQuotaBytes, formatSpeed } from './utils/formatters.ts';
+import { api, API_BASE } from './api/client.ts';
+import { formatBytes, formatQuotaBytes } from './utils/formatters.ts';
 import { dispatchBrowserNotification, playNotificationSound } from './utils/notifications.ts';
 
 import { TorrentCard } from './components/TorrentCard.tsx';
@@ -74,6 +73,70 @@ import { TorrentSearchPanel } from './components/TorrentSearchPanel.tsx';
 
 export default function App() {
   // Navigation & Theme
+  // Seedr is connected per browser session using the user's Personal Access Token.
+  // The PAT is sent only to our backend over HTTPS and is never stored in localStorage.
+  const [productWelcomeOpen, setProductWelcomeOpen] = useState(() => {
+    try {
+      return window.localStorage.getItem('torrent_studio_welcome_seen') !== 'true';
+    } catch {
+      return true;
+    }
+  });
+  // Seedr connection is optional. Never open the connection dialog automatically
+  // on page load/refresh; the user opens it explicitly or reaches a Seedr action.
+  const [seedrOnboardingOpen, setSeedrOnboardingOpen] = useState(false);
+  const [seedrConnected, setSeedrConnected] = useState(false);
+  const [seedrSessionReady, setSeedrSessionReady] = useState(false);
+  const [seedrPat, setSeedrPat] = useState('');
+  const [seedrPatSubmitting, setSeedrPatSubmitting] = useState(false);
+  const [seedrConnectError, setSeedrConnectError] = useState('');
+
+  useEffect(() => {
+    let stopped = false;
+    void api.getSeedrSession()
+      .then(session => {
+        if (stopped) return;
+        setSeedrSessionReady(true);
+        if (session.connected) {
+          setSeedrConnected(true);
+          setSeedrConfigured(true);
+        }
+      })
+      .catch(() => {
+        if (!stopped) setSeedrSessionReady(true);
+      });
+
+    return () => {
+      stopped = true;
+    };
+  }, []);
+
+  const connectSeedrWithPat = useCallback(async () => {
+    const pat = seedrPat.trim();
+    if (!pat) {
+      setSeedrConnectError('Paste your Seedr token.');
+      return;
+    }
+
+    setSeedrPatSubmitting(true);
+    setSeedrConnectError('');
+    try {
+      const result = await api.connectSeedrPat(pat);
+      if (!result.connected) {
+        throw new Error('Seedr did not accept the Personal Access Token.');
+      }
+      setSeedrPat('');
+      setSeedrConnected(true);
+      setSeedrConfigured(true);
+    } catch (error: any) {
+      setSeedrConnectError(
+        String(error?.message || 'Seedr rejected the Personal Access Token.')
+      );
+    } finally {
+      setSeedrPatSubmitting(false);
+    }
+  }, [seedrPat]);
+
   const [activeTab, setActiveTab] = useState<'search' | 'files' | 'shared' | 'activity' | 'storage'>(() => {
     try {
       const saved = window.localStorage.getItem('seedflow_active_tab');
@@ -192,15 +255,13 @@ export default function App() {
   const [initialSourceUrl, setInitialSourceUrl] = useState('');
   const [initialDescriptorUrl, setInitialDescriptorUrl] = useState('');
 
-  const [theme, setTheme] = useState<'dark' | 'dim' | 'light'>(() => {
+  const [theme, setTheme] = useState<'dark' | 'dim'>(() => {
     try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-  return (localStorage.getItem('seedflow_theme') as any) || 'dark';
-      }
+      const saved = window.localStorage.getItem('seedflow_theme');
+      return saved === 'dim' ? 'dim' : 'dark';
     } catch {
-      // Sandboxed or iframe storage restricted
+      return 'dark';
     }
-    return 'dark';
   });
 
   // Core Data
@@ -243,6 +304,17 @@ export default function App() {
   };
 
   const seedrNoticeStorageKey = 'seedflow_seedr_notice';
+  const seedrPrepareWaiters = useRef<Record<string, {
+    resolve: (value: { files: Array<{
+      id: string;
+      streamId?: string;
+      name: string;
+      size: number;
+      folderId: string;
+      folderPath: string;
+    }> }) => void;
+    reject: (reason?: unknown) => void;
+  }>>({});
   const [seedrNotice, setSeedrNotice] = useState<SeedrNotice | null>(() => {
     try {
       const raw = window.localStorage.getItem(seedrNoticeStorageKey);
@@ -263,6 +335,7 @@ export default function App() {
     }
   });
   const [seedrFiles, setSeedrFiles] = useState<Array<{ id: string; streamId?: string; name: string; size: number; folderId: string; folderPath: string }>>([]);
+  const [seedrDeletedFolderIds, setSeedrDeletedFolderIds] = useState<string[]>([]);
   const [seedrLibraryRoot, setSeedrLibraryRoot] = useState<{
     id: string;
     folderId: string;
@@ -388,9 +461,10 @@ export default function App() {
       ownerName: 'Seedr',
       isStreamable: type === 'video' || type === 'audio',
       downloadUrl: '/api/seedr/files/' + encodeURIComponent(file.id) + '/download',
-      streamUrl: type === 'video' || type === 'audio'
-        ? '/api/seedr/files/stream?file_id=' + encodeURIComponent(file.streamId || file.id) + '&name=' + encodeURIComponent(file.name) + '&type=' + encodeURIComponent(type)
-        : '',
+      // The stream URL is resolved only when the user presses Stream.
+      // Keep a placeholder here so library rendering never depends on a
+      // runtime streamUrl variable.
+      streamUrl: '',
     };
   }, []);
 
@@ -504,9 +578,14 @@ export default function App() {
   // The Files tab is reserved for completed/stored files and folders.
   // Active qBittorrent downloads belong only in the Transfers tab.
   const visibleFiles = useMemo(() => {
-    const source = currentFolder === '/' && seedrAllPrefetchedFiles.length > 0
-      ? seedrAllPrefetchedFiles.map(toSeedrStorageFile)
-      : files;
+    const selectedCachedFiles = selectedSeedrFolderId
+      ? seedrFolderContentsCache[selectedSeedrFolderId]
+      : undefined;
+    const source = selectedCachedFiles
+      ? selectedCachedFiles.map(toSeedrStorageFile)
+      : currentFolder === '/' && seedrAllPrefetchedFiles.length > 0
+        ? seedrAllPrefetchedFiles.map(toSeedrStorageFile)
+        : files;
 
     const search = fileSearch.trim().toLowerCase();
     const filtered = source.filter(file => {
@@ -521,14 +600,21 @@ export default function App() {
     return [...filtered].sort((a, b) =>
       a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
     );
-  }, [currentFolder, seedrAllPrefetchedFiles, files, toSeedrStorageFile, fileTypeFilter, fileSearch]);
+  }, [currentFolder, selectedSeedrFolderId, seedrFolderContentsCache, seedrAllPrefetchedFiles, files, toSeedrStorageFile, fileTypeFilter, fileSearch]);
   // Modals & Drawers
   const [isAddMagnetOpen, setIsAddMagnetOpen] = useState(false);
   const [initialMagnet, setInitialMagnet] = useState('');
   const [prioTorrent, setPrioTorrent] = useState<TorrentItem | null>(null);
   const [isCleanupOpen, setIsCleanupOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
-  const [isMobileMoreOpen, setIsMobileMoreOpen] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackType, setFeedbackType] = useState<'review' | 'suggestion' | 'bug'>('review');
+  const [feedbackRating, setFeedbackRating] = useState(5);
+  const [feedbackMessage, setFeedbackMessage] = useState('');
+  const [feedbackName, setFeedbackName] = useState('');
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const [feedbackSuccess, setFeedbackSuccess] = useState('');
+  const [feedbackError, setFeedbackError] = useState('');
   const [shareFolder, setShareFolder] = useState<StorageFolder | null>(null);
   const [isCreateFolderOpen, setIsCreateFolderOpen] = useState(false);
   const [moveFile, setMoveFile] = useState<StorageFile | null>(null);
@@ -573,25 +659,20 @@ export default function App() {
     }
   }, [selectedSeedrFolderId]);
 
-  // Theme synchronization
+  // Keep the dark/dim theme preference in sync.
   useEffect(() => {
     try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        localStorage.setItem('seedflow_theme', theme);
-      }
+      window.localStorage.setItem('seedflow_theme', theme);
     } catch {}
     try {
       const root = document.documentElement;
-      root.classList.remove('dark', 'dim', 'light');
+      root.classList.remove('dark', 'dim');
       if (theme === 'dark') {
         root.classList.add('dark');
         root.style.backgroundColor = '#020617';
-      } else if (theme === 'dim') {
+      } else {
         root.classList.add('dark');
         root.style.backgroundColor = '#0f172a';
-      } else {
-        root.classList.add('light');
-        root.style.backgroundColor = '#f8fafc';
       }
     } catch {}
   }, [theme]);
@@ -681,6 +762,7 @@ export default function App() {
   }, [activeTab, loadCurrentFiles]);
 
   const loadSeedrLibrary = useCallback(async (forceRefresh = false) => {
+    if (!seedrConnected) return null;
     setSeedrLoading(true);
     setSeedrError(null);
 
@@ -766,7 +848,25 @@ export default function App() {
       const activeTaskId = seedrNotice?.taskId;
       if (activeTaskId && seedrNotice?.status !== 'completed') {
         void api.getSeedrTaskProgress(activeTaskId).then(progressResult => {
-          if (progressResult.status === 'not_found') return;
+          if (progressResult.status === 'not_found') {
+            // The browser can retain a task id after Seedr has removed it.
+            // Stop the background refresh immediately and clear the stale
+            // persisted notice so the UI does not keep polling a 404 forever.
+            const waiterKey = String(activeTaskId);
+            const waiter = seedrPrepareWaiters.current[waiterKey];
+            if (waiter) {
+              delete seedrPrepareWaiters.current[waiterKey];
+              waiter.reject(new Error('Seedr could not find the loading task.'));
+            }
+            setSeedrNotice(prev =>
+              prev && String(prev.taskId) === String(activeTaskId) ? null : prev
+            );
+            setSeedrAddBlockedNotice(null);
+            try {
+              window.localStorage.removeItem(seedrNoticeStorageKey);
+            } catch {}
+            return;
+          }
           const progress = Math.max(0, Math.min(100, Number(progressResult.progress) || 0));
           const progressName = String(progressResult.name || '').trim();
           const progressFolderId = String(progressResult.folderId || '').trim();
@@ -803,6 +903,11 @@ export default function App() {
       setSeedrConfigured(result.configured);
       setSeedrLibraryRoot(result.root);
       setSeedrLibraryFolders(result.folders);
+      setSeedrDeletedFolderIds(prev =>
+        prev.filter(folderId =>
+          result.folders.some(folder => String(folder.folderId || folder.id || '') === folderId)
+        )
+      );
       setSeedrLoading(false);
 
       // Stage 2 — immediately load the file rows for every library folder.
@@ -907,7 +1012,7 @@ export default function App() {
     }
 
     return result;
-  }, [rememberSeedrTorrentName]);
+  }, [seedrConnected, rememberSeedrTorrentName]);
 
   // Keep an opened folder synchronized with the background prefetch cache.
   // Changing the selected folder no longer reruns the entire library request.
@@ -968,11 +1073,18 @@ export default function App() {
     } finally {
       setSeedrFolderContentsLoading(false);
     }
-  }, [seedrFolderGroups, seedrFolderContentsCache]);
+  }, [seedrFolderGroups, seedrFolderContentsCache, seedrConnected]);
 
   useEffect(() => {
     if (activeTab === 'files') loadSeedrLibrary();
   }, [activeTab, loadSeedrLibrary]);
+
+  // Load Seedr library metadata once when a personal Seedr connection becomes
+  // available so Search can immediately recognize already-prepared torrents.
+  useEffect(() => {
+    if (seedrConnected) void loadSeedrLibrary();
+  }, [seedrConnected]);
+
 
 
   const hasActiveQbtTransfers = useMemo(
@@ -1062,6 +1174,161 @@ export default function App() {
       return next;
     });
   }, []);
+
+  const handleOpenSearchSeedrFiles = useCallback((folderId = '', folderPath = '') => {
+    const id = String(folderId || '').trim();
+    const path = String(folderPath || '').trim();
+
+    setActiveTab('files');
+    setFileSearch('');
+    setFileTypeFilter('all');
+
+    if (id) {
+      setSelectedSeedrFolderId(id);
+      const cached = seedrFolderContentsCache[id];
+      if (cached) setSeedrFiles(cached);
+    } else {
+      setSelectedSeedrFolderId(null);
+    }
+
+    if (path) {
+      setCurrentFolder(path);
+    }
+  }, [seedrFolderContentsCache]);
+
+  const handleSearchPrepare = useCallback(async (
+    result: {
+      title: string;
+      size: number;
+      infoHash?: string;
+      magnetUrl?: string;
+      downloadUrl?: string;
+      sourceUrl?: string;
+    },
+    metadata?: {
+      name: string;
+      hash: string;
+      files: { index: number; name: string; size: number; path: string; type: string; priority?: number }[];
+      totalSize: number;
+    }
+  ): Promise<{ files: Array<{
+    id: string;
+    streamId?: string;
+    name: string;
+    size: number;
+    folderId: string;
+    folderPath: string;
+  }>; deletedFolderIds: string[] }> => {
+    if (!seedrConnected) {
+      setSeedrOnboardingStep('welcome');
+      setSeedrOnboardingOpen(true);
+      throw new Error('Connect your Seedr account first.');
+    }
+
+    if (seedrDownloadActive) {
+      const message = 'One Seedr file is already loading. Cancel that loading or wait for it to finish before preparing another.';
+      setSeedrAddBlockedNotice(message);
+      setActiveTab('files');
+      window.setTimeout(() => setSeedrAddBlockedNotice(null), 5000);
+      throw new Error(message);
+    }
+
+    const source = String(result.magnetUrl || result.downloadUrl || result.sourceUrl || '').trim();
+    const magnet = source.toLowerCase().startsWith('magnet:?')
+      ? source
+      : result.infoHash
+        ? 'magnet:?xt=urn:btih:' + result.infoHash.trim()
+        : source;
+
+    if (!magnet) {
+      throw new Error('This search result does not contain a usable magnet link.');
+    }
+
+    let resolvedMetadata = metadata;
+    if (!resolvedMetadata) {
+      resolvedMetadata = await api.inspectMagnet(
+        magnet,
+        'Downloads',
+        result.sourceUrl || '',
+        ''
+      );
+    }
+
+    const torrentName =
+      String(resolvedMetadata?.name || '').trim() ||
+      String(result.title || '').trim() ||
+      'Torrent';
+    const requiredBytes = Number(resolvedMetadata?.totalSize || result.size || 0);
+
+    const prepared = await api.prepareSeedrMagnet(magnet, requiredBytes, torrentName);
+
+    // Prepare can automatically remove older completed Seedr folders to make
+    // room for the new torrent. Remove those folders from every local cache
+    // immediately so Search cannot keep showing stale Play/Download/Copy
+    // buttons for files that no longer exist in Seedr.
+    const deletedFolderIds = Array.from(new Set(
+      (Array.isArray(prepared?.deletedFolders) ? prepared.deletedFolders : [])
+        .map((folder: any) => String(folder?.folder_id ?? folder?.folderId ?? folder?.id ?? '').trim())
+        .filter(Boolean)
+    ));
+
+    if (deletedFolderIds.length > 0) {
+      const deletedSet = new Set(deletedFolderIds);
+      setSeedrDeletedFolderIds(prev => Array.from(new Set([...prev, ...deletedFolderIds])));
+
+      setSeedrFolderContentsCache(prev =>
+        Object.fromEntries(
+          Object.entries(prev).filter(([folderId]) => !deletedSet.has(String(folderId)))
+        )
+      );
+      setSeedrLibraryFolders(prev =>
+        prev.filter(folder => !deletedSet.has(String(folder.folderId || folder.id || '')))
+      );
+      setSeedrFiles(prev =>
+        prev.filter(file => !deletedSet.has(String(file.folderId || '')))
+      );
+
+      if (selectedSeedrFolderId && deletedSet.has(String(selectedSeedrFolderId))) {
+        setSelectedSeedrFolderId(null);
+      }
+    }
+
+    const taskId = prepared?.seedrTaskId;
+    if (taskId == null || taskId === '') {
+      throw new Error('Seedr accepted the request but did not return a task id.');
+    }
+
+    const taskKey = String(taskId);
+    const waitForCompletion = new Promise<{ files: Array<{
+      id: string;
+      streamId?: string;
+      name: string;
+      size: number;
+      folderId: string;
+      folderPath: string;
+    }> }>((resolve, reject) => {
+      seedrPrepareWaiters.current[taskKey] = { resolve, reject };
+    });
+
+    const initialName = torrentName || String(prepared.seedrFolderName || '').trim() || 'Seedr download';
+    setSeedrNotice({
+      taskId,
+      name: initialName,
+      folderName: '',
+      folderId: String(prepared.seedrFolderId || '').trim(),
+      status: 'waiting',
+      progress: 0,
+      downloadUrl: null,
+      files: [],
+      seedrReply: 'Seedr accepted the torrent. Preparing download…',
+    });
+
+    const completed = await waitForCompletion;
+    return {
+      ...completed,
+      deletedFolderIds,
+    };
+  }, [seedrConnected, seedrDownloadActive, rememberSeedrTorrentName]);
 
   const handleSearchAdd = async (
     source: string,
@@ -1423,6 +1690,12 @@ export default function App() {
         if (!active) return;
 
         if (progressResult.status === 'not_found') {
+          const waiterKey = String(seedrNotice.taskId);
+          const waiter = seedrPrepareWaiters.current[waiterKey];
+          if (waiter) {
+            delete seedrPrepareWaiters.current[waiterKey];
+            waiter.reject(new Error('Seedr could not find the loading task.'));
+          }
           setSeedrNotice(null);
           setSeedrAddBlockedNotice(null);
           try {
@@ -1434,6 +1707,56 @@ export default function App() {
         const completed = applyProgress(progressResult);
 
         if (!completed) {
+          const activeFolderId = String(
+            progressResult.folderId || seedrNotice.folderId || ''
+          ).trim();
+
+          if (activeFolderId) {
+            try {
+              const contents = await api.getSeedrFolderContents(activeFolderId);
+              if (active) {
+                const activeFolderPath = '/Torrent Studio/' + (
+                  String(seedrNotice.name || progressResult.name || 'Downloads').trim() || 'Downloads'
+                );
+                const mapped = contents.files.map(file => ({
+                  id: file.id,
+                  streamId: file.streamId,
+                  name: file.name,
+                  size: Number(file.size) || 0,
+                  folderId: file.folderId || activeFolderId,
+                  folderPath: activeFolderPath,
+                }));
+
+                setSeedrFolderContentsCache(prev => ({
+                  ...prev,
+                  [activeFolderId]: mapped,
+                }));
+
+                if (selectedSeedrFolderId === activeFolderId) {
+                  setSeedrFiles(mapped);
+                  setSeedrFolderContentsLoading(false);
+                }
+
+                // Resolve Search's Prepare promise as soon as the first file
+                // exists. The download itself continues in the background.
+                if (mapped.length > 0) {
+                  const waiterKey = String(seedrNotice.taskId);
+                  const waiter = seedrPrepareWaiters.current[waiterKey];
+                  if (waiter) {
+                    delete seedrPrepareWaiters.current[waiterKey];
+                    waiter.resolve({ files: mapped });
+                  }
+                }
+              }
+            } catch {
+              // Seedr may not expose the folder until shortly after the task
+              // starts. Keep polling progress and try the contents again next time.
+            }
+          }
+
+          // Poll frequently so the visible progress bar and file list keep
+          // moving while Seedr is downloading.
+
           // Poll frequently so the visible progress bar moves as soon as Seedr
           // reports a newer value.
           scheduleNextPoll(progressResult.status === 'waiting' ? 10000 : 4000);
@@ -1499,6 +1822,21 @@ export default function App() {
           progressResult.name ||
           ''
         ).trim();
+
+        const resolvePrepareWaiter = (files: Array<{
+          id: string;
+          streamId?: string;
+          name: string;
+          size: number;
+          folderId: string;
+          folderPath: string;
+        }>) => {
+          const waiterKey = String(seedrNotice.taskId);
+          const waiter = seedrPrepareWaiters.current[waiterKey];
+          if (!waiter) return;
+          delete seedrPrepareWaiters.current[waiterKey];
+          waiter.resolve({ files });
+        };
 
         const refreshCompletedLibrary = async () => {
           // Seedr can report a task as complete before the new folder appears
@@ -1572,6 +1910,10 @@ export default function App() {
             setSeedrNotice(prev => (
               prev ? { ...prev, status: 'completed', progress: 100 } : null
             ));
+
+            if (eagerFiles.length > 0) {
+              resolvePrepareWaiter(eagerFiles);
+            }
           }
 
           for (let attempt = 0; attempt < 12; attempt += 1) {
@@ -1639,6 +1981,13 @@ export default function App() {
                     [resolvedFolderId]: mapped,
                   }));
 
+                  const waiterKey = String(seedrNotice.taskId);
+                  const waiter = seedrPrepareWaiters.current[waiterKey];
+                  if (waiter && mapped.length > 0) {
+                    delete seedrPrepareWaiters.current[waiterKey];
+                    waiter.resolve({ files: mapped });
+                  }
+
                   if (selectedSeedrFolderId === resolvedFolderId) {
                     setSeedrFiles(mapped);
                     setSeedrFolderContentsLoading(false);
@@ -1659,6 +2008,30 @@ export default function App() {
 
         void refreshCompletedLibrary();
         setActiveSeedrFolderOpen(false);
+
+        const immediateFiles = Array.isArray((result as any).files)
+          ? (result as any).files
+              .filter((file: any) => String(file?.id || file?.streamId || '').trim())
+              .map((file: any) => ({
+                id: String(file.id || file.streamId),
+                streamId: file.streamId ? String(file.streamId) : undefined,
+                name: String(file.name || 'Seedr file'),
+                size: Number(file.size || 0),
+                folderId: String(file.folderId || completedFolderId || ''),
+                folderPath: String(file.folderPath || '/Torrent Studio/' + (completedTorrentName || 'Downloads')),
+              }))
+          : [];
+
+        if (immediateFiles.length > 0) {
+          resolvePrepareWaiter(immediateFiles);
+        }
+
+        playNotificationSound();
+        dispatchBrowserNotification(
+          `Ready: ${completedTorrentName || 'Seedr download'}`,
+          'Your Seedr file is ready to play, download, or copy its link.'
+        );
+
       } catch {
         scheduleNextPoll(2500);
       }
@@ -1680,6 +2053,12 @@ export default function App() {
     try {
       setIsCancellingSeedr(true);
       await api.deleteSeedrTask(taskId);
+      const waiterKey = String(taskId);
+      const waiter = seedrPrepareWaiters.current[waiterKey];
+      if (waiter) {
+        delete seedrPrepareWaiters.current[waiterKey];
+        waiter.reject(new Error('Seedr preparation was cancelled.'));
+      }
       setSeedrNotice(null);
     } catch (error: any) {
       console.error('Failed to cancel Seedr download:', error);
@@ -1880,6 +2259,7 @@ export default function App() {
     }
   };
 
+
   const findSeedrSubtitleTracks = useCallback((
     file: { id: string; name: string; folderId: string; folderPath: string },
     apiOrigin: string
@@ -1932,10 +2312,9 @@ export default function App() {
   }, [seedrAllPrefetchedFiles, seedrFolderContentsCache]);
 
   const handleStreamSeedrFile = async (file: { id: string; streamId?: string; name: string; size: number; folderId: string; folderPath: string }) => {
-    // Stage 1: the clicked button immediately enters a loading state while
-    // Render resolves the Seedr presentation/proxy URL. The player is opened
-    // only after this step succeeds, so the user never sees an unresponsive
-    // button followed by a blank modal.
+    // Restore the tested Seedr direct-browser-stream flow. The backend chooses
+    // the correct presentation: a Range-aware direct stream when Seedr gives
+    // a browser-playable presentation, otherwise the HLS proxy.
     setSeedrStreamLoadingId(file.id);
     try {
       const type: StorageFile['type'] =
@@ -1957,17 +2336,16 @@ export default function App() {
           return window.location.origin;
         }
       })();
-      const seedrResolvedStreamUrl =
-        result.protocol === 'direct' && result.externalUrl
-          ? result.externalUrl
-          : result.url;
+
       const subtitleTracks = type === 'video'
         ? findSeedrSubtitleTracks(file, apiOrigin)
         : [];
+      const audioTracks: StorageFile['audioTracks'] = [];
+
       const syntheticFile: StorageFile = {
-        id: `seedr-${file.id}`,
+        id: 'seedr-' + file.id,
         name: result.name || file.name,
-        path: file.folderPath === '/' ? `/${file.name}` : `${file.folderPath}/${file.name}`,
+        path: file.folderPath === '/' ? '/' + file.name : file.folderPath + '/' + file.name,
         folder: file.folderPath,
         size: file.size,
         type,
@@ -1976,21 +2354,26 @@ export default function App() {
         ownerId: activeUser?.id || 'user_admin',
         ownerName: activeUser?.name || 'Admin',
         isStreamable: true,
-        streamUrl: seedrResolvedStreamUrl,
+        // IMPORTANT: use the backend browser URL, not the external Seedr URL.
+        // For direct presentations this is /api/seedr/media/video/{id}; for
+        // HLS presentations it is /api/seedr/hls/{id}.
+        streamUrl: result.url,
         externalStreamUrl: result.externalUrl,
+        streamId: result.resolvedFileId || file.streamId || file.id,
+        audioTracks,
         subtitleTracks,
-        downloadUrl: '/api/seedr/files/' + encodeURIComponent(file.id) + '/download',
+        downloadUrl: API_BASE + '/api/seedr/files/' + encodeURIComponent(file.id) + '/download',
       };
 
       setActiveMediaFile(syntheticFile);
       setIsPlayerMinimized(false);
-    } catch (error) {      console.error('Failed to create Seedr stream URL:', error);
+    } catch (error) {
+      console.error('Failed to create Seedr stream URL:', error);
       setSeedrError(error instanceof Error ? error.message : 'Failed to create Seedr stream URL');
     } finally {
       setSeedrStreamLoadingId(current => current === file.id ? null : current);
     }
   };
-
   const handleDeleteSeedrFile = async (file: { id: string; name: string; size: number; folderId: string; folderPath: string }) => {    setSeedrDeleteNotice('Deleting…');
     try {
       // A single-file Seedr folder is represented directly in My Cloud Files.
@@ -2153,6 +2536,34 @@ export default function App() {
     setActiveUser(newUser);
   };
 
+  const submitFeedback = async () => {
+    const message = feedbackMessage.trim();
+    if (message.length < 5) {
+      setFeedbackError('Please write at least a few words.');
+      return;
+    }
+
+    setFeedbackSubmitting(true);
+    setFeedbackError('');
+    setFeedbackSuccess('');
+    try {
+      await api.submitFeedback({
+        type: feedbackType,
+        rating: feedbackType === 'review' ? feedbackRating : undefined,
+        message,
+        name: feedbackName.trim() || undefined,
+      });
+      setFeedbackMessage('');
+      setFeedbackName('');
+      setFeedbackRating(5);
+      setFeedbackSuccess('Thanks! Your feedback was sent successfully.');
+    } catch (error: any) {
+      setFeedbackError(String(error?.message || 'Could not send feedback. Please try again.'));
+    } finally {
+      setFeedbackSubmitting(false);
+    }
+  };
+
   const handleRunCleanup = async () => {
     const res = await api.runCleanup();
     const stats = await api.getStorageStats();
@@ -2171,11 +2582,6 @@ export default function App() {
   };
 
   // Download batch zip
-  // Global telemetry speeds
-  const totalDlSpeed = torrents
-    .filter(t => t.state === 'downloading')
-    .reduce((acc, t) => acc + t.dlspeed, 0);
-  const totalUpSpeed = torrents.reduce((acc, t) => acc + t.upspeed, 0);
   const activeDownloadsCount = torrents.filter(t => t.state === 'downloading').length;
   const unreadNotifsCount = notifications.filter(n => !n.read).length;
 
@@ -2187,8 +2593,47 @@ export default function App() {
       return remainder.length > 0 && !remainder.includes('/');
     });
 
+  if (productWelcomeOpen) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center px-6 py-10">
+        <div className="w-full max-w-2xl text-center">
+          <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-3xl bg-gradient-to-tr from-cyan-500 via-blue-600 to-indigo-600 shadow-2xl shadow-cyan-500/20">
+            <Cloud className="h-10 w-10 text-slate-950 fill-current" />
+          </div>
+
+          <p className="mt-8 text-xs font-bold uppercase tracking-[0.3em] text-cyan-400">
+            Torrent Studio
+          </p>
+          <h1 className="mt-4 text-4xl font-black tracking-tight text-white sm:text-6xl">
+            Welcome to Torrent Studio
+          </h1>
+          <p className="mx-auto mt-5 max-w-xl text-base leading-7 text-slate-400 sm:text-lg">
+            Search torrents, explore releases, and discover everything you need before deciding where to download.
+          </p>
+
+          <button
+            type="button"
+            onClick={() => {
+              try {
+                window.localStorage.setItem('torrent_studio_welcome_seen', 'true');
+              } catch {}
+              setProductWelcomeOpen(false);
+            }}
+            className="mt-10 inline-flex min-w-44 items-center justify-center rounded-2xl bg-cyan-500 px-7 py-3.5 text-base font-bold text-slate-950 shadow-xl shadow-cyan-500/20 transition hover:bg-cyan-400"
+          >
+            Start Now
+          </button>
+
+          <p className="mt-5 text-xs text-slate-600">
+            You can explore search without connecting a Seedr account.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className={`min-h-screen flex flex-col ${theme === 'dark' ? 'bg-slate-950 text-slate-100' : theme === 'dim' ? 'bg-slate-900 text-slate-100' : 'bg-slate-50 text-slate-900'} transition-colors duration-200`}>
+    <div className={`min-h-screen flex flex-col ${theme === 'dark' ? 'bg-slate-950' : 'bg-slate-900'} text-slate-100 transition-colors duration-200`}>
       {/* Top Main Navigation Header */}
       <header className="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-md border-b border-slate-800/80 px-2.5 sm:px-6 py-1.5 sm:py-3">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-2 sm:gap-3">
@@ -2200,44 +2645,29 @@ export default function App() {
             <div>
               <div className="flex items-center gap-1.5 sm:gap-2">
                 <h1 className="text-sm sm:text-lg font-black tracking-tight text-white">Torrent Studio</h1>
-                <span className="hidden sm:inline px-1.5 py-0.5 rounded text-[10px] font-bold bg-cyan-500/20 text-cyan-300 uppercase tracking-widest border border-cyan-500/30">
-                  qBt WebAPI
-                </span>
-              </div>
+</div>
               <p className="text-[10px] text-slate-400 hidden sm:block">
                 Unlimited Cloud Seedbox & Media Streamer
               </p>
             </div>
           </div>
 
-          {/* Center: Live speeds & Storage Indicator */}
-          <div className="hidden md:flex items-center gap-4">
-            {/* Speed Pointers */}
-            <div className="flex items-center gap-3 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs font-mono">
-              <div className="flex items-center gap-1 text-cyan-400">
-                <Download className="w-3.5 h-3.5" />
-                <span>{formatSpeed(totalDlSpeed)}</span>
-              </div>
-              <span className="text-slate-700">|</span>
-              <div className="flex items-center gap-1 text-indigo-400">
-                <Upload className="w-3.5 h-3.5" />
-                <span>{formatSpeed(totalUpSpeed)}</span>
-              </div>
-            </div>
-
-
-          </div>
-
           {/* Right: Quick actions & User Switcher */}
           <div className="flex items-center gap-2">
-            {/* "+ Add Magnet" Primary CTA */}
             <button
-              onClick={() => openAddMagnet()}
-              className="px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 text-xs sm:text-sm font-bold flex items-center gap-1.5 shadow-lg shadow-cyan-500/20 transition tap-target"
+              type="button"
+              onClick={() => {
+                setSeedrPat('');
+                setSeedrConnectError('');
+                setSeedrOnboardingOpen(true);
+              }}
+              className={seedrConnected
+                ? "px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs sm:text-sm font-bold flex items-center gap-1.5 shadow-lg shadow-emerald-500/10 transition tap-target"
+                : "px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 text-xs sm:text-sm font-bold flex items-center gap-1.5 shadow-lg shadow-emerald-500/20 transition tap-target"}
+              title={seedrConnected ? "Seedr is connected" : "Connect to Seedr"}
             >
-              <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4 stroke-[3]" />
-              <span className="hidden sm:inline">Add Magnet</span>
-              <span className="sm:hidden">Add</span>
+              {seedrConnected ? <CheckCircle2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> : <Cloud className="w-3.5 h-3.5 sm:w-4 sm:h-4" />}
+              <span>{seedrConnected ? 'Seedr is Connected' : 'Connect to Seedr'}</span>
             </button>
 
             {/* Notification Bell */}
@@ -2256,11 +2686,12 @@ export default function App() {
 
             {/* Theme Toggle */}
             <button
-              onClick={() => setTheme(theme === 'dark' ? 'dim' : theme === 'dim' ? 'light' : 'dark')}
+              onClick={() => setTheme(theme === 'dark' ? 'dim' : 'dark')}
               className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 transition tap-target hidden sm:flex items-center justify-center border border-slate-800"
               title={`Theme: ${theme}`}
             >
-              {theme === 'light' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-cyan-400" />}            </button>
+              <Moon className="w-4 h-4 text-cyan-400" />
+            </button>
 
           </div>
         </div>
@@ -2290,30 +2721,6 @@ export default function App() {
             <span>My Cloud Files</span>
             <span className="text-[10px] opacity-70">({files.length})</span>
           </button>
-
-          <button
-            onClick={() => setActiveTab('activity')}
-            className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition ${
-              activeTab === 'activity'
-                ? 'bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/20'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-            }`}
-          >
-            <History className="w-4 h-4" />
-            <span>Activity Log</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('storage')}
-            className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition ${
-              activeTab === 'storage'
-                ? 'bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/20'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-            }`}
-          >
-            <Sparkles className="w-4 h-4" />
-            <span>Auto-Cleanup & Disk</span>
-          </button>
         </div>
       </div>
 
@@ -2334,7 +2741,28 @@ export default function App() {
             search continues in the background and its results remain available
             when the user returns to Search. */}
         <div className={activeTab === 'search' ? 'block' : 'hidden'}>
-          <TorrentSearchPanel onAdd={handleSearchAdd} />
+          <TorrentSearchPanel
+            onPrepare={handleSearchPrepare}
+            onCancelPrepare={handleCancelSeedrDownload}
+            onOpenProgress={() => {
+              setActiveTab('files');
+            }}
+            onOpenSeedrFiles={handleOpenSearchSeedrFiles}
+            seedrActiveDownload={seedrDownloadActive && seedrNotice ? {
+              name: seedrNotice.name,
+              folderId: String(seedrNotice.folderId || '').trim(),
+              folderPath: String(seedrNotice.folderId || '').trim()
+                ? '/Torrent Studio/' + (seedrNotice.name || 'Downloads')
+                : '',
+              status: seedrNotice.status,
+              progress: Number(seedrNotice.progress || 0),
+            } : null}
+            seedrFiles={seedrAllPrefetchedFiles}
+            seedrDeletedFolderIds={seedrDeletedFolderIds}
+            onPlaySeedrFile={handleStreamSeedrFile}
+            onDownloadSeedrFile={(file) => handleDownloadSeedrFile(file.id, file.name)}
+            onCopySeedrFileUrl={(file) => handleCopySeedrFileUrl(file.id)}
+          />
 
           {seedrInsufficientSpacePrompt && (
             <div className="fixed inset-x-3 top-20 z-[100] flex justify-center pointer-events-none">
@@ -2494,207 +2922,15 @@ export default function App() {
                   No completed files are currently visible in your Seedr library.                </div>
               )}
 
-              {seedrConfigured && (
-                <div className="mt-3">
-                  {selectedSeedrFolderId === null ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-2">
-                      {seedrFolderGroups.map(folder => {
-                        // Seedr always stores a torrent as a folder. Keep the                        // top-level library consistent even when the folder has
-                        // only one file; open it to access file actions.
-                        return (
-                          <div
-                            key={folder.folderId}
-                            className="h-full rounded-lg sm:rounded-xl bg-slate-900/80 border border-slate-800 px-2.5 sm:px-3 py-2 sm:py-3 hover:border-cyan-500/30 transition"
-                          >
-                            <div className="flex items-center gap-2.5">
-                              <button
-                                type="button"
-                                onClick={() => void handleOpenSeedrFolder(folder.folderId)}
-                                className="min-w-0 flex-1 text-left flex items-center gap-3"
-                                disabled={folder.folderId === '__root__'}
-                              >
-                                <div className="p-1.5 sm:p-2 rounded-lg bg-cyan-500/10 text-cyan-400 shrink-0">
-                                  <Folder className="w-4 h-4 sm:w-5 sm:h-5" />
-                                </div>
-                                <div className="min-w-0 flex-1">
-                                  <div className="truncate text-[13px] sm:text-sm font-semibold text-slate-100">{folder.name}</div>
-                                  <div className="text-[9px] sm:text-[10px] text-slate-500 mt-0.5">
-                                    {folder.filesCount} files • {formatBytes(folder.totalSize)}
-                                    {folder.active && <span className="text-emerald-300"> • Downloading</span>}
-                                  </div>
-                                  {folder.active && (
-                                    <div className="mt-1.5 flex items-center gap-2">
-                                      <div className="h-1.5 flex-1 rounded-full bg-slate-800 overflow-hidden">
-                                        <div
-                                          className="h-full rounded-full bg-emerald-400 transition-all duration-500"
-                                          style={{ width: (folder.progress ?? 0) + '%' }}
-                                        />
-                                      </div>
-                                      <span className="shrink-0 text-[10px] font-mono font-semibold text-emerald-300">
-                                        {Number(folder.progress ?? 0).toFixed(2).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '')}%
-                                      </span>
-                                    </div>
-                                  )}
-                                </div>
-                                <ChevronRight className="w-4 h-4 text-slate-500 shrink-0" />
-                              </button>
-
-                              {folder.active && (
-                                <div className="shrink-0">
-                                  <button
-                                    type="button"
-                                    onClick={() => void handleCancelSeedrDownload()}
-                                    disabled={isCancellingSeedr || seedrNotice?.taskId == null}
-                                    className="px-2.5 py-1.5 rounded-lg bg-rose-500/10 border border-rose-500/25 text-rose-300 hover:bg-rose-500/20 hover:text-rose-200 disabled:opacity-40 disabled:cursor-not-allowed text-[10px] font-bold transition"
-                                    title="Cancel Seedr download"
-                                  >
-                                    {isCancellingSeedr ? 'Cancelling…' : 'Cancel'}
-                                  </button>
-                                </div>
-                              )}
-
-                              {!folder.active && folder.folderId !== '__root__' && (
-                                <div className="flex items-center gap-1.5 shrink-0">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleDownloadSeedrFolder(folder.folderId, folder.name)}
-                                    className="px-2 py-1.5 sm:px-2.5 rounded-lg bg-emerald-400 text-slate-950 font-bold text-xs hover:bg-emerald-300 transition flex items-center gap-1"
-                                    title="Download folder"
-                                  >
-                                    <Download className="w-3.5 h-3.5" />
-                                    <span className="hidden sm:inline">Download</span>
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleDeleteSeedrFolder(folder.folderId)}
-                                    className="p-1.5 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-300 hover:bg-rose-500/20 hover:text-rose-200 transition"
-                                    title="Delete Seedr folder"
-                                  >
-                                    <Trash2 className="w-4 h-4" />
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}                    </div>
-                  ) : (
-                    (() => {
-                      const folder = seedrFolderGroups.find(item => item.folderId === selectedSeedrFolderId);
-                      if (!folder) return null;
-
-                      return (
-                        <div>
-                          <div className="flex items-center justify-between gap-3 mb-3">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setSelectedSeedrFolderId(null);
-                                setSeedrFiles([]);
-                                setSeedrFolderContentsLoading(false);
-                                setSeedrError(null);
-                              }}
-                              className="shrink-0 px-2 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap"
-                            >
-                              ← Back to folders
-                            </button>
-                            <div className="text-right min-w-0">
-                              <div className="text-sm font-semibold text-slate-100 truncate">{folder.name}</div>
-                              <div className="text-[10px] text-slate-500">{folder.filesCount} files • {formatBytes(folder.totalSize)}</div>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => handleDownloadSeedrFolder(folder.folderId)}
-                              className="shrink-0 px-2 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold text-xs hover:bg-emerald-300 transition whitespace-nowrap"
-                            >
-                              Download ZIP
-                            </button>
-                          </div>
-
-                          {seedrFolderContentsLoading ? (
-                            <div className="py-10 text-center text-xs text-slate-400">
-                              <RefreshCw className="w-5 h-5 mx-auto mb-2 animate-spin text-emerald-400" />
-                              Loading folder contents…
-                            </div>
-                          ) : (
-                            <div className="grid grid-cols-1 gap-2">
-                              {seedrFiles.slice().sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })).map(file => (
-                              <div
-                                key={file.id}
-                                className="flex items-center justify-between gap-3 rounded-xl bg-slate-900/80 border border-slate-800 px-3 py-2.5"
-                              >
-                                <div className="min-w-0">
-                                  <div className="truncate text-sm font-medium text-slate-200">{file.name}</div>
-                                  <div className="text-[10px] text-slate-500 mt-0.5">
-                                    {formatBytes(file.size)}
-                                    {file.downloading ? ' • Downloading' : ''}
-                                  </div>
-                                  {file.downloadProgress != null && (
-                                    <div className="mt-1.5 flex items-center gap-2 max-w-sm">
-                                      <div className="h-1.5 flex-1 rounded-full bg-slate-800 overflow-hidden">
-                                        <div
-                                          className="h-full rounded-full bg-emerald-400 transition-all duration-500"
-                                          style={{ width: Math.max(0, Math.min(100, file.downloadProgress)) + '%' }}
-                                        />
-                                      </div>
-                                      <span className="shrink-0 text-[10px] font-mono font-semibold text-emerald-300">
-                                        {Number(file.downloadProgress).toFixed(0)}%
-                                      </span>
-                                    </div>
-                                  )}
-                                </div>
-                                <div className="shrink-0 flex items-center gap-1.5">
-                                  {/\.(mkv|mp4|m4v|webm|mov|avi|m3u8|ts|mp3|wav|flac|aac|ogg|m4a)$/i.test(file.name) && (
-                                    <button
-                                      type="button"
-                                      onClick={() => void handleStreamSeedrFile(file)}
-                                      disabled={seedrStreamLoadingId === file.id}
-                                      className="p-2 rounded-xl bg-cyan-500 text-slate-950 font-bold text-xs hover:bg-cyan-400 transition disabled:opacity-60 disabled:cursor-wait flex items-center justify-center gap-1.5 tap-target"
-                                    >
-                                      {seedrStreamLoadingId === file.id ? (
-                                        <Loader2 className="w-4 h-4 animate-spin" />
-                                      ) : (
-                                        <Play className="w-4 h-4 fill-current translate-x-px" />
-                                      )}
-                                      <span className="hidden sm:inline">{seedrStreamLoadingId === file.id ? 'Preparing…' : 'Stream'}</span>
-                                    </button>
-                                  )}
-                                  <button
-                                    type="button"
-                                    onClick={() => handleDownloadSeedrFile(file.id, file.name)}
-                                    className="p-2 rounded-xl bg-emerald-400 text-slate-950 font-bold text-xs hover:bg-emerald-300 transition flex items-center justify-center tap-target"
-                                  >
-                                    <Download className="w-4 h-4 sm:hidden" />
-                                    <span className="hidden sm:inline">Download</span>
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => void handleCopySeedrFileUrl(file.id)}
-                                    className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition tap-target"
-                                    title="Copy direct download URL"
-                                  >
-                                    <Copy className="w-3.5 h-3.5" />
-                                    <span className="hidden sm:inline">{copiedSeedrFileId === file.id ? 'Copied' : 'Copy URL'}</span>
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleDeleteSeedrFile(file)}
-                                    className="p-1.5 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-300 hover:bg-rose-500/20 hover:text-rose-200 transition"
-                                    title="Delete this file"
-                                  >
-                                    <Trash2 className="w-4 h-4" />
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })()
-                  )}
+              {seedrConfigured && seedrPrefetchLoading && seedrAllPrefetchedFiles.length === 0 && (
+                <div className="mt-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-3 py-3 text-xs text-slate-400">
+                  <div className="flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin text-cyan-400" />
+                    <span>Loading your Seedr files…</span>
+                  </div>
                 </div>
-              )}            </div>
+              )}
+
 
             {/* Header & Breadcrumb & Search */}
             <div className="flex flex-col gap-2 p-2.5 sm:p-4 rounded-xl sm:rounded-2xl bg-slate-900 border border-slate-800">
@@ -2805,8 +3041,24 @@ export default function App() {
                         streamLoading={file.ownerId === 'seedr' && seedrStreamLoadingId === file.id}
                         onRename={(f) => setRenameItem({ id: f.id, name: f.name, isFolder: false })}
                         onMove={(f) => setMoveFile(f)}
+                        onSeedrDownload={file.ownerId === 'seedr'
+                          ? (f) => handleDownloadSeedrFile(f.id, f.name)
+                          : undefined}
+                        onSeedrCopy={file.ownerId === 'seedr'
+                          ? (f) => handleCopySeedrFileUrl(f.id)
+                          : undefined}
+                        onSeedrDelete={file.ownerId === 'seedr'
+                          ? (f) => {
+                              const seedrFile = seedrAllPrefetchedFiles.find(item => item.id === f.id);
+                              if (!seedrFile) {
+                                setSeedrError('Seedr file is no longer available. Refresh the library and try again.');
+                                return;
+                              }
+                              return handleDeleteSeedrFile(seedrFile);
+                            }
+                          : undefined}
                         canEdit={activeUser?.role !== 'viewer'}
-                        canDelete={activeUser?.role === 'admin'}
+                        canDelete={file.ownerId === 'seedr' ? true : activeUser?.role === 'admin'}
                       />
                     ))}
                   </div>
@@ -2861,86 +3113,26 @@ export default function App() {
                   </div>
                 )}
 
-                {(backgroundMetadataJobs.length > 0 || backgroundMetadataLoading) && (
-                  <div className="mt-3 rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
-                    <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="text-xs font-bold text-slate-100">Background metadata</div>
-                        <div className="text-[11px] text-slate-500 mt-0.5">
-                          Slow metadata lookups keep retrying for up to 6 hours. Jobs are independent of Seedr downloads.
+                {seedrDownloadActive && seedrNotice && (
+                  <div className="mt-3 rounded-xl border border-emerald-500/25 bg-emerald-500/5 px-3.5 py-3">
+                    <div className="flex items-center gap-3">
+                      <Loader2 className="h-5 w-5 shrink-0 animate-spin text-emerald-400" />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-bold text-slate-100 truncate">Loading {seedrNotice.name || 'torrent'} in Seedr</div>
+                        <div className="mt-0.5 text-[11px] text-slate-400">{Number(seedrNotice.progress || 0).toFixed(1)}% complete</div>
+                        <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                          <div className="h-full rounded-full bg-emerald-400 transition-all duration-500" style={{ width: Math.max(0, Math.min(100, Number(seedrNotice.progress) || 0)) + '%' }} />
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => { void refreshBackgroundMetadataJobs(); }}
-                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-semibold"
-                      >
-                        Refresh
+                      <button type="button" onClick={() => void handleCancelSeedrDownload()} disabled={isCancellingSeedr} className="shrink-0 rounded-lg border border-rose-500/25 bg-rose-500/10 px-2.5 py-1.5 text-[10px] font-bold text-rose-300 hover:bg-rose-500/20 disabled:opacity-50">
+                        {isCancellingSeedr ? 'Cancelling…' : 'Cancel'}
                       </button>
-                    </div>
-
-                    <div className="divide-y divide-slate-800">
-                      {backgroundMetadataJobs.map((job) => {
-                        const active = job.status === 'queued' || job.status === 'resolving';
-                        const terminalReady = job.status === 'ready';
-                        const elapsedSeconds = Math.max(0, Number(job.elapsedSeconds || 0));
-                        const remainingSeconds = Math.max(0, Number(job.remainingSeconds || 0));
-                        const elapsedMinutes = Math.floor(elapsedSeconds / 60);
-                        const elapsedHours = Math.floor(elapsedMinutes / 60);
-                        const elapsedLabel = elapsedHours > 0
-                          ? `${elapsedHours}h ${elapsedMinutes % 60}m`
-                          : `${elapsedMinutes}m`;
-                        const remainingHours = Math.floor(remainingSeconds / 3600);
-                        const remainingMinutes = Math.floor((remainingSeconds % 3600) / 60);
-                        const remainingLabel = remainingHours > 0
-                          ? `${remainingHours}h ${remainingMinutes}m remaining`
-                          : `${Math.max(1, remainingMinutes)}m remaining`;
-                        const displayName = job.name || (job.hash ? `Torrent ${job.hash.slice(0, 12)}…` : 'Torrent metadata job');
-
-                        return (
-                          <div key={job.jobId} className="px-4 py-3 flex flex-col lg:flex-row lg:items-center gap-3">
-                            <div className="shrink-0">
-                              <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${terminalReady ? 'bg-emerald-500/10 text-emerald-400' : job.status === 'error' ? 'bg-rose-500/10 text-rose-400' : 'bg-cyan-500/10 text-cyan-400'}`}>
-                                {terminalReady ? '✓' : job.status === 'error' ? '✗' : <Loader2 className="w-4 h-4 animate-spin" />}
-                              </div>
-                            </div>
-
-                            <div className="min-w-0 flex-1">
-                              <div className="text-xs font-semibold text-slate-100 truncate" title={displayName}>{displayName}</div>
-                              <div className="text-[10px] text-slate-500 font-mono mt-0.5 truncate">{job.hash}</div>
-                              <div className="text-[11px] text-slate-400 mt-1">
-                                {terminalReady
-                                  ? `Completed • ${job.fileCount || 0} files • ${formatBytes(Number(job.totalSize || 0))}`
-                                  : job.status === 'error'
-                                    ? (job.error || 'Metadata resolution failed.')
-                                    : `Resolving • round ${job.rounds || 0} • ${elapsedLabel} elapsed • ${remainingLabel}`}
-                              </div>
-                            </div>
-
-                            <div className="flex items-center gap-2 shrink-0">
-                              <span className={`px-2 py-1 rounded-lg text-[10px] font-semibold ${terminalReady ? 'bg-emerald-500/10 text-emerald-300' : job.status === 'error' ? 'bg-rose-500/10 text-rose-300' : 'bg-cyan-500/10 text-cyan-300'}`}>
-                                {terminalReady ? 'Completed' : job.status === 'error' ? 'Failed' : active ? 'Resolving' : job.status}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const magnet = job.hash ? `magnet:?xt=urn:btih:${job.hash}` : '';
-                                  openAddMagnet(magnet);
-                                  setActiveTab('files');
-                                }}
-                                className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-semibold"
-                              >
-                                Open
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
                     </div>
                   </div>
                 )}
 
-          </div>
+              </div>
+            </div>
         )}
 
         {/* TAB 3: SHARED STORAGE & MULTI-USER */}
@@ -3029,50 +3221,8 @@ export default function App() {
             </div>
           </div>
         )}
+        {/* Activity Log and Auto-Cleanup/Disk tabs are intentionally hidden. */}
 
-        {/* TAB 4: ACTIVITY LOG */}
-        {activeTab === 'activity' && (
-          <ActivityLogView
-            logs={activityLogs}
-            onClearLogs={async () => {
-              await api.clearLogs();
-              try { window.localStorage.removeItem(activityStorageKey); } catch {}
-              setActivityLogs([]);
-            }}
-            onRefresh={async () => {
-              const logs = await api.getLogs();
-              setActivityLogs(logs);
-            }}
-          />
-        )}
-
-        {/* TAB 5: STORAGE & AUTO-CLEANUP */}
-        {activeTab === 'storage' && storageStats && cleanupSettings && (
-          <div className="space-y-4">
-            <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
-              {/* Storage Cards Grid */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
-                <p className="text-xs text-slate-400 uppercase font-semibold tracking-wider">Used Storage</p>
-                <p className="text-xl font-bold font-mono text-cyan-400 mt-1">{formatBytes(storageStats.usedBytes)}</p>
-                <p className="text-[11px] text-slate-500 mt-1">{Number(storageStats.usedPercentage || 0).toFixed(2)}% of total server capacity</p>
-              </div>
-
-              <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
-                <p className="text-xs text-slate-400 uppercase font-semibold tracking-wider">Available Free Space</p>
-                <p className="text-xl font-bold font-mono text-emerald-400 mt-1">{formatBytes(storageStats.freeBytes)}</p>
-                <p className="text-[11px] text-slate-500 mt-1">Ready for high-bandwidth downloads</p>
-              </div>
-
-              <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
-                <p className="text-xs text-slate-400 uppercase font-semibold tracking-wider">Total Server Disk</p>
-                <p className="text-xl font-bold font-mono text-slate-100 mt-1">{formatBytes(storageStats.totalBytes)}</p>
-                
-              </div>
-            </div>
-          </div>
-          </div>
-        )}
       </main>
 
       {/* Floating Bottom Media Player (when minimized or active) */}
@@ -3092,57 +3242,11 @@ export default function App() {
         onToggleMinimize={() => setIsPlayerMinimized(!isPlayerMinimized)}
       />
 
-      {/* Mobile More actions sheet */}
-      {isMobileMoreOpen && (
-        <>
-          <button
-            type="button"
-            aria-label="Close more menu"
-            onClick={() => setIsMobileMoreOpen(false)}
-            className="md:hidden fixed inset-0 z-40 bg-black/50 backdrop-blur-[1px]"
-          />
-          <div className="md:hidden fixed left-3 right-3 bottom-20 z-50 rounded-2xl bg-slate-900 border border-slate-700 shadow-2xl p-3">
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => { setActiveTab('activity'); setIsMobileMoreOpen(false); }}
-                className="p-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-2"
-              >
-                <History className="w-4 h-4 text-cyan-400" />
-                Activity Log
-              </button>
-
-              <button
-                type="button"
-                onClick={() => { setActiveTab('storage'); setIsMobileMoreOpen(false); }}
-                className="p-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-2"
-              >
-                <Sparkles className="w-4 h-4 text-cyan-400" />
-                Storage
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setTheme(theme === 'dark' ? 'dim' : theme === 'dim' ? 'light' : 'dark');
-                }}
-                className="p-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-2"
-              >
-                {theme === 'light'
-                  ? <Sun className="w-4 h-4 text-amber-400" />
-                  : <Moon className="w-4 h-4 text-cyan-400" />}
-                Theme: {theme}
-              </button>
-            </div>
-          </div>
-        </>
-      )}
-
       {/* Mobile Bottom Navigation */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-slate-950/95 backdrop-blur-xl border-t border-slate-800 px-1 pb-[calc(env(safe-area-inset-bottom)+2px)] pt-1">
-        <div className="grid grid-cols-4 items-center">
+        <div className="grid grid-cols-3 items-center">
           <button
-            onClick={() => { setActiveTab('search'); setIsMobileMoreOpen(false); }}
+            onClick={() => { setActiveTab('search'); }}
             className={`flex flex-col items-center justify-center gap-0.5 min-h-11 px-1 rounded-lg transition ${activeTab === 'search' ? 'text-cyan-400' : 'text-slate-400'}`}
           >
             <Search className="w-[18px] h-[18px]" />
@@ -3150,7 +3254,7 @@ export default function App() {
           </button>
 
           <button
-            onClick={() => { setActiveTab('files'); setIsMobileMoreOpen(false); }}
+            onClick={() => { setActiveTab('files'); }}
             className={`flex flex-col items-center justify-center gap-0.5 min-h-12 px-1 rounded-xl transition ${activeTab === 'files' ? 'text-cyan-400' : 'text-slate-400'}`}
           >
             <Folder className="w-5 h-5" />
@@ -3158,11 +3262,16 @@ export default function App() {
           </button>
 
           <button
-            onClick={() => setIsMobileMoreOpen(prev => !prev)}
-            className={`flex flex-col items-center justify-center gap-0.5 min-h-12 px-1 rounded-xl transition ${isMobileMoreOpen || activeTab === 'activity' || activeTab === 'storage' ? 'text-cyan-400' : 'text-slate-400'}`}
+            type="button"
+            onClick={() => {
+              setFeedbackOpen(true);
+              setFeedbackSuccess('');
+              setFeedbackError('');
+            }}
+            className={`flex flex-col items-center justify-center gap-0.5 min-h-12 px-1 rounded-xl transition ${feedbackOpen ? 'text-cyan-400' : 'text-slate-400'}`}
           >
-            <Layers className="w-5 h-5" />
-            <span className="text-[9px] font-semibold">More</span>
+            <MessageSquare className="w-5 h-5" />
+            <span className="text-[9px] font-semibold">Feedback</span>
           </button>
         </div>
       </nav>
@@ -3262,6 +3371,268 @@ export default function App() {
           onConfirm={handleConfirmDelete}
           onClose={() => setDeleteTarget(null)}
         />
+      )}
+      {feedbackOpen && (
+        <div
+          className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/70 px-4 py-6 backdrop-blur-md"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="feedback-title"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setFeedbackOpen(false);
+          }}
+        >
+          <div
+            className="relative w-full max-w-md rounded-2xl border border-cyan-500/20 bg-slate-900 p-5 shadow-2xl sm:p-6"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              aria-label="Close feedback"
+              onClick={() => setFeedbackOpen(false)}
+              className="absolute right-3 top-3 flex h-9 w-9 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-800 hover:text-white"
+            >
+              <span className="text-2xl leading-none">×</span>
+            </button>
+
+            <div className="flex items-start gap-3 pr-8">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-cyan-500/10 text-cyan-400">
+                <MessageSquare className="h-6 w-6" />
+              </div>
+              <div>
+                <h2 id="feedback-title" className="text-lg font-bold text-slate-100">Feedback</h2>
+                <p className="mt-1 text-sm leading-5 text-slate-400">
+                  Tell us what you think, suggest an improvement, or report a problem.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-5 grid grid-cols-3 gap-2">
+              {([
+                ['review', 'Review'],
+                ['suggestion', 'Suggestion'],
+                ['bug', 'Problem'],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setFeedbackType(value)}
+                  className={feedbackType === value
+                    ? 'rounded-xl bg-cyan-500 px-3 py-2.5 text-xs font-bold text-slate-950'
+                    : 'rounded-xl border border-slate-700 bg-slate-800 px-3 py-2.5 text-xs font-semibold text-slate-300 hover:bg-slate-700'}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {feedbackType === 'review' && (
+              <div className="mt-4">
+                <p className="text-xs font-semibold text-slate-300">Rating</p>
+                <div className="mt-2 flex gap-1.5">
+                  {[1, 2, 3, 4, 5].map(value => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setFeedbackRating(value)}
+                      aria-label={`${value} star${value === 1 ? '' : 's'}`}
+                      className={value <= feedbackRating ? 'text-amber-400 text-2xl leading-none' : 'text-slate-700 text-2xl leading-none'}
+                    >
+                      ★
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <textarea
+              value={feedbackMessage}
+              onChange={event => setFeedbackMessage(event.target.value)}
+              placeholder={feedbackType === 'review' ? 'How is Torrent Studio for you?' : feedbackType === 'suggestion' ? 'What would you like us to add or improve?' : 'What went wrong?'}
+              maxLength={3000}
+              rows={5}
+              className="mt-4 w-full resize-none rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-cyan-500/50 focus:ring-2 focus:ring-cyan-500/10"
+            />
+
+            <input
+              value={feedbackName}
+              onChange={event => setFeedbackName(event.target.value)}
+              maxLength={80}
+              placeholder="Name (optional)"
+              className="mt-3 w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-cyan-500/50 focus:ring-2 focus:ring-cyan-500/10"
+            />
+
+            {feedbackError && (
+              <div className="mt-3 rounded-xl border border-rose-500/25 bg-rose-500/10 p-3 text-xs leading-5 text-rose-200">
+                {feedbackError}
+              </div>
+            )}
+            {feedbackSuccess && (
+              <div className="mt-3 rounded-xl border border-emerald-500/25 bg-emerald-500/10 p-3 text-xs leading-5 text-emerald-200">
+                {feedbackSuccess}
+              </div>
+            )}
+
+            <button
+              type="button"
+              disabled={feedbackSubmitting || feedbackMessage.trim().length < 5}
+              onClick={() => void submitFeedback()}
+              className="mt-4 w-full rounded-xl bg-cyan-500 px-4 py-3 text-sm font-bold text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {feedbackSubmitting ? 'Sending…' : 'Send Feedback'}
+            </button>
+
+            <p className="mt-3 text-center text-[11px] leading-4 text-slate-600">
+              Your feedback is reviewed by the Torrent Studio team.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {seedrOnboardingOpen && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-slate-950/50 px-4 py-6 backdrop-blur-[3px]"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="seedr-onboarding-title"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setSeedrOnboardingOpen(false);
+            }
+          }}
+        >
+          <div
+            className="relative my-auto w-full max-w-lg rounded-2xl border border-emerald-500/25 bg-slate-900/95 p-5 shadow-2xl shadow-emerald-500/10 sm:p-6"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              aria-label="Close Seedr connection dialog"
+              onClick={() => setSeedrOnboardingOpen(false)}
+              className="absolute right-3 top-3 flex h-9 w-9 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-800 hover:text-white"
+            >
+              <span className="text-2xl leading-none">×</span>
+            </button>
+
+            <div className="flex items-start gap-3 pr-8">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-400">
+                <Cloud className="h-6 w-6" />
+              </div>
+              <div className="min-w-0">
+                <h2 id="seedr-onboarding-title" className="text-lg font-bold text-slate-100">
+                  {seedrConnected ? 'Seedr account connected' : 'Connect to Seedr'}
+                </h2>
+                <p className="mt-1 text-sm leading-5 text-slate-400">
+                  {seedrConnected
+                    ? 'Torrent Studio is connected to your Seedr account.'
+                    : 'Connect your own Seedr account to send torrents directly to your Seedr storage.'}
+                </p>
+              </div>
+            </div>
+
+            {seedrConnected ? (
+              <>
+                <div className="mt-5 rounded-xl border border-emerald-500/25 bg-emerald-500/10 p-4">
+                  <p className="text-sm font-semibold text-emerald-200">Connected successfully</p>
+                  <p className="mt-1 text-xs leading-5 text-slate-300">
+                    This browser session is using your Seedr account. No shared Seedr storage is used.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSeedrOnboardingOpen(false)}
+                  className="mt-5 w-full rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-bold text-slate-950 transition hover:bg-emerald-400"
+                >
+                  Done
+                </button>
+              </>
+            ) : (
+              <div className="mt-5 space-y-4">
+                <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/10 p-4">
+                  <div className="flex items-start gap-3">
+                    <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-emerald-400" />
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-emerald-200">Paste your Seedr token</p>
+                      <p className="mt-1 text-xs leading-5 text-slate-300">
+                        Paste your Personal Access Token below. Your Seedr password is never requested.
+                      </p>
+                    </div>
+                  </div>
+
+                  <input
+                    type="password"
+                    value={seedrPat}
+                    onChange={(e) => setSeedrPat(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !seedrPatSubmitting) {
+                        void connectSeedrWithPat();
+                      }
+                    }}
+                    placeholder="Paste your Seedr token"
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="mt-4 w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 font-mono text-sm text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-emerald-500/50 focus:ring-2 focus:ring-emerald-500/10"
+                  />
+
+                  {seedrConnectError && (
+                    <div className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3">
+                      <p className="text-xs leading-5 text-amber-100">{seedrConnectError}</p>
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    disabled={seedrPatSubmitting || !seedrPat.trim()}
+                    onClick={() => { void connectSeedrWithPat(); }}
+                    className="mt-3 w-full rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-bold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {seedrPatSubmitting ? (
+                      <span className="inline-flex items-center justify-center gap-2">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Connecting…
+                      </span>
+                    ) : (
+                      'Connect'
+                    )}
+                  </button>
+                </div>
+
+                <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4">
+                  <div className="flex items-center gap-2">
+                    <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-cyan-500/10 text-xs font-black text-cyan-300">?</div>
+                    <p className="text-sm font-bold text-slate-100">How to create your token</p>
+                  </div>
+
+                  <ol className="mt-3 space-y-2.5 pl-5 text-xs leading-5 text-slate-300 list-decimal">
+                    <li>
+                      Click the{' '}
+                      <a
+                        href="https://www.seedr.cc/api/v0.1/console/login?redirect_to=%2Fapi%2Fv0.1%2Fconsole%2Ftokens"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-semibold text-emerald-300 underline decoration-emerald-500/40 underline-offset-2 hover:text-emerald-200"
+                      >
+                        token page link here
+                      </a>.
+                    </li>
+                    <li>Click <span className="font-semibold text-slate-100">Google Login</span>.</li>
+                    <li>Token page opens.</li>
+                    <li>Token Name = <span className="font-semibold text-slate-100">Any name</span>.</li>
+                    <li><span className="font-semibold text-slate-100">Expiration</span> = <span className="font-semibold text-slate-100">Never</span>.</li>
+                    <li>Scopes = click <span className="font-semibold text-slate-100">Full Account Access</span>.</li>
+                    <li>Go below and click <span className="font-semibold text-slate-100">Generate Token</span>.</li>
+                    <li>Copy the token and save it somewhere safe.</li>
+                    <li>Paste that same token into Torrent Studio above and click <span className="font-semibold text-slate-100">Connect</span>.</li>
+                  </ol>
+                </div>
+
+                <p className="text-center text-[11px] leading-4 text-slate-500">
+                  Your token is sent only to Torrent Studio over HTTPS and is kept in your secure browser session.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );
