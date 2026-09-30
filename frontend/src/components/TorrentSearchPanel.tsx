@@ -325,10 +325,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   };
 
   const sortedResults = useMemo(() => {
-    const maxSeedrFriendlySize = 2 * 1024 * 1024 * 1024;
+    const maxSearchResultSize = 5 * 1024 * 1024 * 1024;
     const sorted = results.filter(result => {
       const size = Number(result.size) || 0;
-      if (size > maxSeedrFriendlySize) return false;
+      if (size > maxSearchResultSize) return false;
       if (resolutionFilter) {
         const title = String(result.title || '');
         const pattern = resolutionFilter === '720p' ? /(?:^|[^0-9])720p(?:[^0-9]|$)/i : /(?:^|[^0-9])1080p(?:[^0-9]|$)/i;
