@@ -855,8 +855,10 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       }
     }, 15000);
 
-    const singleAudioFile = audioTracks.length <= 1;
-    const audioRequest = singleAudioFile
+    const useNativeSeedrAudio =
+      audioTracks.length <= 1 ||
+      trackIndex === primaryAudioIndexRef.current;
+    const audioRequest = useNativeSeedrAudio
       ? api.getSeedrNativeAudioUrl(fileId).then(({ url }) => ({
           url: url.startsWith('/') ? API_BASE + url : url,
           protocol: 'native-seedr-audio',
@@ -942,26 +944,9 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       const wasPlaying = !media.paused;
       setSelectedAudioIndex(next);
 
-      // Single-audio direct streams use Seedr's native video+audio.
-      if (audioTracks.length <= 1) {
-        clearAlternateAudio(true);
-        media.volume = isMutedRef.current ? 0 : volume;
-        media.muted = isMutedRef.current;
-        media.currentTime = position;
-        if (wasPlaying) {
-          media.play()
-            .then(() => {
-              setIsPlaying(true);
-              setTrackNotice('');
-            })
-            .catch(() => setIsPlaying(false));
-        } else {
-          setIsPlaying(false);
-          setTrackNotice('');
-        }
-        return;
-      }
-
+      // Keep the selected track on the companion audio pipeline. For the
+      // primary track this uses Seedr's native audio rendition; alternate
+      // embedded tracks use the existing track-specific fallback.
       loadAlternateAudio(next, position, wasPlaying);
       return;
     }
@@ -969,9 +954,9 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     setTrackNotice('Selected audio track is not available in this stream.');
   };
   // Hybrid audio strategy:
-  // - Single-audio direct streams keep Seedr's native video+audio together.
-  // - Multi-audio direct streams use a second synchronized audio element only
-  //   when the user selects an alternate track.
+  // - Direct Seedr video always keeps the video on its native Range stream.
+  // - Primary audio uses Seedr's prepared native audio rendition.
+  // - Alternate embedded tracks use the existing synchronized audio fallback.
   useEffect(() => {
     if (!isVideo || !file?.streamUrl?.includes('/api/seedr/media/video/')) return;
     if (!mediaRef.current || audioTracks.length === 0 || selectedAudioIndex === undefined) return;
@@ -1003,17 +988,9 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       return;
     }
 
-    // Multi-audio: keep the primary track on native video audio until an
-    // alternate track is selected.
-    if (primary !== undefined && selectedAudioIndex === primary) {
-      if (alternateAudioIndexRef.current !== undefined) {
-        clearAlternateAudio(true);
-      }
-      media.volume = isMutedRef.current ? 0 : volume;
-      media.muted = isMutedRef.current;
-      return;
-    }
-
+    // Multi-audio: use the native Seedr audio rendition for the primary track
+    // as well, because the video presentation itself may expose no audible
+    // track in Chromium.
     if (
       alternateAudioIndexRef.current === selectedAudioIndex &&
       alternateAudioRef.current?.src
