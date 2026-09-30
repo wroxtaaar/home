@@ -38,12 +38,19 @@ import {
 const configuredApiBase = String(import.meta.env.VITE_API_URL || '').trim();
 const currentHost = typeof window !== 'undefined' ? window.location.hostname : '';
 const isRenderFullStackHost = currentHost.endsWith('.onrender.com');
-export const API_BASE = (
-  configuredApiBase ||
-  (isRenderFullStackHost
-    ? window.location.origin
-    : 'https://home-a9e7.onrender.com')
-).replace(/\/+$/, '');
+
+// Ignore a stale new-test Render URL left in Vercel build settings.
+// home-a9e7.onrender.com is the canonical backend for this project.
+const normalizedConfiguredApiBase = configuredApiBase.replace(/\/+$/, '');
+const isKnownStaleApi = normalizedConfiguredApiBase.toLowerCase().includes('new-test');
+
+export const API_BASE =
+  normalizedConfiguredApiBase && !isKnownStaleApi
+    ? normalizedConfiguredApiBase
+    : (isRenderFullStackHost
+      ? window.location.origin
+      : 'https://home-a9e7.onrender.com');
+
 const makeSeedrError = (data: any, body: string, status: number, fallback: string) => {
   const error = new Error(
     data?.error ||
