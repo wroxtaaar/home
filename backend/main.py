@@ -2809,7 +2809,8 @@ async def search_1337x(query: str, limit: int = 50, allow_series_fallback: bool 
                                     providers.append(provider)
                             except Exception as exc:
                                 logger.info("TV episode enrichment failed for '%s': %s", query, exc)
-                break
+                if not tasks:
+                    break
     finally:
         all_tasks = [knaben_task, csv_task, api_task] + ([tv_task] if tv_task is not None else [])
         for task in all_tasks:
