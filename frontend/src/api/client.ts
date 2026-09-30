@@ -42,7 +42,7 @@ export const API_BASE = (
   configuredApiBase ||
   (isRenderFullStackHost
     ? window.location.origin
-    : 'https://new-test-dmkr.onrender.com')
+    : 'https://home-a9e7.onrender.com')
 ).replace(/\/+$/, '');
 const makeSeedrError = (data: any, body: string, status: number, fallback: string) => {
   const error = new Error(
