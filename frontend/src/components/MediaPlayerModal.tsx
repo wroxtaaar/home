@@ -77,7 +77,14 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     setMediaError('');
     setUsingDirectFallback(false);
     hlsActiveRef.current = false;
-  }, [file?.id]);
+
+    // Seedr's V2 presentation needs an explicit audio rendition for some
+    // video files. Start direct Seedr playback on track 0; changing the
+    // selector later simply replaces this with ?audio=N.
+    const isSeedrDirectVideo =
+      Boolean(file?.type === 'video' && file?.streamUrl?.includes('/api/seedr/media/video/'));
+    setSelectedAudioIndex(isSeedrDirectVideo ? 0 : undefined);
+  }, [file?.id, file?.type, file?.streamUrl]);
 
   useEffect(() => {
     const media = mediaRef.current;
@@ -222,8 +229,19 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       .then(response => response.ok ? response.json() : null)
       .then(data => {
         if (cancelled || !data) return;
-        setAudioTracks(Array.isArray(data.audioTracks) ? data.audioTracks : []);
+        const tracks = Array.isArray(data.audioTracks) ? data.audioTracks : [];
+        setAudioTracks(tracks);
         setSubtitleTracks(Array.isArray(data.subtitleTracks) ? data.subtitleTracks : []);
+
+        // Keep the actual Seedr default track when metadata is available.
+        // Falling back to track 0 also ensures the first playback request
+        // always carries an explicit audio rendition.
+        if (tracks.length > 0) {
+          const defaultTrack = tracks.find((track: any) => track.default) || tracks[0];
+          if (defaultTrack && Number.isInteger(Number(defaultTrack.index))) {
+            setSelectedAudioIndex(Number(defaultTrack.index));
+          }
+        }
       })
       .catch(error => console.warn('[MEDIA] track metadata unavailable:', error));
 
