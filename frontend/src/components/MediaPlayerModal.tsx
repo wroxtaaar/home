@@ -471,15 +471,17 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
 
         {/* Hidden or small video preview */}
         {isVideo ? (
-          <video
-            ref={videoRef}
-            src={file.streamUrl || file.externalStreamUrl}
-            className="w-full h-32 object-contain bg-black rounded-lg"
-            onTimeUpdate={onTimeUpdate}
-            onLoadedMetadata={onLoadedMetadata}
-            onEnded={() => setIsPlaying(false)}
-          />
-          {file.streamUrl.includes('/api/seedr/') && <audio ref={audioRef} preload="none" className="hidden" />}
+          <>
+            <video
+              ref={videoRef}
+              src={file.streamUrl || file.externalStreamUrl}
+              className="w-full h-32 object-contain bg-black rounded-lg"
+              onTimeUpdate={onTimeUpdate}
+              onLoadedMetadata={onLoadedMetadata}
+              onEnded={() => setIsPlaying(false)}
+            />
+            {file.streamUrl.includes('/api/seedr/') && <audio ref={audioRef} preload="none" className="hidden" />}
+          </>
         ) : (
           <audio
             ref={audioRef}
