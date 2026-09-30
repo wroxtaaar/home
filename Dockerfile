@@ -33,7 +33,7 @@ COPY --from=frontend-build /frontend/dist ./frontend-dist
 # Nginx serves the exact built React frontend and proxies API/media requests
 # to the exact FastAPI backend. No application source files are changed.
 RUN rm -f /etc/nginx/sites-enabled/default \
-    && printf '%s\n' \
+    && ln -s /etc/nginx/sites-available/torrent-studio /etc/nginx/sites-enabled/torrent-studio \n    && printf '%s\n' \
 'server {' \
 '    listen 10000;' \
 '    server_name _;' \
