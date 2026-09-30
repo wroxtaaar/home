@@ -2755,36 +2755,23 @@ async def seedr_file_stream(
     resolved_id = await resolve_seedr_stream_id(file_id, name)
 
     if type == "video":
-        # Seedr's V2 presentation URL is already browser-playable for the
-        # direct ff_get/presentation responses we have verified in Chrome,
-        # including Range-based seeking. Proxy that URL through our own
-        # same-origin endpoint so the browser never needs Seedr CORS headers
-        # and the Seedr URL/token is not exposed to the page.
-        #
-        # HLS is intentionally kept as a fallback. It is more expensive and
-        # can introduce an unnecessary conversion/proxy layer when Seedr
-        # already provides a browser-compatible presentation.
         presentation_url = await seedr_v2_video_url(resolved_id)
-        if presentation_url:
-            return {
-                "url": "/api/seedr/media/video/" + quote(resolved_id, safe=""),
-                "externalUrl": presentation_url,
-                "name": name or resolved_id,
-                "resolvedFileId": resolved_id,
-                "protocol": "direct",
-            }
-
-        try:
-            await _fetch_seedr_hls_manifest(resolved_id)
-            return {
-                "url": "/api/seedr/hls/" + quote(resolved_id, safe=""),
-                "externalUrl": _seedr_media_url(resolved_id, "video"),
-                "name": name or resolved_id,
-                "resolvedFileId": resolved_id,
-                "protocol": "hls",
-            }
-        except HTTPException:
-            raise
+        if presentation_url and not await _presentation_is_hls(presentation_url):
+            # Seedr can return a browser-compatible direct presentation stream
+            # (MP4) instead of an HLS playlist. Proxy that stream so Chrome can
+            # use Range requests without exposing the Seedr token.
+            browser_url = "/api/seedr/media/video/" + quote(resolved_id, safe="")
+            protocol = "direct"
+        else:
+            browser_url = "/api/seedr/hls/" + quote(resolved_id, safe="")
+            protocol = "hls"
+        return {
+            "url": browser_url,
+            "externalUrl": presentation_url or _seedr_media_url(resolved_id, "video"),
+            "name": name or resolved_id,
+            "resolvedFileId": resolved_id,
+            "protocol": protocol,
+        }
 
     return {
         "url": "/api/seedr/media/audio/" + quote(resolved_id, safe=""),
