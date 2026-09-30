@@ -692,6 +692,17 @@ export const api = {
     };
   },
 
+  async getSeedrNativeAudioUrl(fileId: string): Promise<{ url: string }> {
+    const res = await apiFetch('/api/seedr/media/native-audio/' + encodeURIComponent(fileId));
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch {}
+    if (!res.ok) throw new Error(data?.error || body || 'Failed to resolve Seedr native audio stream');
+    return {
+      url: '/api/seedr/media/native-audio/' + encodeURIComponent(fileId),
+    };
+  },
+
   async getSeedrAudioPresentationUrl(fileId: string, track: number, start = 0): Promise<{ url: string; protocol?: string; start?: number }> {
     const params = new URLSearchParams({
       track: String(track),
