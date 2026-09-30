@@ -12,6 +12,7 @@ export interface TorrentSearchResult {
   downloadUrl?: string;
   infoUrl?: string;
   sourceUrl?: string;
+  descriptorUrl?: string;
 }
 
 import {
@@ -117,7 +118,7 @@ export const api = {
     if (!res.ok) throw new Error('Failed to set file priority');
   },
 
-  async inspectMagnet(magnet: string, category = 'Downloads', sourceUrl = ''): Promise<{
+  async inspectMagnet(magnet: string, category = 'Downloads', sourceUrl = '', descriptorUrl = ''): Promise<{
     name: string;
     hash: string;
     files: { index: number; name: string; size: number; path: string; type: string; priority?: number }[];
@@ -126,12 +127,18 @@ export const api = {
     pending?: boolean;
     createdPreview?: boolean;
     message?: string;
+    jobId?: string;
   }> {
     const request = async () => {
       const res = await apiFetch('/api/v2/torrents/inspect-magnet', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ magnet, category, sourceUrl: sourceUrl || undefined })
+        body: JSON.stringify({
+          magnet,
+          category,
+          sourceUrl: sourceUrl || undefined,
+          descriptorUrl: descriptorUrl || undefined
+        })
       });
       const body = await res.text();
       let data: any = null;
@@ -160,7 +167,10 @@ export const api = {
 
     // Keep the UI responsive while the backend resolver stays alive and
     // benefits from its warm libtorrent session/cache.
-    for (let attempt = 0; attempt < 60; attempt++) {
+    // Do not keep the modal blocked for a full minute. Return a pending
+    // result after a short foreground wait so the UI can move the resolver
+    // into My Cloud Files and the user can continue working.
+    for (let attempt = 0; attempt < 12; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 1000));
 
       const res = await apiFetch(
@@ -184,7 +194,29 @@ export const api = {
       }
     }
 
-    throw new Error('Torrent metadata is still resolving. Please retry in a moment.');
+    return {
+      name: '',
+      hash: jobId,
+      files: [],
+      totalSize: 0,
+      source: 'libtorrent_metadata',
+      pending: true,
+      jobId,
+      message: 'Torrent metadata is still resolving in the background. Seedr has not been started.'
+    };
+  },
+
+  async getTorrentMetadataStatus(jobId: string): Promise<any> {
+    const res = await apiFetch(
+      '/api/v2/torrents/inspect-magnet/status?jobId=' + encodeURIComponent(jobId)
+    );
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch {}
+    if (!res.ok) {
+      throw new Error(data?.error || data?.message || body || 'Torrent metadata status failed');
+    }
+    return data;
   },
 
   async uploadTorrentFile(file: File): Promise<{
