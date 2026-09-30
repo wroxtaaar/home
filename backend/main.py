@@ -4421,15 +4421,12 @@ async def seedr_v2_request(path: str) -> Any:
         )
     return data
 
-async def seedr_v2_video_url(file_id: str, audio_index: int | None = None) -> str:
-    """Resolve Seedr's browser presentation, optionally selecting an audio rendition."""
+async def seedr_v2_video_url(file_id: str) -> str:
+    """Use Seedr V2 current presentation URL, with direct-download fallback."""
     if not file_id:
         return ""
     try:
-        presentation_path = f"/presentations/file/{quote(file_id)}/video"
-        if audio_index is not None and audio_index >= 0:
-            presentation_path += "?" + urlencode({"audio": str(audio_index)})
-        payload = seedr_data(await seedr_v2_request(presentation_path))
+        payload = seedr_data(await seedr_v2_request(f"/presentations/file/{quote(file_id)}/video"))
         if isinstance(payload, dict):
             link = payload.get("link")
             link_url = link.get("url") if isinstance(link, dict) else ""
@@ -4437,11 +4434,7 @@ async def seedr_v2_video_url(file_id: str, audio_index: int | None = None) -> st
             if url.startswith(("http://", "https://")):
                 return url
     except HTTPException:
-        if audio_index is not None:
-            return ""
-
-    if audio_index is not None:
-        return ""
+        pass
 
     try:
         payload = seedr_data(await seedr_v2_request(f"/download/file/{quote(file_id)}/url"))
@@ -4453,7 +4446,6 @@ async def seedr_v2_video_url(file_id: str, audio_index: int | None = None) -> st
         pass
 
     return ""
-
 
 
 def _absolute_hls_uri(base_url: str, uri: str) -> str:
