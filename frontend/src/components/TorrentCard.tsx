@@ -10,7 +10,7 @@ import {
   Users
 } from 'lucide-react';
 import { TorrentItem } from '../types/index.ts';
-import { formatBytes, formatSpeed, formatETA } from '../utils/formatters.ts';
+import { formatBytes, formatETA } from '../utils/formatters.ts';
 
 interface TorrentCardProps {
   torrent: TorrentItem;
@@ -235,10 +235,6 @@ export const TorrentCard: React.FC<TorrentCardProps> = ({
         <div className="flex items-center gap-2.5 sm:justify-end flex-wrap">
           {isDownloading && (
             <>
-              <span className="text-cyan-400 flex items-center gap-1">
-                <Download className="w-3.5 h-3.5" />
-                {formatSpeed(torrent.dlspeed)}
-              </span>
               <span className="text-slate-500 flex items-center gap-1">
                 <Clock className="w-3.5 h-3.5" />
                 {formatETA(torrent.eta)}

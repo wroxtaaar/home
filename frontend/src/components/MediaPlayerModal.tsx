@@ -18,15 +18,18 @@ import {
   Video,
   X,
   Minimize2,
-  Maximize2
+  Maximize2,
+  Loader2
 } from 'lucide-react';
 import Hls from 'hls.js';
+import { api, API_BASE } from '../api/client.ts';
 import { StorageFile } from '../types/index.ts';
 import { formatBytes, formatDuration } from '../utils/formatters.ts';
 
 interface MediaPlayerModalProps {
   file: StorageFile | null;
   onClose: () => void;
+  onPlaybackStarted?: () => void;
   isMinimized: boolean;
   onToggleMinimize: () => void;
 }
@@ -34,6 +37,7 @@ interface MediaPlayerModalProps {
 export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
   file,
   onClose,
+  onPlaybackStarted,
   isMinimized,
   onToggleMinimize
 }) => {
@@ -44,25 +48,39 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
   const [isMuted, setIsMuted] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [fullscreenControlsVisible, setFullscreenControlsVisible] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mediaError, setMediaError] = useState('');
+  const [isSeeking, setIsSeeking] = useState(false);
   const [audioTracks, setAudioTracks] = useState<Array<{
     index: number; language: string; title: string; codec: string; channels: number; default: boolean;
   }>>([]);
   const [subtitleTracks, setSubtitleTracks] = useState<Array<{
     index: number; language: string; title: string; codec: string; url: string;
   }>>([]);
+  const [hlsSubtitleTracks, setHlsSubtitleTracks] = useState<Array<{
+    index: number; language: string; title: string; codec: string;
+  }>>([]);
   const [selectedAudioIndex, setSelectedAudioIndex] = useState<number | undefined>(undefined);
   const [selectedSubtitleIndex, setSelectedSubtitleIndex] = useState<number | undefined>(undefined);
+  const [selectedHlsSubtitleIndex, setSelectedHlsSubtitleIndex] = useState<number | undefined>(undefined);
   const [trackNotice, setTrackNotice] = useState('');
+  const [subtitleSearchError, setSubtitleSearchError] = useState('');
+  const [tracksLoading, setTracksLoading] = useState(false);
+
   const resumeTimeRef = useRef(0);
   const resumePlayingRef = useRef(false);
   const subtitleTrackRef = useRef<HTMLTrackElement>(null);
   const [usingDirectFallback, setUsingDirectFallback] = useState(false);
   const hlsActiveRef = useRef(false);
+  const hlsRef = useRef<Hls | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const alternateAudioRef = useRef<HTMLAudioElement>(null);
+  const alternateAudioIndexRef = useRef<number | undefined>(undefined);
+  const primaryAudioIndexRef = useRef<number | undefined>(undefined);
+  const alternateAudioRequestRef = useRef(0);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const isVideo = file?.type === 'video';
@@ -73,9 +91,30 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     setDuration(0);
     setIsPlaying(true);
     setMediaError('');
+    setIsSeeking(false);
     setUsingDirectFallback(false);
     hlsActiveRef.current = false;
+    const initialSubtitles = file?.subtitleTracks || [];
+    setSubtitleTracks(initialSubtitles);
+    setHlsSubtitleTracks([]);
+    setSelectedSubtitleIndex(undefined);
+    setSelectedHlsSubtitleIndex(undefined);
+    alternateAudioIndexRef.current = undefined;
+    primaryAudioIndexRef.current = undefined;
+    alternateAudioRequestRef.current += 1;
+    const alternateAudio = alternateAudioRef.current;
+    if (alternateAudio) {
+      alternateAudio.pause();
+      alternateAudio.removeAttribute('src');
+      alternateAudio.load();
+    }
+    const initialAudioTracks = file?.audioTracks || [];
+    const initialAudio = initialAudioTracks.find((track: any) => track.default) || initialAudioTracks[0];
+    primaryAudioIndexRef.current = initialAudio?.index;
+    setAudioTracks(initialAudioTracks);
+    setSelectedAudioIndex(initialAudio?.index);
   }, [file?.id]);
+
 
   useEffect(() => {
     const media = mediaRef.current;
@@ -84,23 +123,22 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     setMediaError('');
     setTrackNotice('Preparing browser stream…');
 
-    const directBaseUrl = file.streamUrl.includes('/api/torrents/stream/')
-      ? file.streamUrl.replace('/api/torrents/stream/', '/api/torrents/direct-stream/')
-      : file.streamUrl;
+    // Always have a concrete browser source. Prefer the resolved backend
+    // stream, then the direct Seedr presentation URL, then the download
+    // endpoint as the final browser-playback fallback.
+    const rawStreamUrl = String(file.streamUrl || '').trim();
+    const directBaseUrl = rawStreamUrl.includes('/api/torrents/stream/')
+      ? rawStreamUrl.replace('/api/torrents/stream/', '/api/torrents/direct-stream/')
+      : rawStreamUrl;
+    const streamUrl = rawStreamUrl || String(file.externalStreamUrl || '').trim() || String(file.downloadUrl || '').trim();
 
-    // Seedr supplies the exact HLS URL that external players use (e.g. MX
-    // Player). Try that URL first in Hls.js; if browser CORS blocks it, fall
-    // back automatically to our Render same-origin proxy.
-    // Browser playback must use the backend URL. The backend decides whether the
-    // Seedr presentation is HLS or a direct video stream and provides the proper
-    // same-origin endpoint. Keep externalStreamUrl only for VLC/MX Player.
-    const preferredSeedrUrl = file.streamUrl || file.externalStreamUrl || directBaseUrl;
-    const streamUrl = selectedAudioIndex !== undefined
-      ? `${preferredSeedrUrl}${preferredSeedrUrl.includes('?') ? '&' : '?'}audio=${encodeURIComponent(String(selectedAudioIndex))}`
-      : preferredSeedrUrl;
-    const fallbackStreamUrl = file.externalStreamUrl && file.streamUrl !== file.externalStreamUrl
-      ? file.streamUrl
-      : '';
+    // HLS audio tracks are switched through HLS.js. Do not append an audio query parameter.
+    const fallbackStreamUrl = String(file.externalStreamUrl || '').trim() &&
+      String(file.externalStreamUrl || '').trim() !== streamUrl
+      ? String(file.externalStreamUrl || '').trim()
+      : String(file.downloadUrl || '').trim() !== streamUrl
+        ? String(file.downloadUrl || '').trim()
+        : '';
 
     const restoreTime = resumeTimeRef.current;
     const restorePlaying = resumePlayingRef.current || (!media.paused && duration > 0);
@@ -118,13 +156,31 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       // Hls.js is attaching MediaSource. Clear any stale overlay once metadata
       // has successfully arrived.
       setMediaError('');
-      setTrackNotice('');
-      if (restorePlaying) {
-        media.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
-      }
+
+      // Stream buttons are an explicit user action, so always attempt to
+      // start playback as soon as the browser has media metadata. The
+      // <video>/<audio> elements also have autoPlay enabled below. If the
+      // browser's autoplay policy blocks playback, the controls remain
+      // available for a manual click.
+      media.play()
+        .then(() => setIsPlaying(true))
+        .catch(() => setIsPlaying(false));
     };
 
     media.addEventListener('loadedmetadata', handleLoaded, { once: true });
+
+    const handlePlaying = () => {
+      // Stage 2 ends only when the browser is actually rendering playback.
+      // This prevents the spinner from disappearing merely because metadata
+      // or the first buffer arrived.
+      setTrackNotice('');
+      setMediaError('');
+      setIsSeeking(false);
+      setIsPlaying(true);
+      onPlaybackStarted?.();
+    };
+
+    media.addEventListener('playing', handlePlaying);
 
     let hls: Hls | null = null;
     // Seedr's browser endpoint intentionally uses a clean same-origin
@@ -146,15 +202,39 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
           lowLatencyMode: false,
           backBufferLength: 90,
         });
+        hlsRef.current = hls;
         setMediaError('');
         hls.loadSource(sourceUrl);
         hls.attachMedia(media as HTMLMediaElement);
+        const syncHlsTracks = () => {
+          const audio = (hls?.audioTracks || []).map((track: any, index: number) => ({
+            index,
+            language: String(track?.lang || track?.language || '').trim(),
+            title: String(track?.name || track?.title || track?.lang || '').trim(),
+            codec: String(track?.audioCodec || track?.codec || '').trim(),
+            channels: Number(track?.channels || 0),
+            default: Boolean(track?.default),
+          }));
+          const subtitles = (hls?.subtitleTracks || []).map((track: any, index: number) => ({
+            index,
+            language: String(track?.lang || track?.language || '').trim(),
+            title: String(track?.name || track?.title || track?.lang || '').trim(),
+            codec: String(track?.textCodec || track?.codec || '').trim(),
+          }));
+          setAudioTracks(audio);
+          setHlsSubtitleTracks(subtitles);
+          const defaultAudio = audio.find(track => track.default);
+          if (selectedAudioIndex === undefined && defaultAudio) setSelectedAudioIndex(defaultAudio.index);
+          if (selectedHlsSubtitleIndex !== undefined && !subtitles.some(track => track.index === selectedHlsSubtitleIndex)) {
+            setSelectedHlsSubtitleIndex(undefined);
+          }
+        };
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          // Successful manifest parsing means the browser player can proceed.
-          // Do not leave a transient native media error visible.
+          syncHlsTracks();
           setMediaError('');
-          setTrackNotice('');
         });
+        hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, syncHlsTracks);
+        hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, syncHlsTracks);
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (!data?.fatal) return;
 
@@ -176,6 +256,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
           setTrackNotice('');
           hls?.destroy();
           hls = null;
+          hlsRef.current = null;
         });
       };
 
@@ -194,82 +275,211 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
 
     return () => {
       media.removeEventListener('loadedmetadata', handleLoaded);
+      media.removeEventListener('playing', handlePlaying);
+      if (hlsRef.current === hls) hlsRef.current = null;
       hls?.destroy();
       media.pause();
       media.removeAttribute('src');
       media.load();
       hlsActiveRef.current = false;
     };
-  }, [file?.id, file?.streamUrl, file?.externalStreamUrl, isVideo, selectedAudioIndex]);
+  }, [file?.id, file?.streamUrl, file?.externalStreamUrl, isVideo]);
+
+
 
   useEffect(() => {
     if (!file || !isVideo) return;
 
-    const mediaInfoUrl = file.streamUrl.includes('/api/torrents/')
-      ? (() => {
-          const match = file.streamUrl.match(/\/api\/torrents\/(?:stream|direct-stream)\/([^/]+)\/(\d+)/);
-          return match ? `/api/torrents/media-info/${match[1]}/${match[2]}` : '';
-        })()
-      : `/api/files/media-info/${encodeURIComponent(file.id)}`;
+    const fileId = file.streamId || file.id.replace(/^seedr-/, '');
+    if (!fileId) return;
 
-    if (!mediaInfoUrl) return;
-
+    const controller = new AbortController();
     let cancelled = false;
-    fetch(mediaInfoUrl)
-      .then(response => response.ok ? response.json() : null)
+    setTracksLoading(true);
+
+    api.getSeedrMediaInfo(fileId)
       .then(data => {
         if (cancelled || !data) return;
-        setAudioTracks(Array.isArray(data.audioTracks) ? data.audioTracks : []);
-        setSubtitleTracks(Array.isArray(data.subtitleTracks) ? data.subtitleTracks : []);
-      })
-      .catch(error => console.warn('[MEDIA] track metadata unavailable:', error));
 
-    return () => { cancelled = true; };
-  }, [file?.id, file?.streamUrl, isVideo]);
+        const realAudio = Array.isArray(data.audioTracks) ? data.audioTracks : [];
+        const embeddedSubtitles = Array.isArray(data.subtitleTracks) ? data.subtitleTracks : [];
+        const sidecarSubtitles = Array.isArray(file.subtitleTracks) ? file.subtitleTracks : [];
+
+        setAudioTracks(realAudio);
+        const defaultAudio = realAudio.find((track: any) => track.default) || realAudio[0];
+        primaryAudioIndexRef.current = defaultAudio?.index;
+        setSelectedAudioIndex(prev =>
+          prev !== undefined && realAudio.some((track: any) => track.index === prev)
+            ? prev
+            : defaultAudio?.index
+        );
+
+        // Keep both embedded WebVTT tracks and Seedr sidecar tracks. The API
+        // client converts embedded relative URLs to the Render API origin so
+        // a Vercel-hosted frontend can actually load the subtitle file.
+        const seen = new Set<string>();
+        const mergedSubtitles = [...embeddedSubtitles, ...sidecarSubtitles].filter((track: any) => {
+          const key = String(track.url || '') + '|' + String(track.title || '');
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        }).map((track: any, index: number) => ({ ...track, index }));
+
+        setSubtitleTracks(mergedSubtitles);
+        setSelectedSubtitleIndex(undefined);
+        setSelectedHlsSubtitleIndex(undefined);
+      })
+      .finally(() => {
+        if (!cancelled) setTracksLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [file?.id, file?.streamId, isVideo]);
 
   useEffect(() => {
     const track = subtitleTrackRef.current?.track;
     if (track) track.mode = selectedSubtitleIndex === undefined ? 'disabled' : 'showing';
   }, [selectedSubtitleIndex, subtitleTracks]);
 
+  useEffect(() => {
+    const hls = hlsRef.current;
+    if (!hls) return;
+    if (selectedAudioIndex !== undefined && hls.audioTracks?.[selectedAudioIndex]) {
+      hls.audioTrack = selectedAudioIndex;
+    }
+  }, [selectedAudioIndex, audioTracks]);
+
+  useEffect(() => {
+    const hls = hlsRef.current;
+    if (!hls) return;
+    if (selectedHlsSubtitleIndex === undefined) {
+      hls.subtitleDisplay = false;
+      hls.subtitleTrack = -1;
+    } else if (hls.subtitleTracks?.[selectedHlsSubtitleIndex]) {
+      hls.subtitleDisplay = true;
+      hls.subtitleTrack = selectedHlsSubtitleIndex;
+    }
+  }, [selectedHlsSubtitleIndex, hlsSubtitleTracks]);
+
+
+
+  // Keep React state synchronized with the browser's actual fullscreen state.
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const active = document.fullscreenElement === containerRef.current;
+      setIsFullscreen(active);
+      setFullscreenControlsVisible(false);
+      if (active) {
+        void lockLandscape();
+      } else {
+        unlockOrientation();
+      }
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, [isVideo]);
+
   if (!file) return null;
 
   const handleMediaError = () => {
-    // When Hls.js owns the video element, Chrome can briefly report MEDIA_ERR_SRC_NOT_SUPPORTED
-    // while MediaSource is being attached. Hls.js is the authoritative error source in that mode.
+    // When Hls.js owns the video element, Chrome can briefly report
+    // MEDIA_ERR_SRC_NOT_SUPPORTED while MediaSource is being attached.
+    // Hls.js is the authoritative error source in that mode.
     if (hlsActiveRef.current) return;
+
     const media = mediaRef.current;
+    if (
+      media &&
+      file?.externalStreamUrl &&
+      file.externalStreamUrl !== file.streamUrl &&
+      !usingDirectFallback
+    ) {
+      // The backend proxy is the preferred browser path, but Seedr's
+      // presentation URL is known to be directly playable by Chrome for
+      // some files. If the proxy response is rejected by the browser,
+      // immediately retry the exact Seedr presentation URL rather than
+      // showing a fatal error.
+      setUsingDirectFallback(true);
+      setMediaError('');
+      setTrackNotice('Trying direct Seedr stream…');
+      media.src = file.externalStreamUrl;
+      media.load();
+      return;
+    }
+
     const code = media && 'error' in media ? media.error?.code : undefined;
     setMediaError(
       code ? `Browser could not play this stream (media error ${code}).` : 'Unable to play this video stream.'
     );
+    setTrackNotice('');
+    setIsSeeking(false);
     setIsPlaying(false);
+    onPlaybackStarted?.();
   };
 
   // Toggle play/pause
   const togglePlay = () => {
-    if (!mediaRef.current) return;
+    const media = mediaRef.current;
+    const alternateAudio = alternateAudioRef.current;
+    if (!media) return;
+
     if (isPlaying) {
-      mediaRef.current.pause();
-    } else {
-      mediaRef.current.play();
+      media.pause();
+      alternateAudio?.pause();
+      setIsPlaying(false);
+      return;
     }
-    setIsPlaying(!isPlaying);
+
+    const playRequests: Promise<any>[] = [media.play()];
+    if (alternateAudioIndexRef.current !== undefined && alternateAudio?.src) {
+      playRequests.push(alternateAudio.play());
+    }
+    Promise.allSettled(playRequests).then(() => {
+      setIsPlaying(!media.paused);
+    });
   };
 
   // Seek
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const time = parseFloat(e.target.value);
+    const media = mediaRef.current;
+    if (!media || !Number.isFinite(time)) return;
+
+    const wasPlaying = !media.paused;
     setCurrentTime(time);
-    if (mediaRef.current) {
-      mediaRef.current.currentTime = time;
+    setIsSeeking(true);
+    setTrackNotice('Seeking…');
+
+    media.currentTime = Math.max(0, Math.min(duration || file.duration || time, time));
+
+    // When an alternate Seedr audio track is active, reload that audio from
+    // the requested absolute video position. The video itself remains on its
+    // original full-duration timeline.
+    if (alternateAudioIndexRef.current !== undefined) {
+      loadAlternateAudio(alternateAudioIndexRef.current, time, wasPlaying);
+      return;
+    }
+
+    if (media.paused) {
+      const clearPausedSeek = () => {
+        setIsSeeking(false);
+        setTrackNotice('');
+        media.removeEventListener('seeked', clearPausedSeek);
+      };
+      media.addEventListener('seeked', clearPausedSeek, { once: true });
     }
   };
 
   // Skip
   const skip = (seconds: number) => {
-    if (!mediaRef.current) return;
-    mediaRef.current.currentTime = Math.max(0, Math.min(duration, mediaRef.current.currentTime + seconds));
+    const media = mediaRef.current;
+    if (!media) return;
+    const nextTime = Math.max(0, Math.min(duration || file.duration || media.duration || 0, currentTime + seconds));
+    handleSeek({ target: { value: String(nextTime) } } as React.ChangeEvent<HTMLInputElement>);
   };
 
   // Volume
@@ -280,16 +490,137 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     if (mediaRef.current) {
       mediaRef.current.volume = val;
     }
+    if (alternateAudioRef.current) {
+      alternateAudioRef.current.volume = val;
+      alternateAudioRef.current.muted = val === 0;
+    }
   };
 
   const toggleMute = () => {
-    if (!mediaRef.current) return;
+    const media = mediaRef.current;
+    const alternateAudio = alternateAudioRef.current;
+    if (!media) return;
+
     if (isMuted) {
-      mediaRef.current.volume = volume || 0.8;
+      const nextVolume = volume || 0.8;
+      media.volume = nextVolume;
+      media.muted = false;
+      if (alternateAudio) {
+        alternateAudio.volume = nextVolume;
+        alternateAudio.muted = false;
+      }
       setIsMuted(false);
     } else {
-      mediaRef.current.volume = 0;
+      media.volume = 0;
+      media.muted = true;
+      if (alternateAudio) {
+        alternateAudio.volume = 0;
+        alternateAudio.muted = true;
+      }
       setIsMuted(true);
+    }
+  };
+
+  const loadAlternateAudio = (trackIndex: number, position: number, resumePlaying: boolean) => {
+    const media = mediaRef.current;
+    const audio = alternateAudioRef.current;
+    const fileId = file?.streamId || file?.id?.replace(/^seedr-/, '');
+
+    if (!media || !audio || !fileId) {
+      setTrackNotice('Selected audio track is not available in this stream.');
+      return;
+    }
+
+    const requestId = ++alternateAudioRequestRef.current;
+    const safePosition = Math.max(0, Number.isFinite(position) ? position : 0);
+
+    // Keep the original video resource and timeline intact. Only its audio
+    // output is muted while the selected track is prepared in a second audio
+    // element. This avoids resetting the video's duration/seekable range.
+    media.pause();
+    media.muted = true;
+    audio.pause();
+    audio.volume = media.volume;
+    audio.muted = isMuted;
+    audio.playbackRate = playbackSpeed;
+
+    const url =
+      API_BASE +
+      '/api/seedr/media/audio/' + encodeURIComponent(fileId) +
+      '?track=' + encodeURIComponent(String(trackIndex)) +
+      '&start=' + encodeURIComponent(String(safePosition));
+
+    setTrackNotice('Switching audio…');
+    setMediaError('');
+    setIsSeeking(true);
+    alternateAudioIndexRef.current = trackIndex;
+    audio.src = url;
+    audio.load();
+
+    const handleAudioError = () => {
+      if (requestId !== alternateAudioRequestRef.current) return;
+      alternateAudioIndexRef.current = undefined;
+      media.muted = isMuted;
+      setIsSeeking(false);
+      setIsPlaying(false);
+      setTrackNotice('Unable to load the selected audio track.');
+      audio.removeEventListener('canplay', startTogether);
+    };
+
+    const startTogether = () => {
+      if (requestId !== alternateAudioRequestRef.current) return;
+      audio.removeEventListener('canplay', startTogether);
+      audio.removeEventListener('error', handleAudioError);
+      audio.currentTime = 0;
+
+      if (!resumePlaying) {
+        setIsSeeking(false);
+        setIsPlaying(false);
+        setTrackNotice('');
+        return;
+      }
+
+      // Start both elements from the same user-visible position only after
+      // the alternate audio is playable. This prevents the audio track from
+      // getting ahead of the first video frame during a track switch.
+      const startVideo = media.play();
+      const startAudio = audio.play();
+      Promise.allSettled([startVideo, startAudio]).then((results) => {
+        if (requestId !== alternateAudioRequestRef.current) return;
+        const videoStarted = results[0]?.status === 'fulfilled';
+        const audioStarted = results[1]?.status === 'fulfilled';
+        if (!videoStarted || !audioStarted) {
+          media.pause();
+          audio.pause();
+          setIsSeeking(false);
+          setIsPlaying(false);
+          setTrackNotice('Playback could not resume with the selected audio track.');
+          return;
+        }
+        setIsSeeking(false);
+        setIsPlaying(true);
+        setTrackNotice('');
+      });
+    };
+
+    audio.addEventListener('canplay', startTogether, { once: true });
+    audio.addEventListener('error', handleAudioError, { once: true });
+  };
+
+  const clearAlternateAudio = (restoreVideoAudio = true) => {
+    const media = mediaRef.current;
+    const audio = alternateAudioRef.current;
+    alternateAudioRequestRef.current += 1;
+
+    if (audio) {
+      audio.pause();
+      audio.removeAttribute('src');
+      audio.load();
+    }
+    alternateAudioIndexRef.current = undefined;
+
+    if (restoreVideoAudio && media) {
+      media.muted = isMuted;
     }
   };
 
@@ -298,19 +629,66 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     if (!Number.isInteger(next)) return;
 
     const media = mediaRef.current;
-    resumeTimeRef.current = media?.currentTime || currentTime || 0;
-    resumePlayingRef.current = Boolean(media && !media.paused);
-    setTrackNotice('Preparing selected audio…');
-    setSelectedAudioIndex(next);
-  };
+    const hls = hlsRef.current;
 
+    if (hls?.audioTracks?.[next]) {
+      hls.audioTrack = next;
+      setSelectedAudioIndex(next);
+      setTrackNotice('');
+      return;
+    }
+
+    if (media && file?.streamUrl.includes('/api/seedr/media/video/')) {
+      const position = Number.isFinite(media.currentTime) ? media.currentTime : currentTime;
+      const wasPlaying = !media.paused;
+      const primaryIndex = primaryAudioIndexRef.current;
+
+      setSelectedAudioIndex(next);
+
+      if (primaryIndex !== undefined && next === primaryIndex) {
+        clearAlternateAudio(true);
+        media.currentTime = position;
+        if (wasPlaying) {
+          media.play()
+            .then(() => {
+              setIsPlaying(true);
+              setTrackNotice('');
+            })
+            .catch(() => setIsPlaying(false));
+        } else {
+          setIsPlaying(false);
+          setTrackNotice('');
+        }
+        return;
+      }
+
+      loadAlternateAudio(next, position, wasPlaying);
+      return;
+    }
+
+    setTrackNotice('Selected audio track is not available in this stream.');
+  };
   const handleSubtitleTrackChange = (value: string) => {
     if (value === 'off') {
       setSelectedSubtitleIndex(undefined);
+      setSelectedHlsSubtitleIndex(undefined);
       return;
     }
-    const next = Number(value);
-    if (Number.isInteger(next)) setSelectedSubtitleIndex(next);
+    if (value.startsWith('hls:')) {
+      const next = Number(value.slice(4));
+      if (Number.isInteger(next)) {
+        setSelectedSubtitleIndex(undefined);
+        setSelectedHlsSubtitleIndex(next);
+      }
+      return;
+    }
+    if (value.startsWith('external:')) {
+      const next = Number(value.slice(9));
+      if (Number.isInteger(next)) {
+        setSelectedHlsSubtitleIndex(undefined);
+        setSelectedSubtitleIndex(next);
+      }
+    }
   };
 
   // Speed
@@ -319,17 +697,82 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     if (mediaRef.current) {
       mediaRef.current.playbackRate = speed;
     }
+    if (alternateAudioRef.current) {
+      alternateAudioRef.current.playbackRate = speed;
+    }
+  };
+
+  const languageNames: Record<string, string> = {
+    en: 'English', eng: 'English',
+    hi: 'Hindi', hin: 'Hindi',
+    fr: 'French', fra: 'French',
+    de: 'German', deu: 'German',
+    es: 'Spanish', spa: 'Spanish',
+    it: 'Italian', ita: 'Italian',
+    pt: 'Portuguese', por: 'Portuguese',
+    ru: 'Russian', rus: 'Russian',
+    ja: 'Japanese', jpn: 'Japanese',
+    ko: 'Korean', kor: 'Korean',
+    zh: 'Chinese', zho: 'Chinese',
+    ar: 'Arabic', ara: 'Arabic',
+    bn: 'Bengali', ben: 'Bengali',
+  };
+
+  const formatTrackLabel = (
+    track: { language?: string; title?: string },
+    index: number,
+    fallbackPrefix: string
+  ) => {
+    const languageCode = String(track.language || '').trim().toLowerCase();
+    const language = languageNames[languageCode] || languageCode.toUpperCase();
+    const title = String(track.title || '').trim();
+    if (language && title && title.toLowerCase() !== language.toLowerCase()) {
+      return language + ' (' + title + ')';
+    }
+    return language || title || fallbackPrefix + ' ' + (index + 1);
   };
 
   // Fullscreen
-  const toggleFullscreen = () => {
+  const lockLandscape = async () => {
+    if (!isVideo) return;
+    try {
+      if (typeof screen !== 'undefined' && screen.orientation?.lock) {
+        await screen.orientation.lock('landscape');
+      }
+    } catch {
+      // Some Android browsers expose fullscreen but do not allow orientation
+      // locking. The fullscreen layout below still uses the real viewport.
+    }
+  };
+
+  const unlockOrientation = () => {
+    try {
+      if (typeof screen !== 'undefined' && screen.orientation?.unlock) {
+        screen.orientation.unlock();
+      }
+    } catch {
+      // Orientation unlock is not supported by every browser.
+    }
+  };
+
+  const toggleFullscreen = async () => {
     if (!containerRef.current) return;
+
     if (!document.fullscreenElement) {
-      containerRef.current.requestFullscreen?.();
-      setIsFullscreen(true);
+      try {
+        await containerRef.current.requestFullscreen?.();
+        setIsFullscreen(true);
+        await lockLandscape();
+      } catch {
+        setIsFullscreen(Boolean(document.fullscreenElement));
+      }
     } else {
-      document.exitFullscreen?.();
-      setIsFullscreen(false);
+      try {
+        await document.exitFullscreen?.();
+      } finally {
+        setIsFullscreen(false);
+        unlockOrientation();
+      }
     }
   };
 
@@ -355,6 +798,22 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       } else {
         await videoRef.current.requestPictureInPicture();
       }
+    }
+  };
+
+  // Timeline seeking/buffering
+  const onSeeking = () => {
+    setIsSeeking(true);
+    setTrackNotice('Seeking…');
+  };
+
+  const onSeeked = () => {
+    const media = mediaRef.current;
+    // If playback was paused, "playing" will never arrive to clear the
+    // loader. For active playback, keep it visible until "playing" resumes.
+    if (media?.paused) {
+      setIsSeeking(false);
+      setTrackNotice('');
     }
   };
 
@@ -413,21 +872,32 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
         {isVideo ? (
           <video
             ref={videoRef}
-            src={file.streamUrl || file.externalStreamUrl}
+            crossOrigin={file.streamUrl?.startsWith(API_BASE) ? 'anonymous' : undefined}
+            src={file.streamUrl || file.externalStreamUrl || file.downloadUrl}
             className="w-full h-32 object-contain bg-black rounded-lg"
             onTimeUpdate={onTimeUpdate}
+            onSeeking={onSeeking}
+            onSeeked={onSeeked}
+            onPlaying={() => {
+              setIsSeeking(false);
+              setTrackNotice('');
+              setIsPlaying(true);
+            }}
             onLoadedMetadata={onLoadedMetadata}
             onEnded={() => setIsPlaying(false)}
           />
         ) : (
           <audio
             ref={audioRef}
-            src={file.streamUrl}
+            autoPlay
+            src={file.streamUrl || file.externalStreamUrl || file.downloadUrl}
             onTimeUpdate={onTimeUpdate}
             onLoadedMetadata={onLoadedMetadata}
             onEnded={() => setIsPlaying(false)}
           />
         )}
+
+        <audio ref={alternateAudioRef} preload="auto" className="hidden" aria-hidden="true" />
 
         {/* Mini Controls */}
         <div className="flex items-center justify-between pt-1">
@@ -474,10 +944,14 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 md:p-6 bg-black/80 backdrop-blur-md">
       <div
         ref={containerRef}
-        className="relative w-full max-w-4xl bg-slate-900 border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[95vh]"
+        className={`relative bg-slate-900 overflow-hidden flex flex-col ${
+          isFullscreen
+            ? 'w-screen h-screen max-w-none max-h-none rounded-none border-0'
+            : 'w-full max-w-4xl border border-slate-700/80 rounded-2xl shadow-2xl max-h-[95vh]'
+        }`}
       >
         {/* Top Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800 bg-slate-900/90 z-10">
+        <div className={`${isFullscreen ? 'hidden' : 'flex'} items-center justify-between px-4 py-3 border-b border-slate-800 bg-slate-900/90 z-10`}>
           <div className="flex items-center gap-3 overflow-hidden">
             <div className="p-2 rounded-xl bg-cyan-500/10 text-cyan-400">
               {isVideo ? <Video className="w-5 h-5" /> : <Music className="w-5 h-5" />}
@@ -533,7 +1007,16 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
         </div>
 
         {/* Media Viewport */}
-        <div className="relative flex-1 bg-black flex items-center justify-center min-h-[260px] md:min-h-[420px] overflow-hidden">
+        <div
+          className={`relative flex-1 min-h-0 bg-black flex items-center justify-center overflow-hidden ${
+            isFullscreen ? 'h-full min-h-0' : 'min-h-[260px] md:min-h-[420px]'
+          }`}
+          onClick={() => {
+            if (isFullscreen) {
+              setFullscreenControlsVisible(true);
+            }
+          }}
+        >
           {mediaError && (
             <div className="absolute inset-0 z-10 flex items-center justify-center p-6 text-center">
               <div className="max-w-md rounded-xl bg-slate-900/95 border border-rose-500/30 p-5">
@@ -544,12 +1027,44 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
               </div>
             </div>
           )}
+
+          {/* Stage 2: the stream URL is ready and the player is now opening it.
+              Keep this lightweight overlay visible until browser media
+              metadata arrives so the player never looks frozen/empty. */}
+          {!mediaError && trackNotice && (
+            <div className="absolute inset-0 z-10 flex items-center justify-center p-6 text-center pointer-events-none">
+              <div className="rounded-xl bg-slate-900/90 border border-cyan-500/20 px-5 py-4 shadow-xl">
+                <div className="flex items-center justify-center gap-2 text-cyan-300">
+                  <span className="inline-flex w-5 h-5 rounded-full border-2 border-cyan-300/30 border-t-cyan-300 animate-spin" />
+                  <span className="text-sm font-semibold">{trackNotice}</span>
+                </div>
+                <p className="text-[11px] text-slate-400 mt-1.5">
+                  Connecting to the browser stream…
+                </p>
+              </div>
+            </div>
+          )}
+
           {isVideo ? (
             <video
               ref={videoRef}
-              className="w-full h-full max-h-[60vh] object-contain cursor-pointer"
-              onClick={togglePlay}
+              crossOrigin={file.streamUrl?.startsWith(API_BASE) ? 'anonymous' : undefined}
+              autoPlay
+              className={`w-full h-full object-contain cursor-pointer ${
+                isFullscreen ? 'max-h-none' : 'max-h-[60vh]'
+              }`}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (isFullscreen) setFullscreenControlsVisible(true);
+              }}
               onTimeUpdate={onTimeUpdate}
+              onSeeking={onSeeking}
+              onSeeked={onSeeked}
+              onPlaying={() => {
+                setIsSeeking(false);
+                setTrackNotice('');
+                setIsPlaying(true);
+              }}
               onLoadedMetadata={onLoadedMetadata}
               onEnded={() => setIsPlaying(false)}
               onError={handleMediaError}>
@@ -598,10 +1113,19 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
               />
             </div>
           )}
+          <audio ref={alternateAudioRef} preload="auto" className="hidden" aria-hidden="true" />
         </div>
 
         {/* Player Controls Bar */}
-        <div className="p-4 bg-slate-900 border-t border-slate-800 flex flex-col gap-3">
+        <div
+          onClick={(event) => event.stopPropagation()}
+          className={`p-4 bg-slate-900/95 border-t border-slate-800 flex flex-col gap-3 ${
+            isFullscreen
+              ? 'absolute bottom-0 left-0 right-0 z-20 backdrop-blur-md transition-opacity duration-200 ' +
+                (fullscreenControlsVisible ? 'opacity-100' : 'opacity-0 pointer-events-none')
+              : ''
+          }`}
+        >
           {/* Scrubber and Time */}
           <div className="flex items-center gap-3">
             <span className="text-xs font-mono text-slate-400 w-12 text-right">
@@ -623,7 +1147,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
           </div>
 
           {/* Main Controls row */}
-          <div className="flex items-center justify-between flex-wrap gap-3">
+          <div className="flex items-center justify-between gap-3 overflow-hidden">
             {/* Left: Playback buttons */}
             <div className="flex items-center gap-2">
               <button
@@ -671,46 +1195,57 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
             </div>
 
             {/* Right: Speed, PiP, Fullscreen */}
-            <div className="flex items-center gap-2 flex-wrap justify-end">
+            <div className="flex items-center gap-2 flex-nowrap justify-end min-w-0 overflow-x-auto scrollbar-hide">
+              {tracksLoading && (
+                <div className="flex items-center gap-1.5 bg-slate-800/80 rounded-lg px-2 py-1.5 text-[11px] text-slate-400">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />
+                  Tracks
+                </div>
+              )}
+
               {audioTracks.length > 1 && (
-                <label className="flex items-center gap-1.5 bg-slate-800/80 rounded-lg px-2 py-1.5">
-                  <Languages className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                <label className="flex items-center gap-2 rounded-xl border border-slate-700/80 bg-slate-800/90 px-2.5 py-1.5 shadow-sm">
+                  <Languages className="h-4 w-4 shrink-0 text-cyan-400" />
+                  <span className="hidden text-[10px] font-semibold uppercase tracking-wide text-slate-500 sm:inline">Audio</span>
                   <select
                     value={selectedAudioIndex !== undefined ? selectedAudioIndex : (audioTracks[0]?.index ?? '')}
                     onChange={(e) => handleAudioTrackChange(e.target.value)}
-                    className="bg-transparent text-[11px] text-slate-200 outline-none max-w-[130px]"
+                    className="min-w-[115px] max-w-[185px] bg-transparent text-xs font-semibold text-slate-100 outline-none"
                     title="Audio track"
                   >
                     {audioTracks.map((track, index) => (
                       <option key={track.index} value={track.index}>
-                        {track.title || track.language?.toUpperCase() || `Audio ${index + 1}`}{track.default ? ' · Default' : ''}
+                        {formatTrackLabel(track, index, 'Audio')}{track.default ? ' · Default' : ''}
                       </option>
                     ))}
                   </select>
                 </label>
               )}
 
-              {subtitleTracks.length > 0 && (
-                <label className="flex items-center gap-1.5 bg-slate-800/80 rounded-lg px-2 py-1.5">
-                  <Captions className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+              {isVideo && (
+                <label className="flex items-center gap-2 rounded-xl border border-slate-700/80 bg-slate-800/90 px-2.5 py-1.5 shadow-sm">
+                  <Captions className="h-4 w-4 shrink-0 text-cyan-400" />
+                  <span className="hidden text-[10px] font-semibold uppercase tracking-wide text-slate-500 sm:inline">Subs</span>
                   <select
-                    value={selectedSubtitleIndex !== undefined ? selectedSubtitleIndex : 'off'}
+                    disabled={tracksLoading || (hlsSubtitleTracks.length === 0 && subtitleTracks.length === 0)}
+                    value={selectedHlsSubtitleIndex !== undefined ? 'hls:' + selectedHlsSubtitleIndex : selectedSubtitleIndex !== undefined ? 'external:' + selectedSubtitleIndex : 'off'}
                     onChange={(e) => handleSubtitleTrackChange(e.target.value)}
-                    className="bg-transparent text-[11px] text-slate-200 outline-none max-w-[130px]"
-                    title="Subtitles"
+                    className="min-w-[110px] max-w-[185px] bg-transparent text-xs font-semibold text-slate-100 outline-none disabled:cursor-not-allowed disabled:text-slate-500"
+                    title={tracksLoading ? 'Loading subtitles' : 'Subtitles'}
                   >
-                    <option value="off">Subtitles Off</option>
+                    <option value="off">{tracksLoading ? 'Loading…' : 'Subtitles Off'}</option>
+                    {hlsSubtitleTracks.map((track, index) => (
+                      <option key={'hls-sub-' + track.index} value={'hls:' + track.index}>
+                        {formatTrackLabel(track, index, 'Subtitle')}
+                      </option>
+                    ))}
                     {subtitleTracks.map((track, index) => (
-                      <option key={track.index} value={track.index}>
-                        {track.title || track.language?.toUpperCase() || `Subtitle ${index + 1}`}
+                      <option key={'external-sub-' + track.index} value={'external:' + track.index}>
+                        {formatTrackLabel(track, index, 'Subtitle')}
                       </option>
                     ))}
                   </select>
                 </label>
-              )}
-
-              {trackNotice && (
-                <span className="text-[10px] text-cyan-400 max-w-[140px] truncate">{trackNotice}</span>
               )}
 
               {/* Playback Speed selector */}
@@ -753,6 +1288,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
           </div>
         </div>
       </div>
+
     </div>
   );
 };

@@ -33,7 +33,7 @@ interface AddMagnetModalProps {
     magnet: string,
     category: string,
     selectedFiles?: number[],
-    manifest?: { name: string; size: number; priority: number }[],
+    manifest?: { index?: number; name: string; size: number; priority: number }[],
     existingHash?: string,
     forceBackend?: 'seedr' | 'qbittorrent',
     selectedNames?: string[],
@@ -45,11 +45,6 @@ interface AddMagnetModalProps {
   initialSourceUrl?: string;
   initialDescriptorUrl?: string;
   onBackgroundChange?: (state: { active: boolean; title: string; message: string; ready?: boolean; error?: string; jobId?: string }) => void;
-  selectionReason?: {
-    remainingSpace: number;
-    torrentSize: number;
-    torrentName: string;
-  } | null;
 }
 
 interface InspectFileItem {
@@ -71,8 +66,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
   initialMagnet = '',
   initialSourceUrl = '',
   initialDescriptorUrl = '',
-  onBackgroundChange,
-  selectionReason = null
+  onBackgroundChange
 }) => {
   const [magnetInput, setMagnetInput] = useState('');
   const [category, setCategory] = useState(defaultFolder);
@@ -87,36 +81,26 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
   const [inspectedHash, setInspectedHash] = useState('');
   const [inspectedTorrentName, setInspectedTorrentName] = useState('');
   const [backgroundMode, setBackgroundMode] = useState(false);
-  const [isTestingSeedrSelection, setIsTestingSeedrSelection] = useState(false);
-  const [seedrSelectionTestResult, setSeedrSelectionTestResult] = useState<{
-    taskId: number | string;
-    created: boolean;
-    unwanted: unknown;
-  } | null>(null);
-
   const inspectTimeoutRef = useRef<any>(null);
   const [copiedMagnet, setCopiedMagnet] = useState(false);
 
-  // Reset or initialize modal state
+  // Reset/initialize from the parent-provided source on every open or
+  // whenever a different search result is selected. This prevents the prior
+  // torrent's metadata from surviving into the next selection.
   useEffect(() => {
-    if (isOpen && !initialMagnet.trim()) {
-      // A normal Add Magnet open must always start clean. Otherwise a
-      // previously opened search result can leak into the next session.
-      setMagnetInput('');
-      setInspectedFiles([]);
-      setInspectedHash('');
-      setInspectedTorrentName('');
-      setInspectionSource('');
-      setCopiedMagnet(false);
-    }
+    if (!isOpen) return;
 
-    if (isOpen) {
-      setBackgroundMode(false);
-      setError('');
-      setShowManifestEditor(false);
-      setPasteManifestText('');
-      setSeedrSelectionTestResult(null);
-    }
+    const source = initialMagnet;
+    setMagnetInput(source);
+    setInspectedFiles([]);
+    setInspectedHash('');
+    setInspectedTorrentName('');
+    setInspectionSource('');
+    setCopiedMagnet(false);
+    setBackgroundMode(false);
+    setError('');
+    setShowManifestEditor(false);
+    setPasteManifestText('');
   }, [isOpen, initialMagnet]);
 
   const classifyFileType = (name: string): InspectFileItem['type'] => {
@@ -181,6 +165,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
     const fileSize = Number(file.size || 0);
 
     const manifest = [{
+      index: Number(file.index),
       name: file.name,
       size: fileSize,
       priority: 1
@@ -197,7 +182,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
       if (fileSize > 0) {
         try {
           const quota = await api.getSeedrQuota();
-          if (quota.configured && fileSize < quota.remainingSpace) {
+          if (quota.configured && fileSize <= quota.remainingSpace) {
             forceBackend = 'seedr';
           }
         } catch {
@@ -294,15 +279,6 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
         setInspectedTorrentName(String(data.name || '').trim());
 
         if (data.files.length === 1) {
-          if (selectionReason) {
-            setInspectionSource(
-              `This torrent has one file (${formatBytes(Number(data.files[0]?.size || 0))}). A single-file torrent cannot be reduced to fit Seedr's remaining space.`
-            );
-            setError(
-              `Seedr has ${formatBytes(selectionReason.remainingSpace)} remaining, but this torrent needs ${formatBytes(Number(data.files[0]?.size || 0))}.`
-            );
-            return;
-          }
 
           await startSingleFileDownload(
             resolvedSource,
@@ -356,15 +332,6 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
             applyFileList(normalizedFiles);
 
             if (normalizedFiles.length === 1) {
-              if (selectionReason) {
-                setInspectionSource(
-                  `This torrent has one file (${formatBytes(Number(normalizedFiles[0]?.size || 0))}). A single-file torrent cannot be reduced to fit Seedr's remaining space.`
-                );
-                setError(
-                  `Seedr has ${formatBytes(selectionReason.remainingSpace)} remaining, but this torrent needs ${formatBytes(Number(normalizedFiles[0]?.size || 0))}.`
-                );
-                return;
-              }
 
               await startSingleFileDownload(
                 source,
@@ -420,16 +387,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
     }
   };
 
-  useEffect(() => {
-    if (!isOpen || !initialMagnet.trim()) return;
 
-    const source = initialMagnet.trim();
-    setMagnetInput(source);
-    setInspectedFiles([]);
-    setInspectionSource('');
-    setError('');
-    void triggerInspect(source, true);
-  }, [isOpen, initialMagnet]);
 
   const handleInputChange = (val: string) => {
     setBackgroundMode(false);
@@ -524,46 +482,6 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
     }
   };
 
-  const handleSeedrSelectionProbe = async () => {
-    if (inspectedFiles.length < 2) {
-      setError('Use a multi-file torrent for the Seedr selection test.');
-      return;
-    }
-
-    try {
-      setIsTestingSeedrSelection(true);
-      setError('');
-      setSeedrSelectionTestResult(null);
-
-      const magnet = await resolveMagnetUri();
-      const quota = await api.getSeedrQuota();
-
-      if (!quota.configured) {
-        throw new Error('Seedr is not configured.');
-      }
-      if (totalTorrentSize > quota.remainingSpace) {
-        throw new Error(
-          `Use a small test torrent that fits Seedr's current free space. This torrent is ${formatBytes(totalTorrentSize)}, while Seedr has ${formatQuotaBytes(quota.remainingSpace)} free.`
-        );
-      }
-
-      const result = await api.inspectSeedrSelection(
-        magnet,
-        inspectedTorrentName || undefined
-      );
-
-      setSeedrSelectionTestResult({
-        taskId: result.taskId,
-        created: Boolean(result.created),
-        unwanted: result.unwanted
-      });
-    } catch (err: any) {
-      setError(err?.message || 'Could not test Seedr selective-download support.');
-    } finally {
-      setIsTestingSeedrSelection(false);
-    }
-  };
-
   const handleDownloadTorrent = async () => {
     if (!inspectedHash) {
       setError('The torrent hash is not available yet.');
@@ -588,99 +506,38 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!magnetInput.trim()) {
-      setError('Please provide a magnet link or hash.');
-      return;
-    }
 
-    // For a pasted magnet we must know whether it contains one file or
-    // multiple files before deciding which backend to use. Seedr can start
-    // fetching as soon as it receives a task, so multi-file magnets are
-    // inspected with qBittorrent first and remain paused until confirmed.
-    if (isDirectSeedrSource && inspectedFiles.length === 0) {
-      await triggerInspect(magnetInput.trim(), false);
-      return;
-    }
-
-
-    if (isInspecting) {
-      setError('Please wait while the torrent file list is being loaded.');
-      return;
-    }
-
-    if (inspectedFiles.length === 0) {
-      setError('Please wait for the torrent file list to load before starting the download.');
-      return;
-    }
-
-    if (selectedCount === 0) {
-      setError('Please select at least 1 file to download from this torrent.');
-      return;
-    }
-
-    const selectedFileIndexes = inspectedFiles.filter(f => f.selected).map(f => f.index);
-    const manifest = inspectedFiles.map(f => ({
-      name: f.name,
-      size: f.size,
-      priority: f.selected ? 1 : 0
-    }));
-
-    if (selectionReason) {
-      setError(
-        'Seedr cannot transfer only selected files from a torrent. Free enough Seedr space for the full torrent, then add it again.'
-      );
+    const magnet = magnetInput;
+    if (!/^magnet:\?/i.test(magnet.trim())) {
+      setError('Please provide a magnet link.');
       return;
     }
 
     try {
       setIsLoading(true);
       setError('');
-      let selectedBackend: 'seedr' | 'qbittorrent' | undefined;
-      try {
-        // Once the user has selected the files, the selected size—not the
-        // aggregate torrent size—determines whether Seedr can handle it.
-        // This applies to pasted magnets, search/grab links, and other
-        // sources that qBittorrent can inspect and resolve to an info hash.
-        const quota = await api.getSeedrQuota();
-        if (
-          quota.configured &&
-          totalSelectedSize > 0 &&
-          totalSelectedSize < quota.remainingSpace &&
-          totalSelectedSize >= totalTorrentSize
-        ) {
-          selectedBackend = 'seedr';
-        }
-      } catch {
-        // Quota lookup is best-effort; qBittorrent remains the fallback.
-      }
 
-      let downloadSource =
-        selectedBackend === 'seedr' &&
-        inspectedHash &&
-        /^[a-f0-9]{40}$/i.test(inspectedHash)
-          ? `magnet:?xt=urn:btih:${inspectedHash.toLowerCase()}`
-          : magnetInput.trim();
-
-
+      // Direct Seedr path: send only the magnet link. No metadata lookup,
+      // quota lookup, file manifest, file selection, or Seedr selection API.
       await onAdd(
-        downloadSource,
+        magnet,
         category,
-        selectedFileIndexes,
-        manifest,
-        inspectedHash || undefined,
-        selectedBackend,
         undefined,
         undefined,
-        inspectedTorrentName
+        undefined,
+        'seedr'
       );
+
       setBackgroundMode(false);
       onClose();
     } catch (err: any) {
-      setError(err.message || 'Failed to start cloud torrent download');
+      setError(err?.message || 'Failed to send the magnet to Seedr');
     } finally {
       setIsLoading(false);
     }
   };
+
+;
 
   if (!isOpen && !backgroundMode) return null;
 
@@ -842,8 +699,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
                   setInspectedHash('');
                   setInspectedTorrentName('');
                   setError('');
-                  setInspectionSource('Resolving torrent metadata in My Cloud Files...');
-                  void triggerInspect(pasted, true);
+                  setInspectionSource('Ready to send directly to Seedr.');
                 }}
                 onChange={(e) => handleInputChange(e.target.value)}
                 placeholder="Paste magnet:?xt=urn:btih:... or torrent hash"
@@ -858,16 +714,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
             </div>
           )}
 
-          {selectionReason && (
-            <div className="rounded-xl bg-amber-500/10 border border-amber-500/30 p-3.5 text-xs text-amber-200">
-              <div className="font-bold text-amber-300">File selection required</div>
-              <p className="mt-1 leading-relaxed">
-                This torrent is <strong>{formatBytes(selectionReason.torrentSize)}</strong>, while Seedr has only <strong>{formatQuotaBytes(selectionReason.remainingSpace)}</strong> free.
-                You can review/select files below, but Seedr does not support transferring only part of a torrent into cloud storage.
-                The selection will not make the Seedr transfer smaller. To add this torrent to Seedr, the full torrent must fit in the remaining space.
-              </p>
-            </div>
-          )}
+
 
           {/* File details / selective file selection */}
           {inspectedFiles.length > 0 && (
@@ -1008,43 +855,8 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
                   Selected Download Size: <strong className="text-cyan-400 font-mono">{formatBytes(totalSelectedSize)}</strong> / {formatBytes(totalTorrentSize)} total
                 </span>
               </div>
-
-              <div className="border-t border-slate-800/80 p-3 bg-slate-900/40">
-                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="text-[11px] font-semibold text-amber-300">
-                      Experimental Seedr selection test
-                    </div>
-                    <p className="text-[10px] text-slate-500 mt-0.5">
-                      Read-only check. It never pauses the torrent and never changes the Seedr file selection.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => void handleSeedrSelectionProbe()}
-                    disabled={isTestingSeedrSelection || isInspecting || totalTorrentSize <= 0}
-                    className="shrink-0 px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 text-[11px] font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    {isTestingSeedrSelection
-                      ? 'Testing…'
-                      : 'Test Seedr Selection API'}
-                  </button>
-                </div>
-
-                {seedrSelectionTestResult && (
-                  <div className="mt-2 rounded-lg bg-slate-950 border border-slate-800 p-2.5 text-[10px] text-slate-400">
-                    <div className="flex flex-wrap gap-x-3 gap-y-1">
-                      <span>Read endpoint: <strong className="text-emerald-400">HTTP 200</strong></span>
-                      <span>Task: <strong className="text-slate-200 font-mono">{seedrSelectionTestResult.taskId}</strong></span>
-                      <span>{seedrSelectionTestResult.created ? 'Test task created' : 'Existing task reused'}</span>
-                    </div>
-                    <div className="mt-1 break-all font-mono text-slate-500">
-                      unwanted: {typeof seedrSelectionTestResult.unwanted === 'string'
-                        ? seedrSelectionTestResult.unwanted || '(empty)'
-                        : JSON.stringify(seedrSelectionTestResult.unwanted)}
-                    </div>
-                  </div>
-                )}
+              <div className="px-3 py-2 bg-slate-900/60 border-t border-slate-800 text-[10px] text-slate-500">
+                Seedr receives the torrent after you select files. Torrent Studio sends the selected-file bitmap so only checked files are requested.
               </div>
 
               </div>
@@ -1058,9 +870,9 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
         {/* Modal Footer */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 px-3 sm:px-5 py-3 border-t border-slate-800 bg-slate-900/95">
           <div className="text-[11px] sm:text-xs text-slate-400 w-full sm:w-auto">
-            {selectionReason ? (
+            {isSingleFile && selectedCount > 0 ? (
               <span className="text-amber-300">
-                Partial transfer to Seedr is not supported
+                Seedr selection is based on the checked files.
               </span>
             ) : isSingleFile && inspectedFiles.length > 0 ? (
               <span>Ready to download</span>
@@ -1084,21 +896,10 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
             <button
               type="button"
               onClick={() => {
-                if (isDirectSeedrSource && inspectedFiles.length === 0) {
-                  void triggerInspect(magnetInput.trim(), false);
-                } else if (isDirectSeedrSource || selectedCount > 0) {
-                  void handleSubmit({ preventDefault: () => {} } as React.FormEvent);
-                } else if (magnetInput.trim() && !isInspecting) {
-                  void triggerInspect(magnetInput.trim());
-                } else if (!magnetInput.trim()) {
-                  setError('Paste a magnet link, torrent hash, or upload a .torrent file first.');
-                }
+                void handleSubmit({ preventDefault: () => {} } as React.FormEvent);
               }}
               disabled={
-                isLoading ||
-                isInspecting ||
-                Boolean(selectionReason) ||
-                (inspectedFiles.length > 0 && selectedCount === 0)
+                isLoading
               }
               className="flex-1 sm:flex-none px-4 sm:px-5 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 text-xs font-bold transition flex items-center gap-2 shadow-lg shadow-cyan-500/20"
             >
@@ -1108,21 +909,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
                 <FolderDown className="w-4 h-4" />
               )}
               <span>
-                {isLoading
-                  ? 'Adding Task...'
-                  : selectionReason
-                  ? 'Free Seedr Space to Continue'
-                  : isSingleFile && selectedCount > 0
-                  ? 'Download File'
-                  : selectedCount > 0
-                  ? `Download ${selectedCount} Selected File(s)`
-                  : isInspecting
-                  ? 'Loading File List...'
-                  : !magnetInput.trim()
-                  ? 'Paste Magnet First'
-                  : inspectedFiles.length === 0
-                  ? 'Load File List'
-                  : 'Select Files to Continue'}
+                {isLoading ? 'Sending to Seedr...' : 'Send Magnet to Seedr'}
               </span>
             </button>
           </div>
@@ -1131,3 +918,4 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
     </div>
   );
 };
+
