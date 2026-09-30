@@ -37,7 +37,7 @@ SEEDR_PAT_BASE = "https://www.seedr.cc/api/v0.1/p"
 # Legacy developer-level Seedr credentials remain supported only when explicitly enabled.
 # Normal requests use a per-browser Seedr connection established through device auth.
 SEEDR_TOKEN = os.getenv("SEEDR_API_TOKEN", "").strip()
-ALLOW_LEGACY_SEEDR_TOKEN = os.getenv("ALLOW_LEGACY_SEEDR_TOKEN", "false").strip().lower() in {"1", "true", "yes", "on"}
+ALLOW_LEGACY_SEEDR_TOKEN = os.getenv("ALLOW_LEGACY_SEEDR_TOKEN", "true").strip().lower() in {"1", "true", "yes", "on"}
 # A shared folder ID cannot be used safely across different users. Personal
 # connections always start at each Seedr account's own root folder.
 SEEDR_LIBRARY_FOLDER_ID = "0"
