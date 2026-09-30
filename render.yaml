@@ -1,8 +1,8 @@
 services:
   - type: web
-    name: new-test
+    name: home
     runtime: docker
-    repo: https://github.com/wroxtaaar/new-test
+    repo: https://github.com/wroxtaaar/home
     branch: main
     plan: free
     region: singapore
@@ -16,8 +16,8 @@ services:
       - key: SEEDR_SESSION_SECRET
         sync: false
       - key: ALLOW_LEGACY_SEEDR_TOKEN
-        sync: false
+        value: "true"
       - key: GITHUB_FEEDBACK_TOKEN
         sync: false
       - key: GITHUB_FEEDBACK_REPO
-        value: wroxtaaar/new-test
+        value: wroxtaaar/home
