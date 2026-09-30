@@ -4652,30 +4652,14 @@ async def seedr_file_stream(
     resolved_id = await resolve_seedr_stream_id(file_id, name)
 
     if type == "video":
-        # Restore the tested direct-browser-stream strategy from
-        # fix-seedr-direct-browser-stream:
-        #   1) ask Seedr V2 for its presentation URL;
-        #   2) if it is a browser-playable direct presentation, proxy it with
-        #      Range support;
-        #   3) otherwise use the existing HLS proxy.
+        # Proven playback path:
+        # 1) Resolve Seedr V2 presentation.
+        # 2) If it is a normal media URL, proxy that URL with Range support.
+        # 3) Only use the HLS proxy when the presentation is actually HLS.
         presentation_url = await seedr_v2_video_url(resolved_id)
-        is_hls_presentation = bool(presentation_url and await _presentation_is_hls(presentation_url))
 
-        # Prefer Seedr's own non-HLS presentation first. This is the full-duration
-        # path: the browser receives the real presentation through a Range-aware
-        # proxy, so the video's native duration/seekable timeline is preserved
-        # even when the source file contains multiple audio tracks.
-        # Alternate audio tracks are switched independently through Seedr V2 by
-        # MediaPlayerModal; Render does not transcode the movie.
-        if (presentation_url and not is_hls_presentation):
-            logger.info(
-                "Seedr playback resolved to direct presentation: file=%s protocol=direct multi_audio_check=skipped",
-                resolved_id,
-            )
+        if presentation_url and not await _presentation_is_hls(presentation_url):
             return {
-                # Explicitly request audio track 0 from Seedr's V2
-                # presentation. Some single-audio files expose a silent
-                # default presentation unless the audio rendition is named.
                 "url": "/api/seedr/media/video/" + quote(resolved_id, safe=""),
                 "externalUrl": presentation_url,
                 "name": name or resolved_id,
@@ -4683,27 +4667,6 @@ async def seedr_file_stream(
                 "protocol": "direct",
             }
 
-        # Use the synthetic HLS path only when Seedr did not provide a native
-        # non-HLS presentation. This preserves the HLS fallback for files that
-        # need it without forcing compatible multi-audio files through Render.
-        try:
-            dynamic_info = await _get_seedr_dynamic_hls_info(resolved_id)
-        except HTTPException:
-            dynamic_info = None
-
-        if dynamic_info and len(dynamic_info.get("audio") or []) > 1:
-            logger.info(
-                "Seedr playback resolved to HLS multi-audio fallback: file=%s audio_tracks=%d",
-                resolved_id,
-                len(dynamic_info.get("audio") or []),
-            )
-            return {
-                "url": "/api/seedr/hls-master/" + quote(resolved_id, safe=""),
-                "externalUrl": presentation_url or _seedr_media_url(resolved_id, "video"),
-                "name": name or resolved_id,
-                "resolvedFileId": resolved_id,
-                "protocol": "hls-multi-audio",
-            }
         try:
             await _fetch_seedr_hls_manifest(resolved_id)
             return {
@@ -5458,28 +5421,18 @@ async def seedr_video_media(
     file_id: str,
     request: Request,
     audio: int | None = Query(None, ge=0),
-    start: float = Query(0.0, ge=0.0),
 ):
     if not current_seedr_token():
         raise HTTPException(503, "Seedr is not configured")
 
-    if audio is not None:
-        return await _stream_selected_audio(file_id, audio, start=start)
-
-    # Always request the primary audio rendition from Seedr for the
-    # normal browser video path. This is what keeps single-audio files audible
-    # while preserving the native Range-based video timeline. An explicit
-    # non-zero audio query is reserved for the legacy server-side path.
-    requested_audio_index = audio if audio is not None else 0
-    upstream_url = await seedr_v2_video_url(file_id, audio_index=requested_audio_index)
-    if not upstream_url and audio is None:
-        # If Seedr rejects the explicit primary-rendition presentation, fall
-        # back to its normal presentation URL rather than failing playback.
-        upstream_url = await seedr_v2_video_url(file_id)
+    upstream_url = await seedr_v2_video_url(file_id, audio_index=audio)
     if not upstream_url:
         raise HTTPException(404, "Seedr returned no video presentation URL")
 
-    headers = {"Accept": "video/*,application/octet-stream,*/*", "Accept-Encoding": "identity"}
+    headers = {
+        "Accept": "video/*,application/octet-stream,*/*",
+        "Accept-Encoding": "identity",
+    }
     range_header = request.headers.get("range")
     if range_header:
         headers["Range"] = range_header
