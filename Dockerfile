@@ -10,11 +10,8 @@ RUN npm install
 
 COPY frontend/ ./
 
-# The frontend source uses VITE_API_URL when supplied. Point it at this same
-# Render service so the exact frontend can use the exact backend in this image.
 ENV VITE_API_URL=https://home-a9e7.onrender.com
 RUN npm run build
-
 
 FROM python:3.12-slim
 
@@ -30,10 +27,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ ./
 COPY --from=frontend-build /frontend/dist ./frontend-dist
 
-# Nginx serves the exact built React frontend and proxies API/media requests
-# to the exact FastAPI backend. No application source files are changed.
 RUN rm -f /etc/nginx/sites-enabled/default \
-    && ln -s /etc/nginx/sites-available/torrent-studio /etc/nginx/sites-enabled/torrent-studio \n    && printf '%s\n' \
+    && printf '%s\\n' \
 'server {' \
 '    listen 10000;' \
 '    server_name _;' \
@@ -54,7 +49,9 @@ RUN rm -f /etc/nginx/sites-enabled/default \
 '    location / {' \
 '        try_files $uri $uri/ /index.html;' \
 '    }' \
-'}' > /etc/nginx/sites-available/torrent-studio
+'}' > /etc/nginx/sites-available/torrent-studio \
+    && ln -s /etc/nginx/sites-available/torrent-studio /etc/nginx/sites-enabled/torrent-studio \
+    && nginx -t
 
 ENV PYTHONUNBUFFERED=1
 
