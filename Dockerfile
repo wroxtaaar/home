@@ -1,3 +1,14 @@
+# Build the React UI first, then package it with the FastAPI backend so Render serves everything from one service.
+FROM node:22-alpine AS frontend-build
+
+WORKDIR /app/frontend
+
+COPY frontend/package.json ./
+RUN npm install
+
+COPY frontend/ ./
+RUN npm run build
+
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -10,6 +21,7 @@ COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/ ./
+COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
 ENV PYTHONUNBUFFERED=1
 
