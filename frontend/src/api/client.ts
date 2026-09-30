@@ -28,67 +28,18 @@ import {
   QbtSettings
 } from '../types/index.ts';
 
-// The frontend and API are served by the same Render service in the
-// all-in-one deployment. Keep an optional VITE_API_URL override for local
-// development or an external API, but default to the current browser origin.
-// Prefer an explicit API URL when one is configured. If the frontend is
-// served from the all-in-one Render service, same-origin is correct. If the
-// frontend is hosted separately (for example an older Vercel deployment),
-// never accidentally point API/media requests at the static frontend host.
-const configuredApiBase = String(import.meta.env.VITE_API_URL || '').trim();
-const currentHost = typeof window !== 'undefined' ? window.location.hostname : '';
-const isRenderFullStackHost = currentHost.endsWith('.onrender.com');
-
-// Ignore a stale new-test Render URL left in Vercel build settings.
-// home-a9e7.onrender.com is the canonical backend for this project.
-const normalizedConfiguredApiBase = configuredApiBase.replace(/\/+$/, '');
-const isKnownStaleApi = normalizedConfiguredApiBase.toLowerCase().includes('new-test');
-
-export const API_BASE =
-  normalizedConfiguredApiBase && !isKnownStaleApi
-    ? normalizedConfiguredApiBase
-    : (isRenderFullStackHost
-      ? window.location.origin
-      : 'https://home-a9e7.onrender.com');
-
-const makeSeedrError = (data: any, body: string, status: number, fallback: string) => {
-  const error = new Error(
-    data?.error ||
-    data?.message ||
-    data?.detail ||
-    body ||
-    fallback
-  ) as Error & { code?: string; status?: number };
-  error.code = typeof data?.code === 'string' ? data.code : undefined;
-  error.status = status;
-  return error;
-};
-
-let seedrCsrfToken = '';
-
+const API_BASE = (
+  String(import.meta.env.VITE_API_URL || '').trim() ||
+  'https://torrent-studio-vercel-render-seedr.onrender.com'
+).replace(/\/+$/, '');
 const apiFetch = (input: RequestInfo | URL, init?: RequestInit) => {
   const value = String(input);
-  const url = value.startsWith('/') ? API_BASE + value : value;
-  const method = String(init?.method || 'GET').toUpperCase();
-  const isSeedrMutation =
-    value.startsWith('/api/seedr/') &&
-    !['GET', 'HEAD', 'OPTIONS'].includes(method);
-
-  const headers = new Headers(init?.headers || undefined);
-  if (isSeedrMutation && seedrCsrfToken) {
-    headers.set('X-Torrent-Studio-CSRF', seedrCsrfToken);
-  }
-
-  return fetch(url, {
-    ...init,
-    headers,
-    credentials: 'include',
-  });
+  return fetch(value.startsWith('/') ? API_BASE + value : value, init);
 };
 
 export const api = {
   // Torrents (qBittorrent WebAPI)
-  async searchTorrents(query: string, limit = 50, signal?: AbortSignal): Promise<TorrentSearchResult[]> {
+  async searchTorrents(query: string, limit = 50): Promise<TorrentSearchResult[]> {
     const params = new URLSearchParams({
       q: query,
       limit: String(Math.min(Math.max(limit, 1), 50))
@@ -98,21 +49,7 @@ export const api = {
     // Use the same API base in development and production so the frontend
     // can be hosted independently as a Render Static Site.
     const searchBase = API_BASE;
-    const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 12000);
-    let res: Response;
-    try {
-      res = await fetch(searchBase + '/api/search?' + params.toString(), {
-        signal: signal || controller.signal
-      });
-    } catch (error: any) {
-      if (error?.name === 'AbortError') {
-        throw new Error('Search timed out. Please try again.');
-      }
-      throw error;
-    } finally {
-      window.clearTimeout(timeoutId);
-    }
+    const res = await fetch(searchBase + '/api/search?' + params.toString());
     const body = await res.text();
 
     let data: any = null;
@@ -269,40 +206,6 @@ export const api = {
     };
   },
 
-  async getTorrentMetadataJobs(): Promise<{
-    jobs: Array<{
-      jobId: string;
-      hash: string;
-      name: string;
-      status: string;
-      rounds: number;
-      startedAt: number;
-      updatedAt: number;
-      deadlineAt: number;
-      elapsedSeconds: number;
-      remainingSeconds: number;
-      fileCount: number;
-      totalSize: number;
-      source: string;
-      error?: string | null;
-    }>;
-    backgroundTtlSeconds: number;
-    retentionSeconds: number;
-  }> {
-    const res = await apiFetch('/api/v2/torrents/metadata-jobs');
-    const body = await res.text();
-    let data: any = null;
-    try { data = body ? JSON.parse(body) : null; } catch {}
-    if (!res.ok) {
-      throw new Error(data?.error || data?.message || body || 'Torrent metadata jobs request failed');
-    }
-    return {
-      jobs: Array.isArray(data?.jobs) ? data.jobs : [],
-      backgroundTtlSeconds: Number(data?.backgroundTtlSeconds || 0),
-      retentionSeconds: Number(data?.retentionSeconds || 0),
-    };
-  },
-
   async getTorrentMetadataStatus(jobId: string): Promise<any> {
     const res = await apiFetch(
       '/api/v2/torrents/inspect-magnet/status?jobId=' + encodeURIComponent(jobId)
@@ -343,238 +246,103 @@ export const api = {
     return res.json();
   },
 
-  async prepareSeedrMagnet(
-    magnet: string,
-    requiredBytes = 0,
-    torrentName?: string
-  ): Promise<any> {
-    const value = String(magnet || '');
-    if (!value.trim().toLowerCase().startsWith('magnet:?')) {
-      throw new Error('A valid magnet URL is required');
-    }
-
-    const res = await apiFetch('/api/seedr/add', {
+  async inspectSeedrSelection(magnet: string, torrentName?: string): Promise<{
+    taskId: number | string;
+    created: boolean;
+    torrentName: string;
+    folderId: string | null;
+    unwanted: unknown;
+    writeTested: false;
+  }> {
+    const res = await apiFetch('/api/seedr/tasks/inspect-selection', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        magnet: value,
-        required_bytes: Math.max(0, Number(requiredBytes) || 0),
-        auto_cleanup: true,
-        torrent_name: torrentName || undefined,
-      })
+      body: JSON.stringify({ magnet, torrent_name: torrentName || undefined })
     });
-
     const body = await res.text();
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch {}
-
     if (!res.ok) {
-      const error = new Error(
-        data?.error || data?.message || data?.detail || body ||
-        `Seedr prepare failed (HTTP ${res.status})`
-      );
-      Object.assign(error as any, data || {});
-      if (res.status === 413) (error as any).code = data?.code || 'SEEDR_INSUFFICIENT_SPACE';
-      throw error;
+      throw new Error(data?.error || body || 'Seedr selective-download probe failed');
     }
+    return data;
+  },
 
-    return {
-      backend: 'seedr',
-      seedrTaskId: data?.task_id ?? data?.taskId ?? data?.id ?? data?.task?.id ?? null,
-      seedrResponse: data,
-      seedrFolderName: data?.torrent_name || data?.name || data?.task?.name || torrentName || null,
-      seedrFolderId: data?.folder_id ?? data?.folderId ?? data?.task?.folder_id ?? null,
-      deletedFolders: Array.isArray(data?.deleted_folders) ? data.deleted_folders : [],
-    };
+  async prepareSeedrMagnet(magnet: string): Promise<{
+    taskId: number | string;
+    name: string;
+    files: Array<{ id: string; name: string; size: number }>;
+    created?: boolean;
+    paused?: boolean;
+  }> {
+    const res = await apiFetch('/api/seedr/tasks/prepare', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ magnet })
+    });
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch {}
+    if (!res.ok) throw new Error(data?.error || body || 'Failed to prepare Seedr task');
+    return data;
   },
 
   async addMagnet(
     urls: string,
     category = 'Downloads',
     selectedFiles?: number[],
-    manifest?: { index?: number; name: string; size: number; priority: number }[],
+    manifest?: { name: string; size: number; priority: number }[],
     existingHash?: string,
     forceBackend?: 'seedr' | 'qbittorrent',
     selectedNames?: string[],
     seedrTaskId?: number | string,
     torrentName?: string
   ): Promise<any> {
-    const magnet = urls;
-    if (!magnet.trim().toLowerCase().startsWith('magnet:?')) {
+    const magnet = urls.trim();
+    if (!magnet.toLowerCase().startsWith('magnet:?')) {
       throw new Error('A valid magnet URL is required');
     }
 
-    if (forceBackend === 'seedr') {
-      const res = await apiFetch('/api/seedr/add', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ magnet })
-      });
-
-      const body = await res.text();
-      let data: any = null;
-      try { data = body ? JSON.parse(body) : null; } catch {}
-
-      if (!res.ok) {
-        const error = new Error(
-          data?.error || data?.message || data?.detail || body ||
-          `Seedr add failed (HTTP ${res.status})`
-        );
-        Object.assign(error as any, data || {});
-        if (res.status === 413) (error as any).code = data?.code || 'SEEDR_INSUFFICIENT_SPACE';
-        throw error;
-      }
-
-      return {
-        backend: 'seedr',
-        seedrTaskId: data?.task_id ?? data?.taskId ?? data?.id ?? data?.task?.id ?? null,
-        seedrResponse: data,
-        seedrFolderName: data?.torrent_name || data?.name || data?.task?.name || null,
-        seedrFolderId: data?.folder_id ?? data?.folderId ?? data?.task?.folder_id ?? null,
-        selectionApplied: false,
-        selectionError: null
-      };
-    }
-
-    // qBittorrent path retains the existing selected-file priority behavior.
-    const res = await apiFetch(API_BASE + '/api/v2/torrents/add', {
+    const size = (manifest || []).reduce((sum, file) => sum + Number(file.size || 0), 0) || undefined;
+    const res = await apiFetch(API_BASE + '/api/seedr/add', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        urls: magnet,
-        category,
-        selectedFiles: selectedFiles || [],
-        manifest: manifest || [],
-        existingHash,
-        forceBackend: 'qbittorrent',
-        selectedNames: selectedNames || [],
-        seedrTaskId,
-        torrentName
+        magnet,
+        size,
+        folder_id: undefined,
+        torrent_name: torrentName || undefined
       })
     });
-
     const body = await res.text();
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch {}
     if (!res.ok) {
-      const error = new Error(data?.error || data?.message || data?.detail || body || `Torrent add failed (HTTP ${res.status})`);
+      const error = new Error(data?.error || data?.message || body || `Seedr add failed (HTTP ${res.status})`);
       if (res.status === 413) (error as any).code = 'SEEDR_INSUFFICIENT_SPACE';
-      if (data?.code) (error as any).code = data.code;
-      Object.assign(error as any, data || {});
       throw error;
     }
-    return data;
-  },
 
-  async getSeedrSession(): Promise<{
-    connected: boolean;
-    csrfToken: string;
-  }> {
-    const res = await apiFetch('/api/seedr/session');
-    const body = await res.text();
-    let data: any = null;
-    try { data = body ? JSON.parse(body) : null; } catch {}
-    if (!res.ok) throw makeSeedrError(data, body, res.status, 'Failed to initialize Seedr session');
-
-    seedrCsrfToken = typeof data?.csrfToken === 'string' ? data.csrfToken : '';
-    return {
-      connected: Boolean(data?.connected),
-      csrfToken: seedrCsrfToken,
-    };
-  },
-
-  async connectSeedrPat(pat: string): Promise<{
-    status: 'connected' | 'error';
-    connected: boolean;
-  }> {
-    const value = String(pat || '').trim();
-    if (!value) throw new Error('Enter your Seedr Personal Access Token.');
-
-    const res = await apiFetch('/api/seedr/connect/pat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pat: value }),
-    });
-    const body = await res.text();
-    let data: any = null;
-    try { data = body ? JSON.parse(body) : null; } catch {}
-    if (!res.ok) {
-      throw makeSeedrError(data, body, res.status, 'Seedr rejected this Personal Access Token.');
+    let taskId = data?.task_id ?? data?.id ?? data?.task?.id ?? data?.task?.task_id ?? null;
+    if (taskId == null) {
+      try {
+        const taskRes = await apiFetch('/api/seedr/tasks');
+        const taskBody = await taskRes.json().catch(() => null);
+        const tasks = Array.isArray(taskBody) ? taskBody : (Array.isArray(taskBody?.tasks) ? taskBody.tasks : []);
+        const latest = tasks[0];
+        taskId = latest?.id ?? latest?.task_id ?? latest?.taskId ?? null;
+      } catch {}
     }
     return {
-      status: data?.status === 'connected' ? 'connected' : 'error',
-      connected: Boolean(data?.connected),
+      backend: 'seedr',
+      seedrTaskId: taskId,
+      seedrResponse: data,
+      seedrFolderName: torrentName || data?.name || data?.task?.name || null,
+      seedrFolderId: data?.folder_id ?? data?.task?.folder_id ?? null,
+      selectionApplied: false
     };
   },
 
-  async startSeedrConnection(): Promise<{
-    status: 'pending' | 'connected' | 'error';
-    connected: boolean;
-    userCode?: string;
-    verificationUrl?: string;
-    expiresIn?: number;
-    interval?: number;
-  }> {
-    const res = await apiFetch('/api/seedr/connect/start', { method: 'POST' });
-    const body = await res.text();
-    let data: any = null;
-    try { data = body ? JSON.parse(body) : null; } catch {}
-    if (!res.ok) throw makeSeedrError(data, body, res.status, 'Failed to start Seedr account connection');
-    return data;
-  },
-
-  async pollSeedrConnection(): Promise<{
-    status: 'idle' | 'pending' | 'connected' | 'expired' | 'error';
-    connected: boolean;
-    message?: string;
-    code?: string;
-    expiresIn?: number;
-  }> {
-    const res = await apiFetch('/api/seedr/connect/status');
-    const body = await res.text();
-    let data: any = null;
-    try { data = body ? JSON.parse(body) : null; } catch {}
-    if (!res.ok) throw makeSeedrError(data, body, res.status, 'Failed to check Seedr connection');
-    return data;
-  },
-
-  async disconnectSeedr(): Promise<void> {
-    const res = await apiFetch('/api/seedr/connect/disconnect', { method: 'POST' });
-    const body = await res.text();
-    if (!res.ok) {
-      let data: any = null;
-      try { data = body ? JSON.parse(body) : null; } catch {}
-      throw makeSeedrError(data, body, res.status, 'Failed to disconnect Seedr account');
-    }
-  },
-
-  async getSeedrTokenDiagnostic(): Promise<any> {
-    const res = await apiFetch('/api/seedr/token-diagnostic');
-    const body = await res.text();
-    let data: any = null;
-    try { data = body ? JSON.parse(body) : null; } catch { data = null; }
-    if (!res.ok) throw makeSeedrError(data, body, res.status, 'Failed to diagnose Seedr token');
-    return data;
-  },
-
-  async getSeedrAuthStatus(): Promise<{
-    configured: boolean;
-    authenticated: boolean;
-    code: string;
-    message?: string;
-  }> {
-    const res = await apiFetch('/api/seedr/auth-status');
-    const body = await res.text();
-    let data: any = null;
-    try { data = body ? JSON.parse(body) : null; } catch { data = null; }
-    if (!res.ok) throw makeSeedrError(data, body, res.status, 'Failed to check Seedr authentication');
-    return {
-      configured: Boolean(data?.configured),
-      authenticated: Boolean(data?.authenticated),
-      code: String(data?.code || ''),
-      message: typeof data?.message === 'string' ? data.message : undefined,
-    };
-  },
 
   async getSeedrQuota(): Promise<{
     configured: boolean;
@@ -586,7 +354,7 @@ export const api = {
     const body = await res.text();
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch { data = null; }
-    if (!res.ok) throw makeSeedrError(data, body, res.status, 'Failed to fetch Seedr quota');
+    if (!res.ok) throw new Error(data?.error || body || 'Failed to fetch Seedr quota');
     return {
       configured: Boolean(data?.configured),
       maxSpace: Number(data?.maxSpace || 0),
@@ -621,7 +389,7 @@ export const api = {
     const body = await res.text();
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch { data = null; }
-    if (!res.ok) throw makeSeedrError(data, body, res.status, 'Failed to fetch Seedr library metadata');
+    if (!res.ok) throw new Error(data?.error || body || 'Failed to fetch Seedr library metadata');
     return {
       configured: Boolean(data?.configured),
       root: data?.root || null,
@@ -639,7 +407,7 @@ export const api = {
     const body = await res.text();
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch { data = null; }
-    if (!res.ok) throw makeSeedrError(data, body, res.status, 'Failed to load Seedr folder contents');
+    if (!res.ok) throw new Error(data?.error || body || 'Failed to load Seedr folder contents');
     return {
       configured: Boolean(data?.configured),
       folderId: String(data?.folderId || folderId),
@@ -656,7 +424,7 @@ export const api = {
     const body = await res.text();
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch { data = null; }
-    if (!res.ok) throw makeSeedrError(data, body, res.status, 'Failed to fetch Seedr files');
+    if (!res.ok) throw new Error(data?.error || body || 'Failed to fetch Seedr files');
     return {
       configured: Boolean(data?.configured),
       files: Array.isArray(data?.files) ? data.files : [],
@@ -665,12 +433,12 @@ export const api = {
 
   openSeedrFileDownload(fileId: string, filename = ''): void {
     const query = filename ? '?filename=' + encodeURIComponent(filename) : '';
-    const url = '/api/seedr/files/' + encodeURIComponent(fileId) + '/download' + query;
+    const url = '/api/seedr/files/' + encodeURIComponent(fileId) + '/download/direct' + query;
     window.open(API_BASE + url, '_blank', 'noopener,noreferrer');
   },
 
   async getSeedrFileDownload(fileId: string): Promise<{ url: string; name: string }> {
-    const res = await apiFetch('/api/seedr/files/' + encodeURIComponent(fileId) + '/download/url');
+    const res = await apiFetch('/api/seedr/files/' + encodeURIComponent(fileId) + '/download');
     const body = await res.text();
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch { data = null; }
@@ -699,88 +467,14 @@ export const api = {
     };
   },
 
-  async getSeedrNativeAudioUrl(fileId: string): Promise<{ url: string }> {
-    return {
-      url: '/api/seedr/media/native-audio/' + encodeURIComponent(fileId),
-    };
-  },
-
-  async getSeedrAudioPresentationUrl(fileId: string, track: number, start = 0): Promise<{ url: string; protocol?: string; start?: number }> {
-    const params = new URLSearchParams({
-      track: String(track),
-      start: String(Math.max(0, Number(start) || 0)),
-    });
-    const res = await apiFetch(
-      '/api/seedr/media/audio-url/' + encodeURIComponent(fileId) + '?' + params.toString()
-    );
-    const body = await res.text();
-    let data: any = null;
-    try { data = body ? JSON.parse(body) : null; } catch {}
-    if (!res.ok) throw new Error(data?.error || body || 'Failed to resolve Seedr audio presentation');
-
-    const resolved = typeof data?.url === 'string' ? data.url.trim() : '';
-    if (!resolved) throw new Error('Seedr returned an empty audio playback URL');
-
-    return {
-      url: resolved.startsWith('/') ? API_BASE + resolved : resolved,
-      protocol: typeof data?.protocol === 'string' ? data.protocol : undefined,
-      start: Number.isFinite(Number(data?.start)) ? Number(data.start) : 0,
-    };
-  },
-
-  async getSeedrMediaInfo(fileId: string): Promise<{
-    name: string;
-    audioTracks: Array<{
-      index: number;
-      streamIndex?: number;
-      language: string;
-      title: string;
-      codec: string;
-      channels: number;
-      default: boolean;
-    }>;
-    subtitleTracks: Array<{
-      index: number;
-      streamIndex?: number;
-      language: string;
-      title: string;
-      codec: string;
-      url: string;
-    }>;
-  }> {
-    const res = await apiFetch('/api/seedr/media-info/' + encodeURIComponent(fileId));
-    const body = await res.text();
-    let data: any = null;
-    try { data = body ? JSON.parse(body) : null; } catch { data = null; }
-
-    if (!res.ok) {
-      throw new Error(data?.error || data?.message || body || 'Failed to inspect Seedr media tracks');
-    }
-
-    const subtitleTracks = Array.isArray(data?.subtitleTracks)
-      ? data.subtitleTracks.map((track: any) => ({
-          ...track,
-          url: typeof track?.url === 'string' && track.url.startsWith('/')
-            ? API_BASE + track.url
-            : track?.url,
-        }))
-      : [];
-
-    return {
-      name: String(data?.name || fileId),
-      audioTracks: Array.isArray(data?.audioTracks) ? data.audioTracks : [],
-      subtitleTracks,
-    };
-  },
-
   openSeedrFolderDownload(folderId: string, filename = ''): void {
     const query = filename ? '?filename=' + encodeURIComponent(filename) : '';
-    const url = '/api/seedr/folders/' + encodeURIComponent(folderId) + '/download' + query;
+    const url = '/api/seedr/folders/' + encodeURIComponent(folderId) + '/download/direct' + query;
     window.open(API_BASE + url, '_blank', 'noopener,noreferrer');
   },
 
   async getSeedrFolderDownload(folderId: string): Promise<{ url: string }> {
-    const res = await apiFetch('/api/seedr/folders/' + encodeURIComponent(folderId) + '/download/url');
+    const res = await apiFetch('/api/seedr/folders/' + encodeURIComponent(folderId) + '/download');
     const body = await res.text();
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch { data = null; }
@@ -825,19 +519,6 @@ export const api = {
     const body = await res.text();
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch { data = null; }
-    // Seedr can legitimately return 404 when a task has already
-    // completed, been removed, or is stale in the browser. Treat that as a
-    // terminal "not_found" state instead of throwing so callers can stop
-    // polling and clear the stale task from local state.
-    if (res.status === 404) {
-      return {
-        taskId,
-        name: '',
-        folderId: '',
-        status: 'not_found',
-        progress: 0,
-      };
-    }
     if (!res.ok) throw new Error(data?.error || body || 'Failed to check Seedr task progress');
     return {
       taskId: data?.taskId ?? taskId,
@@ -1044,24 +725,6 @@ export const api = {
 
   async testNotification(): Promise<void> {
     await apiFetch('/api/notifications/test', { method: 'POST' });
-  },
-
-  async submitFeedback(feedback: {
-    type: 'review' | 'suggestion' | 'bug';
-    rating?: number;
-    message: string;
-    name?: string;
-  }): Promise<{ submitted: boolean; issueUrl?: string }> {
-    const res = await apiFetch('/api/feedback', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(feedback)
-    });
-    const body = await res.text();
-    let data: any = null;
-    try { data = body ? JSON.parse(body) : null; } catch {}
-    if (!res.ok) throw new Error(data?.error || body || 'Failed to send feedback');
-    return data || { submitted: true };
   },
 
   // qBittorrent Configuration
