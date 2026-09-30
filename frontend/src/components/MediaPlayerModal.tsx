@@ -90,13 +90,11 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       ? file.streamUrl.replace('/api/torrents/stream/', '/api/torrents/direct-stream/')
       : file.streamUrl;
 
-    // Seedr supplies the exact HLS URL that external players use (e.g. MX
-    // Player). Try that URL first in Hls.js; if browser CORS blocks it, fall
-    // back automatically to our Render same-origin proxy.
-    // Browser playback must use the backend URL. The backend decides whether the
-    // Seedr presentation is HLS or a direct video stream and provides the proper
-    // same-origin endpoint. Keep externalStreamUrl only for VLC/MX Player.
-    const preferredSeedrUrl = file.streamUrl || file.externalStreamUrl || directBaseUrl;
+    // The backend resolves a short-lived signed Seedr URL. Prefer that
+    // external URL for playback so the browser pulls media bytes directly
+    // from Seedr instead of through Render. Same-origin URLs remain supported
+    // for other media/file types.
+    const preferredSeedrUrl = file.externalStreamUrl || file.streamUrl || directBaseUrl;
     const streamUrl = selectedAudioIndex !== undefined
       ? `${preferredSeedrUrl}${preferredSeedrUrl.includes('?') ? '&' : '?'}audio=${encodeURIComponent(String(selectedAudioIndex))}`
       : preferredSeedrUrl;
