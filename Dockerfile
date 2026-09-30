@@ -27,30 +27,32 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ ./
 COPY --from=frontend-build /frontend/dist ./frontend-dist
 
-RUN rm -f /etc/nginx/sites-enabled/default \
-    && printf '%s\\n' \
-'server {' \
-'    listen 10000;' \
-'    server_name _;' \
-'    root /app/frontend-dist;' \
-'    index index.html;' \
-'' \
-'    location /api/ {' \
-'        proxy_pass http://127.0.0.1:10001;' \
-'        proxy_http_version 1.1;' \
-'        proxy_set_header Host $host;' \
-'        proxy_set_header X-Real-IP $remote_addr;' \
-'        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;' \
-'        proxy_set_header X-Forwarded-Proto $scheme;' \
-'        proxy_buffering off;' \
-'        proxy_request_buffering off;' \
-'    }' \
-'' \
-'    location / {' \
-'        try_files $uri $uri/ /index.html;' \
-'    }' \
-'}' > /etc/nginx/sites-available/torrent-studio \
-    && ln -s /etc/nginx/sites-available/torrent-studio /etc/nginx/sites-enabled/torrent-studio \
+RUN rm -f /etc/nginx/sites-enabled/default
+RUN cat > /etc/nginx/sites-available/torrent-studio <<'NGINX'
+server {
+    listen 10000;
+    server_name _;
+    root /app/frontend-dist;
+    index index.html;
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:10001;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_request_buffering off;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+NGINX
+
+RUN ln -s /etc/nginx/sites-available/torrent-studio /etc/nginx/sites-enabled/torrent-studio \
     && nginx -t
 
 ENV PYTHONUNBUFFERED=1
