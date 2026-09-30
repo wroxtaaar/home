@@ -59,7 +59,6 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
   const resumePlayingRef = useRef(false);
   const subtitleTrackRef = useRef<HTMLTrackElement>(null);
   const [usingDirectFallback, setUsingDirectFallback] = useState(false);
-  const hlsActiveRef = useRef(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -74,7 +73,6 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     setIsPlaying(true);
     setMediaError('');
     setUsingDirectFallback(false);
-    hlsActiveRef.current = false;
   }, [file?.id]);
 
   useEffect(() => {
@@ -91,15 +89,15 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     // Seedr supplies the exact HLS URL that external players use (e.g. MX
     // Player). Try that URL first in Hls.js; if browser CORS blocks it, fall
     // back automatically to our Render same-origin proxy.
-    // Browser playback must use the backend URL. The backend decides whether the
-    // Seedr presentation is HLS or a direct video stream and provides the proper
-    // same-origin endpoint. Keep externalStreamUrl only for VLC/MX Player.
+    // Browser playback stays same-origin so HLS requests can be proxied by the backend.
+    // The backend now sources that stream from Seedr V2 presentations; keep the
+    // direct external URL as a fallback for VLC/MX Player.
     const preferredSeedrUrl = file.streamUrl || file.externalStreamUrl || directBaseUrl;
     const streamUrl = selectedAudioIndex !== undefined
       ? `${preferredSeedrUrl}${preferredSeedrUrl.includes('?') ? '&' : '?'}audio=${encodeURIComponent(String(selectedAudioIndex))}`
       : preferredSeedrUrl;
     const fallbackStreamUrl = file.externalStreamUrl && file.streamUrl !== file.externalStreamUrl
-      ? file.streamUrl
+      ? file.externalStreamUrl
       : '';
 
     const restoreTime = resumeTimeRef.current;
@@ -114,10 +112,6 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
         } catch {}
       }
 
-      // A transient native MEDIA_ERR_SRC_NOT_SUPPORTED can be emitted while
-      // Hls.js is attaching MediaSource. Clear any stale overlay once metadata
-      // has successfully arrived.
-      setMediaError('');
       setTrackNotice('');
       if (restorePlaying) {
         media.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
@@ -136,7 +130,6 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       streamUrl.includes('/api/media/hls/');
 
     if (isHlsStream && isVideo && Hls.isSupported()) {
-      hlsActiveRef.current = true;
       let triedFallback = false;
 
       const startHls = (sourceUrl: string) => {
@@ -146,15 +139,8 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
           lowLatencyMode: false,
           backBufferLength: 90,
         });
-        setMediaError('');
         hls.loadSource(sourceUrl);
         hls.attachMedia(media as HTMLMediaElement);
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          // Successful manifest parsing means the browser player can proceed.
-          // Do not leave a transient native media error visible.
-          setMediaError('');
-          setTrackNotice('');
-        });
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (!data?.fatal) return;
 
@@ -198,7 +184,6 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       media.pause();
       media.removeAttribute('src');
       media.load();
-      hlsActiveRef.current = false;
     };
   }, [file?.id, file?.streamUrl, file?.externalStreamUrl, isVideo, selectedAudioIndex]);
 
@@ -235,9 +220,6 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
   if (!file) return null;
 
   const handleMediaError = () => {
-    // When Hls.js owns the video element, Chrome can briefly report MEDIA_ERR_SRC_NOT_SUPPORTED
-    // while MediaSource is being attached. Hls.js is the authoritative error source in that mode.
-    if (hlsActiveRef.current) return;
     const media = mediaRef.current;
     const code = media && 'error' in media ? media.error?.code : undefined;
     setMediaError(
@@ -413,7 +395,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
         {isVideo ? (
           <video
             ref={videoRef}
-            src={file.streamUrl || file.externalStreamUrl}
+            src={file.externalStreamUrl || file.streamUrl}
             className="w-full h-32 object-contain bg-black rounded-lg"
             onTimeUpdate={onTimeUpdate}
             onLoadedMetadata={onLoadedMetadata}
@@ -539,7 +521,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
               <div className="max-w-md rounded-xl bg-slate-900/95 border border-rose-500/30 p-5">
                 <p className="text-sm font-semibold text-rose-300">{mediaError}</p>
                 <p className="text-xs text-slate-400 mt-2">
-                  The Seedr stream could not be played. We tried the direct Seedr presentation URL and the server proxy.
+                  The Seedr HLS stream could not be loaded. The server now proxies the playlist and media segments to keep playback same-origin.
                 </p>
               </div>
             </div>

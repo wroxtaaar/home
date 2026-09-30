@@ -89,58 +89,8 @@ export default function App() {
     message: string;
     ready?: boolean;
     error?: string;
-    jobId?: string;
   } | null>(null);
-
-  // Keep background metadata jobs connected to the UI after the selector closes.
-  // Once a resolver finishes, the cached metadata is immediately available when
-  // the user opens the selector again.
-  useEffect(() => {
-    const jobId = backgroundMetadataJob?.jobId;
-    if (!backgroundMetadataJob?.active || !jobId) return;
-
-    let stopped = false;
-    const poll = async () => {
-      try {
-        const data = await api.getTorrentMetadataStatus(jobId);
-        if (stopped) return;
-
-        if (Array.isArray(data?.files) && data.files.length > 0) {
-          setBackgroundMetadataJob({
-            active: false,
-            ready: true,
-            title: 'Torrent metadata ready',
-            message: `${data.files.length} file${data.files.length === 1 ? '' : 's'} found. Open the selector to choose files.`,
-            jobId
-          });
-          return;
-        }
-
-        if (data?.status === 'error') {
-          setBackgroundMetadataJob({
-            active: false,
-            error: String(data?.message || 'Torrent metadata could not be resolved.'),
-            title: 'Torrent metadata failed',
-            message: String(data?.message || 'Torrent metadata could not be resolved.'),
-            jobId
-          });
-        }
-      } catch {
-        // The job may still be running or the Render instance may be waking.
-        // Keep polling rather than turning a transient status request into a
-        // false failure.
-      }
-    };
-
-    void poll();
-    const timer = window.setInterval(() => { void poll(); }, 2500);
-    return () => {
-      stopped = true;
-      window.clearInterval(timer);
-    };
-  }, [backgroundMetadataJob?.active, backgroundMetadataJob?.jobId]);
   const [initialSourceUrl, setInitialSourceUrl] = useState('');
-  const [initialDescriptorUrl, setInitialDescriptorUrl] = useState('');
 
   const [theme, setTheme] = useState<'dark' | 'dim' | 'light'>(() => {
     try {
@@ -518,7 +468,7 @@ export default function App() {
     seedrNotice?.taskId != null && seedrNotice.status !== 'completed'
   );
 
-  const openAddMagnet = useCallback((source = '', sourceUrl = '', descriptorUrl = '') => {
+  const openAddMagnet = useCallback((source = '', sourceUrl = '') => {
     if (seedrDownloadActive) {
       setSeedrAddBlockedNotice(
         'A Seedr download is already in progress. Free Seedr accounts allow one parallel download. Wait for it to finish before adding another magnet link.'
@@ -530,7 +480,6 @@ export default function App() {
 
     setInitialMagnet(source);
     setInitialSourceUrl(sourceUrl);
-    setInitialDescriptorUrl(descriptorUrl);
     setIsAddMagnetOpen(true);
   }, [seedrDownloadActive]);
 
@@ -808,7 +757,7 @@ export default function App() {
     });
   }, []);
 
-  const handleSearchAdd = async (source: string, size: number, title: string, infoHash?: string, sourceUrl?: string, descriptorUrl?: string) => {
+  const handleSearchAdd = async (source: string, size: number, title: string, infoHash?: string, sourceUrl?: string) => {
     const trimmedSource = source.trim();
     const seedrSource =
       trimmedSource.toLowerCase().startsWith('magnet:?')
@@ -818,13 +767,13 @@ export default function App() {
           : trimmedSource;
 
     if (!seedrSource) {
-      openAddMagnet(source, sourceUrl, descriptorUrl);
+      openAddMagnet(source, sourceUrl);
       return;
     }
 
     // Search results now use the same safe metadata-first flow as pasted
     // magnets. Nothing is sent to Seedr until the user sees the file list.
-    openAddMagnet(seedrSource, sourceUrl, descriptorUrl);
+    openAddMagnet(seedrSource, sourceUrl);
   };
 
   const handleAddMagnet = async (
@@ -2578,7 +2527,6 @@ export default function App() {
           setIsAddMagnetOpen(false);
           setInitialMagnet('');
           setInitialSourceUrl('');
-          setInitialDescriptorUrl('');
           setSeedrSelectionContext(null);
         }}
         onOpen={() => {
@@ -2595,7 +2543,6 @@ export default function App() {
         defaultFolder={currentFolder === '/' ? 'Downloads' : currentFolder.replace('/', '')}
         initialMagnet={initialMagnet}
         initialSourceUrl={initialSourceUrl}
-        initialDescriptorUrl={initialDescriptorUrl}
         selectionReason={seedrSelectionContext}
       />
 

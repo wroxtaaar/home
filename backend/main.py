@@ -31,7 +31,6 @@ SEEDR_MAX_SIZE_BYTES = int(SEEDR_MAX_SIZE_GB * 1024**3)
 SEARCH_STOPWORDS = {"the", "a", "an", "movie", "film", "series", "season", "episode", "web", "show", "tv"}
 TORRENT_SEARCH_API_URL = os.getenv("TORRENT_SEARCH_API_URL", "https://torrent-search-api-ujfa.onrender.com").rstrip("/")
 KNABEN_API_URL = os.getenv("KNABEN_API_URL", "https://api.knaben.org/v1").rstrip("/")
-TORRENT_METADATA_API_URL = os.getenv("TORRENT_METADATA_API_URL", "https://torrentmeta.fly.dev").rstrip("/")
 SEARCH_SOURCE_TIMEOUT_SECONDS = float(os.getenv("SEARCH_SOURCE_TIMEOUT_SECONDS", "8.5"))
 SEARCH_CACHE_SECONDS = float(os.getenv("SEARCH_CACHE_SECONDS", "60"))
 TORRENT_METADATA_CACHE_FILE = Path(os.getenv("TORRENT_METADATA_CACHE_FILE", "/app/.torrent_metadata_cache.json"))
@@ -164,11 +163,7 @@ async def _fetch_source_torrent_descriptor(source_url: str, info_hash_value: str
 
     # Search results currently expose Knaben detail URLs. Keep this narrowly
     # scoped rather than turning the endpoint into an arbitrary URL fetcher.
-    allowed_hosts = {
-        "knaben.org", "www.knaben.org", "api.knaben.org",
-        "knaben.eu", "www.knaben.eu",
-        "knaben.xyz", "www.knaben.xyz",
-    }
+    allowed_hosts = {"knaben.org", "www.knaben.org", "api.knaben.org"}
     if host not in allowed_hosts:
         return None
 
@@ -383,61 +378,20 @@ def _metadata_from_libtorrent_sync(magnet: str, info_hash_value: str) -> dict[st
 
 
 async def _run_metadata_job(job_id: str, magnet: str, info_hash_value: str) -> None:
-    """Resolve metadata in parallel so a slow DHT lookup cannot block a faster resolver."""
     job = _metadata_jobs[job_id]
     job["status"] = "resolving"
-
-    async def resolve_libtorrent() -> dict[str, Any] | None:
-        session = await _get_libtorrent_session()
-        return await asyncio.to_thread(
-            _metadata_from_libtorrent_sync,
-            magnet,
-            info_hash_value,
-        )
-
-    remote_task = asyncio.create_task(
-        _fetch_remote_torrent_metadata(magnet, info_hash_value)
-    )
-    knaben_task = asyncio.create_task(_lookup_knaben_by_hash(info_hash_value))
-    libtorrent_task = asyncio.create_task(resolve_libtorrent())
-
-    tasks = (remote_task, knaben_task, libtorrent_task)
-    errors: list[str] = []
     try:
-        # Race independent metadata sources. This is important on Render:
-        # DHT may have zero peers while the public metadata service or an
-        # indexer already has the same torrent cached.
-        for task in asyncio.as_completed(tasks):
-            try:
-                result = await task
-            except TimeoutError as exc:
-                errors.append(str(exc))
-                continue
-            except Exception as exc:
-                errors.append(str(exc))
-                continue
-
-            if result and isinstance(result, dict) and result.get("files"):
-                _metadata_cache[info_hash_value.lower()] = result
-                _save_metadata_cache()
-                job.update({"status": "ready", "result": result, "error": None})
-                logger.info(
-                    "Metadata job %s resolved via %s",
-                    job_id,
-                    result.get("source", "unknown"),
-                )
-                return
-
-        message = errors[-1] if errors else "No metadata resolver returned a file list."
-        job.update({"status": "error", "error": message})
-        logger.warning("Metadata job %s failed: %s", job_id, message)
-    finally:
-        # The local libtorrent thread may continue after another resolver wins;
-        # keep the shared session alive rather than cancelling it mid-operation.
-        # Cancel only outstanding HTTP/indexer requests.
-        for task in (remote_task, knaben_task):
-            if not task.done():
-                task.cancel()
+        session = await _get_libtorrent_session()
+        result = await asyncio.to_thread(_metadata_from_libtorrent_sync, magnet, info_hash_value)
+        _metadata_cache[info_hash_value.lower()] = result
+        _save_metadata_cache()
+        job.update({"status": "ready", "result": result})
+    except TimeoutError as exc:
+        job.update({"status": "resolving", "error": str(exc)})
+        logger.info("Metadata job %s still resolving: %s", job_id, exc)
+    except Exception as exc:
+        job.update({"status": "error", "error": str(exc)})
+        logger.warning("Metadata job %s failed: %s", job_id, exc)
 
 
 _load_metadata_cache()
@@ -729,13 +683,11 @@ def normalize_file(item: Any, folder_id: str = "") -> dict[str, Any]:
         return {"id": "", "name": "Unnamed file", "size": 0, "folderId": folder_id}
     return {
         "id": str(item.get("id") or item.get("file_id") or ""),
-        # Seedr V2 presentation endpoints use the canonical file id.
-        # Keep legacy folder_file_id only as a fallback for older API shapes.
         "streamId": str(
-            item.get("id")
-            or item.get("file_id")
-            or item.get("folder_file_id")
+            item.get("folder_file_id")
             or item.get("folderFileId")
+            or item.get("file_id")
+            or item.get("id")
             or ""
         ),
         "name": str(item.get("name") or item.get("title") or "Unnamed file"),
@@ -1538,7 +1490,6 @@ async def search_knaben(query: str, limit: int = 100) -> list[dict[str, Any]]:
             "downloadUrl": magnet or None,
             "infoUrl": str(hit.get("details") or ""),
             "sourceUrl": str(hit.get("details") or ""),
-            "descriptorUrl": str(hit.get("link") or ""),
             "category": category,
         })
 
@@ -1643,12 +1594,6 @@ async def search_1337x(query: str, limit: int = 50) -> list[dict[str, Any]]:
                 "downloadUrl": magnet or None,
                 "infoUrl": str(item.get("infoUrl") or item.get("page_url") or ""),
                 "sourceUrl": str(item.get("sourceUrl") or item.get("page_url") or ""),
-                "descriptorUrl": str(
-                    item.get("torrentUrl")
-                    or item.get("torrent_url")
-                    or item.get("descriptorUrl")
-                    or ""
-                ),
                 "category": str(item.get("category") or ""),
             })
 
@@ -2494,33 +2439,14 @@ def _seedr_media_url(file_id: str, media_type: str) -> str:
         raise HTTPException(400, "Unsupported Seedr media type")
     return SEEDR_MEDIA_BASE.rstrip("/") + endpoint + "?access_token=" + quote(SEEDR_TOKEN, safe="")
 
-def seedr_v2_bearer_token() -> str:
-    """Accept a raw Seedr PAT or MediaFusion-style base64 JSON token."""
-    raw = SEEDR_TOKEN.strip()
-    if not raw:
-        return ""
-    try:
-        decoded = base64.b64decode(raw, validate=True).decode("utf-8")
-        payload = json.loads(decoded)
-        token = str(payload.get("access_token") or "").strip() if isinstance(payload, dict) else ""
-        if token:
-            return token
-    except Exception:
-        pass
-    return raw
-
-
 async def seedr_v2_request(path: str) -> Any:
     if not SEEDR_TOKEN:
         raise HTTPException(503, "Seedr is not configured")
-    bearer = seedr_v2_bearer_token()
-    if not bearer:
-        raise HTTPException(503, "Seedr access token is empty")
     url = SEEDR_V2_BASE.rstrip("/") + "/" + str(path).lstrip("/")
     async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
         response = await client.get(
             url,
-            headers={"Authorization": f"Bearer {bearer}", "Accept": "application/json"},
+            headers={"Authorization": f"Bearer {SEEDR_TOKEN}", "Accept": "application/json"},
         )
     raw = response.text
     try:
@@ -2606,77 +2532,54 @@ def _rewrite_hls_manifest(file_id: str, manifest_text: str, base_url: str) -> st
     return "\n".join(rewritten) + ("\n" if manifest_text.endswith("\n") else "")
 
 
-async def _presentation_is_hls(url: str) -> bool:
-    """Probe a Seedr presentation URL without downloading the full media file."""
-    if not url:
-        return False
-    try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            response = await client.get(url, headers={"Accept": "application/vnd.apple.mpegurl,application/x-mpegURL,video/*,*/*", "Range": "bytes=0-2047"})
-        content_type = str(response.headers.get("content-type") or "").lower()
-        prefix = response.content[:2048].decode("utf-8", errors="ignore")
-        return "mpegurl" in content_type or "#EXTM3U" in prefix
-    except Exception as exc:
-        logger.info("Seedr presentation probe failed: %s", exc)
-        return False
-
-
 async def _fetch_seedr_hls_manifest(file_id: str) -> tuple[str, str]:
-    """Resolve a browser-playable HLS manifest from Seedr V2, then v1 fallback."""
-    candidates: list[str] = []
-    presentation_url = await seedr_v2_video_url(file_id)
-    if presentation_url:
-        candidates.append(presentation_url)
-    # Seedr's legacy HLS endpoint explicitly requests a converted browser stream.
-    candidates.append(_seedr_media_url(file_id, "video"))
+    # Seedr V2 exposes the playback URL used by current clients. Prefer that
+    # presentation endpoint before falling back to the older /media/hls route.
+    upstream_url = await seedr_v2_video_url(file_id)
+    if not upstream_url:
+        upstream_url = _seedr_media_url(file_id, "video")
 
-    last_detail = "Seedr did not return an HLS manifest"
-    for upstream_url in dict.fromkeys(candidates):
-        try:
-            async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
-                response = await client.get(
-                    upstream_url,
-                    headers={"Accept": "application/vnd.apple.mpegurl,application/x-mpegURL,*/*"},
-                )
-            if response.status_code >= 400:
-                last_detail = response.text[:500] or f"Seedr returned HTTP {response.status_code}"
-                continue
+    async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
+        response = await client.get(
+            upstream_url,
+            headers={"Accept": "application/vnd.apple.mpegurl,application/x-mpegURL,*/*"},
+        )
+    if response.status_code >= 400:
+        detail = response.text[:500] or f"Seedr media endpoint returned HTTP {response.status_code}"
+        raise HTTPException(response.status_code, detail)
 
-            content_type = str(response.headers.get("content-type") or "").lower()
-            text = response.text
-            if "#EXTM3U" not in text[:200]:
-                last_detail = f"Seedr returned {content_type or 'non-HLS content'}"
-                continue
+    content_type = str(response.headers.get("content-type") or "").lower()
+    text = response.text
+    if "#EXTM3U" not in text[:200]:
+        raise HTTPException(
+            502,
+            "Seedr did not return an HLS manifest for this file. The file may still be converting."
+        )
 
-            final_url = str(response.url)
-            host = urlsplit(final_url).hostname or ""
-            if not host:
-                last_detail = "Seedr returned an invalid HLS URL"
-                continue
+    final_url = str(response.url)
+    host = urlsplit(final_url).hostname or ""
+    if not host:
+        raise HTTPException(502, "Seedr returned an invalid HLS URL")
 
-            allowed_hosts = {host.lower()}
-            for raw_uri in re.findall(r'(?:URI="([^"]+)"|^([^#\s][^\r\n]*))', text, flags=re.M):
-                uri = raw_uri[0] or raw_uri[1]
-                if uri:
-                    try:
-                        ref_host = urlsplit(_absolute_hls_uri(final_url, uri)).hostname
-                        if ref_host:
-                            allowed_hosts.add(ref_host.lower())
-                    except Exception:
-                        pass
+    allowed_hosts = {host.lower()}
+    # Capture hosts already referenced by the master/media playlist.
+    for raw_uri in re.findall(r'(?:URI="([^"]+)"|^([^#\s][^\r\n]*))', text, flags=re.M):
+        uri = raw_uri[0] or raw_uri[1]
+        if uri:
+            try:
+                ref_host = urlsplit(_absolute_hls_uri(final_url, uri)).hostname
+                if ref_host:
+                    allowed_hosts.add(ref_host.lower())
+            except Exception:
+                pass
 
-            _seedr_hls_sources[file_id] = (
-                asyncio.get_running_loop().time() + SEEDR_HLS_CACHE_SECONDS,
-                final_url,
-                allowed_hosts,
-            )
-            logger.info("Seedr HLS manifest resolved: file=%s source=%s", file_id, urlsplit(final_url).hostname)
-            return text, final_url
-        except Exception as exc:
-            last_detail = str(exc)
-            continue
+    _seedr_hls_sources[file_id] = (
+        asyncio.get_running_loop().time() + SEEDR_HLS_CACHE_SECONDS,
+        final_url,
+        allowed_hosts,
+    )
+    return text, final_url
 
-    raise HTTPException(502, last_detail)
 
 async def _get_hls_source(file_id: str) -> tuple[str, set[str]]:
     now = asyncio.get_running_loop().time()
@@ -2690,15 +2593,9 @@ async def _get_hls_source(file_id: str) -> tuple[str, set[str]]:
 
 
 async def resolve_seedr_stream_id(file_id: str, name: str = "") -> str:
-    """Resolve the Seedr playback file identifier without requiring HLS."""
+    """Resolve the playback identifier Seedr uses for /media/hls."""
     candidate = str(file_id or "").strip()
     if candidate:
-        try:
-            presentation = await seedr_v2_video_url(candidate)
-            if presentation:
-                return candidate
-        except HTTPException:
-            pass
         try:
             await _fetch_seedr_hls_manifest(candidate)
             return candidate
@@ -2722,12 +2619,11 @@ async def resolve_seedr_stream_id(file_id: str, name: str = "") -> str:
         if raw_name.lower() != wanted_name:
             continue
 
-        # Match MediaFusion: Seedr V2 playback uses the actual file id.
         resolved = str(
-            raw.get("id")
-            or raw.get("file_id")
-            or raw.get("folder_file_id")
+            raw.get("folder_file_id")
             or raw.get("folderFileId")
+            or raw.get("file_id")
+            or raw.get("id")
             or ""
         ).strip()
         if not resolved:
@@ -2755,36 +2651,17 @@ async def seedr_file_stream(
     resolved_id = await resolve_seedr_stream_id(file_id, name)
 
     if type == "video":
-        # Seedr's V2 presentation URL is already browser-playable for the
-        # direct ff_get/presentation responses we have verified in Chrome,
-        # including Range-based seeking. Proxy that URL through our own
-        # same-origin endpoint so the browser never needs Seedr CORS headers
-        # and the Seedr URL/token is not exposed to the page.
-        #
-        # HLS is intentionally kept as a fallback. It is more expensive and
-        # can introduce an unnecessary conversion/proxy layer when Seedr
-        # already provides a browser-compatible presentation.
         presentation_url = await seedr_v2_video_url(resolved_id)
-        if presentation_url:
-            return {
-                "url": "/api/seedr/media/video/" + quote(resolved_id, safe=""),
-                "externalUrl": presentation_url,
-                "name": name or resolved_id,
-                "resolvedFileId": resolved_id,
-                "protocol": "direct",
-            }
-
-        try:
-            await _fetch_seedr_hls_manifest(resolved_id)
-            return {
-                "url": "/api/seedr/hls/" + quote(resolved_id, safe=""),
-                "externalUrl": _seedr_media_url(resolved_id, "video"),
-                "name": name or resolved_id,
-                "resolvedFileId": resolved_id,
-                "protocol": "hls",
-            }
-        except HTTPException:
-            raise
+        return {
+            # Browser playback uses our same-origin HLS proxy, which now pulls
+            # the Seedr V2 presentation stream. Keep the direct V2 URL for
+            # external players such as VLC/MX Player.
+            "url": "/api/seedr/hls/" + quote(resolved_id, safe=""),
+            "externalUrl": presentation_url or _seedr_media_url(resolved_id, "video"),
+            "name": name or resolved_id,
+            "resolvedFileId": resolved_id,
+            "protocol": "hls",
+        }
 
     return {
         "url": "/api/seedr/media/audio/" + quote(resolved_id, safe=""),
@@ -2793,6 +2670,7 @@ async def seedr_file_stream(
         "resolvedFileId": resolved_id,
         "protocol": "mp3",
     }
+
 
 @app.get("/api/seedr/hls/{file_id}")
 async def seedr_hls_manifest(file_id: str):
@@ -2885,68 +2763,7 @@ async def seedr_hls_resource(request: Request, file_id: str, u: str = Query(...)
     )
 
 
-@app.get("/api/seedr/media/video/{file_id}")
-async def seedr_video_media(file_id: str, request: Request):
-    if not SEEDR_TOKEN:
-        raise HTTPException(503, "Seedr is not configured")
-
-    upstream_url = await seedr_v2_video_url(file_id)
-    if not upstream_url:
-        raise HTTPException(404, "Seedr returned no video presentation URL")
-
-    headers = {"Accept": "video/*,application/octet-stream,*/*"}
-    range_header = request.headers.get("range")
-    if range_header:
-        headers["Range"] = range_header
-
-    client = httpx.AsyncClient(timeout=60, follow_redirects=True)
-    try:
-        response = await client.send(
-            client.build_request("GET", upstream_url, headers=headers),
-            stream=True,
-        )
-    except Exception:
-        await client.aclose()
-        raise
-
-    if response.status_code >= 400:
-        body = await response.aread()
-        status = response.status_code
-        content_type = response.headers.get("content-type", "application/octet-stream")
-        await response.aclose()
-        await client.aclose()
-        return Response(
-            content=body,
-            status_code=status,
-            media_type=content_type,
-            headers={"Access-Control-Allow-Origin": "*"},
-        )
-
-    response_headers = {
-        "Access-Control-Allow-Origin": "*",
-        "Accept-Ranges": response.headers.get("accept-ranges", "bytes"),
-        "Cache-Control": "no-store",
-    }
-    for header in ("content-range", "content-length", "etag", "last-modified"):
-        if response.headers.get(header):
-            response_headers[header.title()] = response.headers[header]
-
-    async def body_stream():
-        try:
-            async for chunk in response.aiter_bytes():
-                yield chunk
-        finally:
-            await response.aclose()
-            await client.aclose()
-
-    return StreamingResponse(
-        body_stream(),
-        status_code=response.status_code,
-        media_type=response.headers.get("content-type", "video/mp4"),
-        headers=response_headers,
-    )
-
-
+@app.get("/api/seedr/media/audio/{file_id}")
 async def seedr_audio_media(file_id: str, request: Request):
     if not SEEDR_TOKEN:
         raise HTTPException(503, "Seedr is not configured")
@@ -3105,126 +2922,6 @@ def _libtorrent_metadata_sync(magnet: str) -> tuple[str, str, list[dict[str, Any
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-async def _fetch_remote_torrent_metadata(magnet: str, info_hash_value: str) -> dict[str, Any] | None:
-    """Use the public torrent-metadata resolver as a metadata-only fallback."""
-    if not TORRENT_METADATA_API_URL:
-        return None
-    try:
-        # This service resolves BEP-9 metadata from a magnet without starting
-        # a file download. Give Fly.io enough time to wake a sleeping instance.
-        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-            response = await client.post(
-                TORRENT_METADATA_API_URL.rstrip("/") + "/",
-                json={"query": magnet},
-                headers={"Accept": "application/json", "Content-Type": "application/json"},
-            )
-            response.raise_for_status()
-            payload = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        logger.info("Remote metadata service failed for %s: %s", info_hash_value, exc)
-        return None
-
-    data = payload.get("data") if isinstance(payload, dict) else None
-    if not isinstance(data, dict):
-        return None
-    returned_hash = str(data.get("infoHash") or "").strip().lower()
-    if returned_hash and returned_hash != info_hash_value.lower():
-        logger.info("Remote metadata hash mismatch: wanted %s, got %s", info_hash_value, returned_hash)
-        return None
-
-    raw_files = data.get("files")
-    if not isinstance(raw_files, list) or not raw_files:
-        return None
-
-    files: list[dict[str, Any]] = []
-    for index, item in enumerate(raw_files):
-        if not isinstance(item, dict):
-            continue
-        path = str(item.get("path") or item.get("name") or "").strip()
-        if not path:
-            continue
-        files.append({
-            "index": index,
-            "name": str(item.get("name") or path),
-            "size": int(float(item.get("size") or 0)),
-            "path": path,
-            "type": "file",
-            "priority": 1,
-        })
-    if not files:
-        return None
-
-    result = {
-        "name": str(data.get("name") or files[0]["name"]),
-        "hash": info_hash_value.lower(),
-        "files": files,
-        "totalSize": sum(int(item["size"]) for item in files),
-        "source": "remote_torrent_metadata",
-        "pending": False,
-        "createdPreview": False,
-        "message": "Torrent metadata loaded without starting Seedr.",
-    }
-    _metadata_cache[info_hash_value.lower()] = result
-    _save_metadata_cache()
-    return result
-
-
-async def _lookup_knaben_by_hash(info_hash_value: str) -> dict[str, Any] | None:
-    """Find and parse a Knaben cached descriptor for an exact info-hash."""
-    target = info_hash_value.strip().lower()
-    if not re.fullmatch(r"[0-9a-f]{40}", target):
-        return None
-
-    payload_base = {
-        "search_type": "100%",
-        "query": target,
-        "from": 0,
-        "size": 20,
-        "hide_unsafe": False,
-        "hide_xxx": False,
-    }
-
-    async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as client:
-        for field in ("hash", None):
-            payload = dict(payload_base)
-            if field:
-                payload["search_field"] = field
-            try:
-                response = await client.post(
-                    KNABEN_API_URL,
-                    json=payload,
-                    headers={"Accept": "application/json", "Content-Type": "application/json"},
-                )
-                response.raise_for_status()
-                data = response.json()
-            except (httpx.HTTPError, ValueError):
-                continue
-
-            hits = data.get("hits") if isinstance(data, dict) else None
-            if not isinstance(hits, list):
-                continue
-
-            for hit in hits:
-                if not isinstance(hit, dict):
-                    continue
-                hit_hash = str(hit.get("hash") or "").strip().lower()
-                if hit_hash != target:
-                    continue
-
-                descriptor = str(hit.get("link") or "").strip()
-                if descriptor:
-                    parsed = await _fetch_source_torrent_descriptor(descriptor, target)
-                    if parsed:
-                        return parsed
-
-                details = str(hit.get("details") or "").strip()
-                if details:
-                    parsed = await _fetch_source_torrent_descriptor(details, target)
-                    if parsed:
-                        return parsed
-    return None
-
-
 @app.post("/api/v2/torrents/inspect-magnet")
 async def seedr_inspect_magnet(body: dict[str, Any]):
     """Return cached metadata immediately or start a background resolver."""
@@ -3244,27 +2941,11 @@ async def seedr_inspect_magnet(body: dict[str, Any]):
 
     # Search results can carry a detail URL. When that page exposes a real
     # .torrent descriptor, use it before touching DHT/trackers.
-    descriptor_url = str(body.get("descriptorUrl") or "").strip()
     source_url = str(body.get("sourceUrl") or body.get("infoUrl") or "").strip()
-
-    # First use an actual descriptor URL returned by the indexer.
-    for candidate_url in (descriptor_url, source_url):
-        if candidate_url:
-            descriptor_result = await _fetch_source_torrent_descriptor(candidate_url, h)
-            if descriptor_result:
-                return descriptor_result
-
-    # Search results may have an exact hash cached by Knaben. For a pasted
-    # magnet there is no source URL, so do this lookup in the background rather
-    # than making the user wait on a second network request before the job starts.
-    if descriptor_url or source_url:
-        try:
-            hash_result = await _lookup_knaben_by_hash(h)
-        except Exception as exc:
-            logger.info("Knaben hash lookup failed for %s: %s", h, exc)
-            hash_result = None
-        if hash_result:
-            return hash_result
+    if source_url:
+        descriptor_result = await _fetch_source_torrent_descriptor(source_url, h)
+        if descriptor_result:
+            return descriptor_result
 
     job_id = h
     existing = _metadata_jobs.get(job_id)
