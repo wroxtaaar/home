@@ -5410,40 +5410,16 @@ async def seedr_video_media_stats(file_id: str):
     }
 
 @app.get("/api/seedr/media/video/{file_id}")
-async def seedr_video_media(
-    file_id: str,
-    request: Request,
-    audio: int | None = Query(None, ge=0),
-):
-    """Range-aware browser playback proxy for Seedr's video presentation.
-
-    The normal path explicitly asks Seedr for audio rendition 0. This keeps
-    the browser video element audible even when Seedr's generic presentation
-    does not expose a usable default audio rendition to Chromium.
-    """
+async def seedr_video_media(file_id: str, request: Request):
+    """Range-aware browser proxy for Seedr's direct presentation URL."""
     if not current_seedr_token():
         raise HTTPException(503, "Seedr is not configured")
 
-    # Explicit audio selection uses the browser-compatible FFmpeg remux
-    # path. It copies H.264 video when possible and converts the selected
-    # audio to AAC inside fragmented MP4, fixing MKV/E-AC3/DTS browser audio.
-    if audio is not None:
-        return await _stream_selected_audio(file_id, audio)
-
-    requested_audio_index = 0
-    upstream_url = await seedr_v2_video_url(
-        file_id,
-        audio_index=requested_audio_index,
-    )
-    if not upstream_url and audio is None:
-        upstream_url = await seedr_v2_video_url(file_id)
+    upstream_url = await seedr_v2_video_url(file_id)
     if not upstream_url:
         raise HTTPException(404, "Seedr returned no video presentation URL")
 
-    headers = {
-        "Accept": "video/*,application/octet-stream,*/*",
-        "Accept-Encoding": "identity",
-    }
+    headers = {"Accept": "video/*,application/octet-stream,*/*", "Accept-Encoding": "identity"}
     range_header = request.headers.get("range")
     if range_header:
         headers["Range"] = range_header
@@ -5464,12 +5440,8 @@ async def seedr_video_media(
         content_type = response.headers.get("content-type", "application/octet-stream")
         await response.aclose()
         await client.aclose()
-        return Response(
-            content=body,
-            status_code=status,
-            media_type=content_type,
-            headers={"Access-Control-Allow-Origin": "*"},
-        )
+        return Response(content=body, status_code=status, media_type=content_type,
+                        headers={"Access-Control-Allow-Origin": "*"})
 
     response_headers = {
         "Access-Control-Allow-Origin": "*",
@@ -5495,8 +5467,6 @@ async def seedr_video_media(
         media_type=response.headers.get("content-type", "video/mp4"),
         headers=response_headers,
     )
-
-
 
 
 @app.get("/api/seedr/media/audio/{file_id}")
