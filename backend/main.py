@@ -4652,23 +4652,18 @@ async def seedr_file_stream(
     resolved_id = await resolve_seedr_stream_id(file_id, name)
 
     if type == "video":
-        # Proven playback path:
-        # 1) Resolve Seedr V2 presentation.
-        # 2) If it is a normal media URL, proxy that URL with Range support.
-        # 3) Only use the HLS proxy when the presentation is actually HLS.
         presentation_url = await seedr_v2_video_url(resolved_id)
 
-        if presentation_url and not await _presentation_is_hls(presentation_url):
-            return {
-                "url": "/api/seedr/media/video/" + quote(resolved_id, safe=""),
-                "externalUrl": presentation_url,
-                "name": name or resolved_id,
-                "resolvedFileId": resolved_id,
-                "protocol": "direct",
-            }
-
+        # Seedr's V2 direct presentation can be a container such as MKV that
+        # Chromium will render for video but may not expose its audio track.
+        # Use Seedr's own HLS rendition for browser playback first. This is
+        # still a pure proxy path: Render does not transcode the media.
         try:
             await _fetch_seedr_hls_manifest(resolved_id)
+            logger.info(
+                "Seedr browser playback resolved to HLS: file=%s",
+                resolved_id,
+            )
             return {
                 "url": "/api/seedr/hls/" + quote(resolved_id, safe=""),
                 "externalUrl": presentation_url or _seedr_media_url(resolved_id, "video"),
@@ -4676,16 +4671,29 @@ async def seedr_file_stream(
                 "resolvedFileId": resolved_id,
                 "protocol": "hls",
             }
-        except HTTPException:
-            if presentation_url:
-                return {
-                    "url": "/api/seedr/media/video/" + quote(resolved_id, safe=""),
-                    "externalUrl": presentation_url,
-                    "name": name or resolved_id,
-                    "resolvedFileId": resolved_id,
-                    "protocol": "direct",
-                }
-            raise
+        except HTTPException as hls_exc:
+            logger.info(
+                "Seedr HLS browser rendition unavailable: file=%s status=%s detail=%s",
+                resolved_id,
+                hls_exc.status_code,
+                str(hls_exc.detail)[:180],
+            )
+
+        # Keep the proven direct Range proxy as the fallback when Seedr cannot
+        # provide an HLS rendition.
+        if presentation_url:
+            logger.info(
+                "Seedr browser playback falling back to direct presentation: file=%s",
+                resolved_id,
+            )
+            return {
+                "url": "/api/seedr/media/video/" + quote(resolved_id, safe=""),
+                "externalUrl": presentation_url,
+                "name": name or resolved_id,
+                "resolvedFileId": resolved_id,
+                "protocol": "direct",
+            }
+        raise HTTPException(502, "Seedr returned no browser-playable video presentation")
 
     return {
         "url": "/api/seedr/media/audio/" + quote(resolved_id, safe=""),
