@@ -2711,6 +2711,7 @@ async def search_1337x(query: str, limit: int = 50, allow_series_fallback: bool 
     if cached and len(cached[1]) >= 8 and now - cached[0] < SEARCH_CACHE_SECONDS:
         return cached[1]
 
+    knaben_task = asyncio.create_task(search_knaben(query, min(max(limit, 50), 100)))
     csv_task = asyncio.create_task(search_torrents_csv(query, limit))
     api_task = asyncio.create_task(search_apibay(query, limit))
 
@@ -2732,7 +2733,7 @@ async def search_1337x(query: str, limit: int = 50, allow_series_fallback: bool 
         else None
     )
 
-    tasks = {csv_task, api_task}
+    tasks = {knaben_task, csv_task, api_task}
     if tv_task is not None:
         tasks.add(tv_task)
     providers: list[dict[str, Any]] = []
@@ -2810,7 +2811,7 @@ async def search_1337x(query: str, limit: int = 50, allow_series_fallback: bool 
                                 logger.info("TV episode enrichment failed for '%s': %s", query, exc)
                 break
     finally:
-        all_tasks = [csv_task, api_task] + ([tv_task] if tv_task is not None else [])
+        all_tasks = [knaben_task, csv_task, api_task] + ([tv_task] if tv_task is not None else [])
         for task in all_tasks:
             if not task.done():
                 task.cancel()
@@ -2843,7 +2844,26 @@ async def search_1337x(query: str, limit: int = 50, allow_series_fallback: bool 
         ),
         reverse=True,
     )
-    results = results[:limit]
+    large_results = [
+        item for item in results
+        if 2 * 1024 * 1024 * 1024 < int(item.get("size") or 0) <= 5 * 1024 * 1024 * 1024
+    ]
+    if large_results and limit >= 10:
+        selected = large_results[:10]
+        selected_keys = {
+            str(item.get("infoHash") or item.get("magnetUrl") or item.get("title") or "").strip().lower()
+            for item in selected
+        }
+        for item in results:
+            key = str(item.get("infoHash") or item.get("magnetUrl") or item.get("title") or "").strip().lower()
+            if key in selected_keys:
+                continue
+            selected.append(item)
+            if len(selected) >= limit:
+                break
+        results = selected[:limit]
+    else:
+        results = results[:limit]
     # Keep the normal path fast. Only when the primary providers return
     # fewer than 8 usable torrents do we pay the cost of a direct 1337x
     # listing search. The direct fallback fetches only a few listing pages,
