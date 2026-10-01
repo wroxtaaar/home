@@ -1414,7 +1414,8 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
               )}
 
               {isVideo && (
-                <label className="flex items-center gap-2 rounded-xl border border-slate-700/80 bg-slate-800/90 px-2.5 py-1.5 shadow-sm">
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-2 rounded-xl border border-slate-700/80 bg-slate-800/90 px-2.5 py-1.5 shadow-sm">
                   <Captions className="h-4 w-4 shrink-0 text-cyan-400" />
                   <span className="hidden text-[10px] font-semibold uppercase tracking-wide text-slate-500 sm:inline">Subs</span>
                   <select
@@ -1436,9 +1437,9 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
                       </option>
                     ))}
                   </select>
-                </label>
+                  </label>
 
-                {subtitleTracks.length > 0 && selectedSubtitleIndex !== undefined && (
+                  {subtitleTracks.length > 0 && selectedSubtitleIndex !== undefined && (
                   <div className="relative">
                     <button
                       type="button"
@@ -1488,7 +1489,8 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
                       </div>
                     )}
                   </div>
-                )}
+                  )}
+                </div>
               )}
 
               {/* Playback Speed selector */}
