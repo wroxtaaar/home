@@ -1204,8 +1204,10 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
               ref={videoRef}
               crossOrigin={file.streamUrl?.startsWith(API_BASE) ? 'anonymous' : undefined}
               autoPlay
-              className={`w-auto h-auto max-w-full max-h-full object-contain cursor-pointer ${
-                isFullscreen ? 'max-h-none' : 'max-h-[60vh]'
+              className={`object-contain cursor-pointer ${
+                isFullscreen
+                  ? 'w-full h-full max-w-full max-h-full'
+                  : 'w-auto h-auto max-w-full max-h-[60vh]'
               }`}
               onClick={(event) => {
                 event.stopPropagation();
