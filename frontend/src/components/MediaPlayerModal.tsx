@@ -1338,7 +1338,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
           </div>
 
           {/* Main Controls row */}
-          <div className="flex items-center justify-between gap-3 overflow-hidden">
+          <div className="flex items-center justify-between gap-3 overflow-visible">
             {/* Left: Playback buttons */}
             <div className="flex items-center gap-2">
               <button
@@ -1386,7 +1386,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
             </div>
 
             {/* Right: Speed, PiP, Fullscreen */}
-            <div className="flex items-center gap-2 flex-nowrap justify-end min-w-0 overflow-x-auto scrollbar-hide">
+            <div className="flex items-center gap-2 flex-nowrap justify-end min-w-0 overflow-visible">
               {tracksLoading && (
                 <div className="flex items-center gap-1.5 bg-slate-800/80 rounded-lg px-2 py-1.5 text-[11px] text-slate-400">
                   <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />
