@@ -1340,7 +1340,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
           {/* Main Controls row */}
           <div className="flex flex-wrap items-center justify-between gap-3 overflow-visible">
             {/* Left: Playback buttons */}
-            <div className="flex items-center gap-2">
+            <div className="flex shrink-0 items-center gap-2">
               <button
                 onClick={() => skip(-10)}
                 className="p-2 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 transition"
