@@ -1122,7 +1122,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
             </div>
           </div>
 
-          <div className="flex min-w-0 flex-1 items-center gap-2">
+          <div className="flex items-center gap-2">
             <button
               onClick={copyStreamUrl}
               className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 flex items-center gap-1.5 transition"
@@ -1204,7 +1204,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
               ref={videoRef}
               crossOrigin={file.streamUrl?.startsWith(API_BASE) ? 'anonymous' : undefined}
               autoPlay
-              className={`w-full h-full object-contain cursor-pointer ${
+              className={`w-auto h-auto max-w-full max-h-full object-contain cursor-pointer ${
                 isFullscreen ? 'max-h-none' : 'max-h-[60vh]'
               }`}
               onClick={(event) => {
