@@ -1453,7 +1453,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
                     </button>
 
                     {subtitleSyncOpen && (
-                      <div className="absolute bottom-full right-0 z-50 mb-2 w-64 rounded-xl border border-slate-700 bg-slate-900 p-3 shadow-2xl">
+                      <div className="fixed bottom-20 right-4 z-[9999] w-64 rounded-xl border border-slate-700 bg-slate-900 p-3 shadow-2xl">
                         <div className="mb-2 flex items-center justify-between">
                           <span className="text-xs font-semibold text-slate-200">Subtitle Sync</span>
                           <button
