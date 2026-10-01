@@ -19,7 +19,10 @@ import {
   X,
   Minimize2,
   Maximize2,
-  Loader2
+  Loader2,
+  Timer,
+  Minus,
+  Plus
 } from 'lucide-react';
 import Hls from 'hls.js';
 import { api, API_BASE } from '../api/client.ts';
@@ -67,6 +70,9 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
   const [trackNotice, setTrackNotice] = useState('');
   const [subtitleSearchError, setSubtitleSearchError] = useState('');
   const [tracksLoading, setTracksLoading] = useState(false);
+  const [subtitleSyncOpen, setSubtitleSyncOpen] = useState(false);
+  const [subtitleOffset, setSubtitleOffset] = useState(0);
+  const subtitleCueOriginalsRef = useRef<Map<string, Array<{ cue: any; start: number; end: number }>>>(new Map());
 
   const resumeTimeRef = useRef(0);
   const resumePlayingRef = useRef(false);
@@ -81,6 +87,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
   const alternateAudioIndexRef = useRef<number | undefined>(undefined);
   const primaryAudioIndexRef = useRef<number | undefined>(undefined);
   const alternateAudioRequestRef = useRef(0);
+  const automaticAudioFallbackRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const isVideo = file?.type === 'video';
@@ -99,9 +106,13 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     setHlsSubtitleTracks([]);
     setSelectedSubtitleIndex(undefined);
     setSelectedHlsSubtitleIndex(undefined);
+    setSubtitleSyncOpen(false);
+    setSubtitleOffset(0);
+    subtitleCueOriginalsRef.current.clear();
     alternateAudioIndexRef.current = undefined;
     primaryAudioIndexRef.current = undefined;
     alternateAudioRequestRef.current += 1;
+    automaticAudioFallbackRef.current = false;
     const alternateAudio = alternateAudioRef.current;
     if (alternateAudio) {
       alternateAudio.pause();
@@ -297,6 +308,11 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     let cancelled = false;
     setTracksLoading(true);
 
+    // Keep any already-discovered sidecar subtitles, but still inspect the
+    // media container so embedded subtitles and embedded audio tracks are not
+    // hidden just because a folder also contains an .srt/.vtt file.
+    const sidecarSubtitles = Array.isArray(file.subtitleTracks) ? file.subtitleTracks : [];
+
     api.getSeedrMediaInfo(fileId)
       .then(data => {
         if (cancelled || !data) return;
@@ -329,6 +345,19 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
         setSelectedSubtitleIndex(undefined);
         setSelectedHlsSubtitleIndex(undefined);
       })
+      .catch(error => {
+        // Embedded-track inspection is optional. If FFprobe is unavailable or
+        // the remote Seedr source cannot be inspected, keep the sidecar tracks
+        // that were already discovered instead of leaving the subtitle menu
+        // empty.
+        if (!cancelled) {
+          if (sidecarSubtitles.length > 0) {
+            setSubtitleTracks(sidecarSubtitles.map((track: any, index: number) => ({ ...track, index })));
+          } else {
+            console.warn('[MEDIA] Seedr track inspection failed:', error);
+          }
+        }
+      })
       .finally(() => {
         if (!cancelled) setTracksLoading(false);
       });
@@ -343,6 +372,50 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     const track = subtitleTrackRef.current?.track;
     if (track) track.mode = selectedSubtitleIndex === undefined ? 'disabled' : 'showing';
   }, [selectedSubtitleIndex, subtitleTracks]);
+
+  // Subtitle sync is entirely client-side. We adjust the loaded WebVTT cue
+  // timestamps in memory, so changing the offset never sends another request
+  // to Render or reprocesses the subtitle on the backend.
+  useEffect(() => {
+    const track = subtitleTrackRef.current?.track;
+    if (!track || selectedSubtitleIndex === undefined) return;
+
+    const url = subtitleTracks.find(item => item.index === selectedSubtitleIndex)?.url;
+    if (!url) return;
+
+    const applyOffset = () => {
+      const cues = Array.from(track.cues || []) as any[];
+      if (!cues.length) return;
+
+      let originals = subtitleCueOriginalsRef.current.get(url);
+      if (!originals) {
+        originals = cues.map(cue => ({
+          cue,
+          start: Number(cue.startTime),
+          end: Number(cue.endTime),
+        }));
+        subtitleCueOriginalsRef.current.set(url, originals);
+      }
+
+      const originalByCue = new Map(originals.map(item => [item.cue, item]));
+      cues.forEach(cue => {
+        const original = originalByCue.get(cue);
+        if (!original) return;
+        cue.startTime = Math.max(0, original.start + subtitleOffset);
+        cue.endTime = Math.max(cue.startTime, original.end + subtitleOffset);
+      });
+    };
+
+    // The cue list may not exist until the browser finishes parsing WebVTT.
+    applyOffset();
+    const timer = window.setTimeout(applyOffset, 50);
+    const laterTimer = window.setTimeout(applyOffset, 250);
+    return () => {
+      window.clearTimeout(timer);
+      window.clearTimeout(laterTimer);
+    };
+  }, [selectedSubtitleIndex, subtitleOffset, subtitleTracks]);
+
 
   useEffect(() => {
     const hls = hlsRef.current;
@@ -382,6 +455,81 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     document.addEventListener('fullscreenchange', handleFullscreenChange);
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, [isVideo]);
+
+  // Native <track> elements can be inserted after the video has already
+  // loaded. Explicitly switch the selected track to "showing" so mobile
+  // Chrome/Android does not leave the newly-created TextTrack in "disabled".
+  useEffect(() => {
+    if (!isVideo || selectedSubtitleIndex === undefined) return;
+
+    const timer = window.setTimeout(() => {
+      const media = videoRef.current;
+      if (!media) return;
+
+      const selected = subtitleTracks.find(track => track.index === selectedSubtitleIndex);
+      const selectedTextTrack = subtitleTrackRef.current?.track;
+      const textTracks = Array.from(media.textTracks || []);
+
+      textTracks.forEach(track => {
+        track.mode = selectedTextTrack && track === selectedTextTrack ? 'showing' : 'disabled';
+      });
+
+      if (selected) {
+        setTrackNotice('');
+      }
+    }, 50);
+
+    return () => window.clearTimeout(timer);
+  }, [isVideo, selectedSubtitleIndex, subtitleTracks]);
+
+  // Some MKV files contain audio codecs that Chromium can demux poorly or not
+  // decode at all (E-AC-3, AC-3, DTS, TrueHD, PCM, etc.). In that case the
+  // video element can play normally while producing no audible sound. Reuse
+  // the existing FFmpeg audio-track endpoint automatically for the selected
+  // track instead of making the user manually switch tracks.
+  const browserNeedsAudioFallback = (codec: string) => {
+    const normalized = String(codec || '').trim().toLowerCase();
+    if (!normalized) return false;
+    const browserFriendly = new Set([
+      'aac', 'mp3', 'mpeg', 'opus', 'vorbis', 'flac', 'mp4a', 'alac'
+    ]);
+    if (browserFriendly.has(normalized)) return false;
+    return normalized.startsWith('ac3') ||
+      normalized.startsWith('eac3') ||
+      normalized.startsWith('dts') ||
+      normalized.startsWith('dca') ||
+      normalized.startsWith('truehd') ||
+      normalized.startsWith('mlp') ||
+      normalized.startsWith('pcm') ||
+      normalized.startsWith('wma') ||
+      normalized.startsWith('wmav') ||
+      normalized.startsWith('cook') ||
+      normalized.startsWith('atrac');
+  };
+
+  useEffect(() => {
+    if (!isVideo || !file || hlsActiveRef.current || selectedAudioIndex === undefined) return;
+    if (automaticAudioFallbackRef.current || alternateAudioIndexRef.current !== undefined) return;
+
+    const selectedTrack = audioTracks.find(track => track.index === selectedAudioIndex);
+    if (!selectedTrack || !browserNeedsAudioFallback(selectedTrack.codec)) return;
+
+    const media = videoRef.current;
+    if (!media) return;
+
+    automaticAudioFallbackRef.current = true;
+    const position = Number.isFinite(media.currentTime) ? media.currentTime : currentTime;
+    const wasPlaying = !media.paused;
+
+    console.info('[MEDIA] Native audio codec is not browser-safe; using FFmpeg fallback', {
+      codec: selectedTrack.codec,
+      track: selectedTrack.index,
+      position,
+    });
+
+    loadAlternateAudio(selectedTrack.index, position, wasPlaying);
+  }, [audioTracks, currentTime, file, isVideo, selectedAudioIndex]);
+
 
   if (!file) return null;
 
@@ -564,11 +712,14 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       setIsSeeking(false);
       setIsPlaying(false);
       setTrackNotice('Unable to load the selected audio track.');
+      audio.removeEventListener('loadeddata', startTogether);
       audio.removeEventListener('canplay', startTogether);
+      audio.removeEventListener('error', handleAudioError);
     };
 
     const startTogether = () => {
       if (requestId !== alternateAudioRequestRef.current) return;
+      audio.removeEventListener('loadeddata', startTogether);
       audio.removeEventListener('canplay', startTogether);
       audio.removeEventListener('error', handleAudioError);
       audio.currentTime = 0;
@@ -603,6 +754,9 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       });
     };
 
+    // WebM/Opus can become playable before the browser reaches the native
+    // canplay threshold. loadeddata is enough to start the synchronized pair.
+    audio.addEventListener('loadeddata', startTogether, { once: true });
     audio.addEventListener('canplay', startTogether, { once: true });
     audio.addEventListener('error', handleAudioError, { once: true });
   };
@@ -1013,7 +1167,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
           }`}
           onClick={() => {
             if (isFullscreen) {
-              setFullscreenControlsVisible(true);
+              setFullscreenControlsVisible(prev => !prev);
             }
           }}
         >
@@ -1055,7 +1209,9 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
               }`}
               onClick={(event) => {
                 event.stopPropagation();
-                if (isFullscreen) setFullscreenControlsVisible(true);
+                if (isFullscreen) {
+                  setFullscreenControlsVisible(prev => !prev);
+                }
               }}
               onTimeUpdate={onTimeUpdate}
               onSeeking={onSeeking}
@@ -1077,6 +1233,41 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
                   srcLang={subtitleTracks.find(track => track.index === selectedSubtitleIndex)?.language || 'en'}
                   label={subtitleTracks.find(track => track.index === selectedSubtitleIndex)?.title || subtitleTracks.find(track => track.index === selectedSubtitleIndex)?.language?.toUpperCase() || 'Subtitles'}
                   default
+                  onLoad={() => {
+                    // Force activation again after the browser finishes
+                    // loading the WebVTT resource.
+                    const media = videoRef.current;
+                    const selectedTextTrack = subtitleTrackRef.current?.track;
+                    if (!media || !selectedTextTrack) return;
+                    Array.from(media.textTracks || []).forEach(track => {
+                      track.mode = track === selectedTextTrack ? 'showing' : 'disabled';
+                    });
+                    const cues = Array.from(selectedTextTrack.cues || []) as any[];
+                    const url = subtitleTracks.find(track => track.index === selectedSubtitleIndex)?.url;
+                    if (url && cues.length) {
+                      subtitleCueOriginalsRef.current.set(url, cues.map(cue => ({
+                        cue,
+                        start: Number(cue.startTime),
+                        end: Number(cue.endTime),
+                      })));
+                    }
+                    window.setTimeout(() => {
+                      const currentUrl = subtitleTracks.find(track => track.index === selectedSubtitleIndex)?.url;
+                      const originals = currentUrl ? subtitleCueOriginalsRef.current.get(currentUrl) : undefined;
+                      if (!originals) return;
+                      originals.forEach(({ cue, start, end }) => {
+                        cue.startTime = Math.max(0, start + subtitleOffset);
+                        cue.endTime = Math.max(cue.startTime, end + subtitleOffset);
+                      });
+                    }, 0);
+                  }}
+                  onError={() => {
+                    console.error('[MEDIA] Subtitle track failed to load:', {
+                      url: subtitleTracks.find(track => track.index === selectedSubtitleIndex)?.url,
+                      track: selectedSubtitleIndex,
+                    });
+                    setTrackNotice('Subtitle could not be loaded');
+                  }}
                 />
               )}
             </video>
@@ -1230,22 +1421,74 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
                     disabled={tracksLoading || (hlsSubtitleTracks.length === 0 && subtitleTracks.length === 0)}
                     value={selectedHlsSubtitleIndex !== undefined ? 'hls:' + selectedHlsSubtitleIndex : selectedSubtitleIndex !== undefined ? 'external:' + selectedSubtitleIndex : 'off'}
                     onChange={(e) => handleSubtitleTrackChange(e.target.value)}
-                    className="min-w-[110px] max-w-[185px] bg-transparent text-xs font-semibold text-slate-100 outline-none disabled:cursor-not-allowed disabled:text-slate-500"
+                    className="min-w-[110px] max-w-[185px] bg-transparent text-xs font-semibold text-slate-100 outline-none disabled:cursor-not-allowed disabled:text-slate-500 [color-scheme:dark]"
                     title={tracksLoading ? 'Loading subtitles' : 'Subtitles'}
                   >
-                    <option value="off">{tracksLoading ? 'Loading…' : 'Subtitles Off'}</option>
+                    <option value="off" className="bg-slate-900 text-slate-100">{tracksLoading ? 'Loading…' : 'Subtitles Off'}</option>
                     {hlsSubtitleTracks.map((track, index) => (
-                      <option key={'hls-sub-' + track.index} value={'hls:' + track.index}>
+                      <option key={'hls-sub-' + track.index} value={'hls:' + track.index} className="bg-slate-900 text-slate-100">
                         {formatTrackLabel(track, index, 'Subtitle')}
                       </option>
                     ))}
                     {subtitleTracks.map((track, index) => (
-                      <option key={'external-sub-' + track.index} value={'external:' + track.index}>
+                      <option key={'external-sub-' + track.index} value={'external:' + track.index} className="bg-slate-900 text-slate-100">
                         {formatTrackLabel(track, index, 'Subtitle')}
                       </option>
                     ))}
                   </select>
                 </label>
+
+                {subtitleTracks.length > 0 && selectedSubtitleIndex !== undefined && (
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setSubtitleSyncOpen(prev => !prev)}
+                      className={`flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-xs font-semibold transition ${subtitleOffset !== 0 ? 'border-cyan-500/60 bg-cyan-500/10 text-cyan-300' : 'border-slate-700/80 bg-slate-800/90 text-slate-300 hover:text-white'}`}
+                      title="Adjust subtitle timing"
+                    >
+                      <Timer className="h-4 w-4" />
+                      <span className="hidden sm:inline">Sync</span>
+                      {subtitleOffset !== 0 && <span>{subtitleOffset > 0 ? '+' : ''}{subtitleOffset.toFixed(1)}s</span>}
+                    </button>
+
+                    {subtitleSyncOpen && (
+                      <div className="absolute bottom-full right-0 z-50 mb-2 w-64 rounded-xl border border-slate-700 bg-slate-900 p-3 shadow-2xl">
+                        <div className="mb-2 flex items-center justify-between">
+                          <span className="text-xs font-semibold text-slate-200">Subtitle Sync</span>
+                          <button
+                            type="button"
+                            onClick={() => { setSubtitleOffset(0); setSubtitleSyncOpen(false); }}
+                            className="text-[11px] font-medium text-slate-400 hover:text-white"
+                          >
+                            Reset
+                          </button>
+                        </div>
+                        <div className="mb-3 text-center text-sm font-bold text-cyan-300">
+                          {subtitleOffset > 0 ? '+' : ''}{subtitleOffset.toFixed(1)}s
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setSubtitleOffset(prev => Math.max(-30, Number((prev - 0.1).toFixed(1))))}
+                            className="flex flex-1 items-center justify-center gap-1 rounded-lg bg-slate-800 px-2 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700"
+                            title="Subtitles earlier"
+                          >
+                            <Minus className="h-3.5 w-3.5" /> 0.1s
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSubtitleOffset(prev => Math.min(30, Number((prev + 0.1).toFixed(1))))}
+                            className="flex flex-1 items-center justify-center gap-1 rounded-lg bg-slate-800 px-2 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700"
+                            title="Subtitles later"
+                          >
+                            <Plus className="h-3.5 w-3.5" /> 0.1s
+                          </button>
+                        </div>
+                        <div className="mt-2 text-center text-[10px] text-slate-500">−30s to +30s</div>
+                      </div>
+                    )}
+                  </div>
+                )}
               )}
 
               {/* Playback Speed selector */}

@@ -1186,9 +1186,12 @@ export default function App() {
     folderPath: string;
   }>; deletedFolderIds: string[] }> => {
     if (!seedrConnected) {
-      setSeedrOnboardingStep('welcome');
+      // Preparing a search result requires a personal Seedr connection.
+      // Open the same connection dialog used by the header instead of
+      // surfacing a JavaScript error to the user.
+      setSeedrConnectError('');
       setSeedrOnboardingOpen(true);
-      throw new Error('Connect your Seedr account first.');
+      throw new Error('Connect your Seedr account first.'); 
     }
 
     if (seedrDownloadActive) {
@@ -2178,18 +2181,21 @@ export default function App() {
 
   const findSeedrSubtitleTracks = useCallback((
     file: { id: string; name: string; folderId: string; folderPath: string },
-    apiOrigin: string
+    apiOrigin: string,
+    siblingFiles?: Array<{ id: string; name: string; folderId?: string }>
   ): StorageFile['subtitleTracks'] => {
     const extension = (name: string) => name.match(/\.([^.]+)$/)?.[1]?.toLowerCase() || '';
     const videoExt = extension(file.name);
     if (!/^(mkv|mp4|m4v|webm|mov|avi|ts)$/.test(videoExt)) return [];
 
     const videoBase = file.name.slice(0, -(videoExt.length + 1)).trim().toLowerCase();
-    const cachedSiblings = file.folderId
-      ? (seedrFolderContentsCache[file.folderId] || [])
-      : seedrAllPrefetchedFiles.filter(item =>
-          item.folderPath === file.folderPath || item.folderId === file.folderId
-        );
+    const cachedSiblings = siblingFiles?.length
+      ? siblingFiles
+      : file.folderId
+        ? (seedrFolderContentsCache[file.folderId] || [])
+        : seedrAllPrefetchedFiles.filter(item =>
+            item.folderPath === file.folderPath || item.folderId === file.folderId
+          );
 
     const languageNames: Record<string, string> = {
       en: 'English', eng: 'English', hi: 'Hindi', hin: 'Hindi',
@@ -2201,14 +2207,24 @@ export default function App() {
       zh: 'Chinese', zho: 'Chinese'
     };
 
-    return cachedSiblings
-      .filter(item => item.id !== file.id && /\.(srt|vtt)$/i.test(item.name))
+    const subtitleFiles = cachedSiblings
+      .filter(item => item.id !== file.id && /\.(srt|vtt)$/i.test(item.name));
+    const videoFiles = cachedSiblings
+      .filter(item => /\.(mkv|mp4|m4v|webm|mov|avi|ts)$/i.test(item.name));
+    const hasMultipleVideos = videoFiles.length > 1;
+
+    return subtitleFiles
       .filter(item => {
         const subtitleExt = extension(item.name);
         const subtitleBase = item.name.slice(0, -(subtitleExt.length + 1)).trim().toLowerCase();
-        return subtitleBase === videoBase ||
+        const exactMatch = subtitleBase === videoBase ||
           subtitleBase.startsWith(videoBase + '.') ||
           subtitleBase.startsWith(videoBase + ' ');
+        // If this folder contains only one video, any SRT/VTT beside it is a
+        // valid sidecar subtitle even when the subtitle has a generic name
+        // such as "English.srt" or "Subs.srt". With multiple videos, require
+        // a filename match so subtitles cannot be attached to the wrong video.
+        return exactMatch || !hasMultipleVideos;
       })
       .map((item, index) => {
         const subtitleExt = extension(item.name);
@@ -2219,7 +2235,7 @@ export default function App() {
         return {
           index,
           language,
-          title: languageNames[languageKey] || suffix || 'Subtitles',
+          title: languageNames[languageKey] || suffix || subtitleBase || 'Subtitles',
           codec: subtitleExt.toUpperCase(),
           url: apiOrigin + '/api/seedr/files/' + encodeURIComponent(item.id) +
             '/subtitle?filename=' + encodeURIComponent(item.name)
@@ -2253,8 +2269,42 @@ export default function App() {
         }
       })();
 
+      let subtitleSiblings: Array<{ id: string; name: string; folderId?: string }> = [];
+      if (type === 'video' && file.folderId) {
+        try {
+          // A torrent folder can contain the video and a separate .srt/.vtt.
+          // Use the cache first, but do not trust a cache entry that contains
+          // no sidecar subtitles: the folder may have been indexed before the
+          // subtitle was added. In that case refresh the tiny Seedr folder
+          // listing once so the player can discover the new sidecar.
+          const cached = seedrFolderContentsCache[file.folderId];
+          if (cached?.length) {
+            subtitleSiblings = cached;
+
+            const cachedHasSidecar = cached.some(item => /\.(srt|vtt)$/i.test(item.name));
+            if (!cachedHasSidecar) {
+              const contents = await api.getSeedrFolderContents(file.folderId);
+              subtitleSiblings = contents.files || [];
+              setSeedrFolderContentsCache(prev => ({
+                ...prev,
+                [file.folderId]: contents.files || [],
+              }));
+            }
+          } else {
+            const contents = await api.getSeedrFolderContents(file.folderId);
+            subtitleSiblings = contents.files || [];
+            setSeedrFolderContentsCache(prev => ({
+              ...prev,
+              [file.folderId]: contents.files || [],
+            }));
+          }
+        } catch (subtitleFolderError) {
+          console.debug('Seedr sidecar subtitle discovery skipped:', subtitleFolderError);
+        }
+      }
+
       const subtitleTracks = type === 'video'
-        ? findSeedrSubtitleTracks(file, apiOrigin)
+        ? findSeedrSubtitleTracks(file, apiOrigin, subtitleSiblings)
         : [];
       const audioTracks: StorageFile['audioTracks'] = [];
 
@@ -3503,31 +3553,6 @@ export default function App() {
                   </button>
                 </div>
 
-                <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-4">
-                  <p className="text-sm font-bold text-slate-100">Don’t have a Seedr account?</p>
-                  <p className="mt-1 text-xs leading-5 text-slate-400">
-                    Create a free Seedr account first, then generate a token and paste it above.
-                  </p>
-                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                    <a
-                      href="https://www.seedr.cc/"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-800 px-4 py-2.5 text-xs font-bold text-slate-100 transition hover:bg-slate-700"
-                    >
-                      Create Seedr Account <ExternalLink className="h-3.5 w-3.5" />
-                    </a>
-                    <a
-                      href="https://www.seedr.cc/api/v0.1/console/tokens"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 py-2.5 text-xs font-bold text-slate-950 transition hover:bg-emerald-400"
-                    >
-                      Generate Token <ExternalLink className="h-3.5 w-3.5" />
-                    </a>
-                  </div>
-                </div>
-
                 <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4">
                   <div className="flex items-center gap-2">
                     <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-cyan-500/10 text-xs font-black text-cyan-300">?</div>
@@ -3547,12 +3572,14 @@ export default function App() {
                       </a>{' '}
                       page.
                     </li>
+                    <li>Click <span className="font-semibold text-slate-100">“Google Login”</span>.</li>
+                    <li>The token page opens.</li>
                     <li>Token Name = <span className="font-semibold text-slate-100">Any name</span>.</li>
                     <li><span className="font-semibold text-slate-100">Expiration</span> = <span className="font-semibold text-slate-100">Never</span>.</li>
                     <li>Scopes = click <span className="font-semibold text-slate-100">Full Account Access</span>.</li>
                     <li>Go below and click <span className="font-semibold text-slate-100">Generate Token</span>.</li>
-                    <li>Copy the token and save it somewhere safe.</li>
-                    <li>Paste that same token into Torrent Studio above and click <span className="font-semibold text-slate-100">Connect</span>.</li>
+                    <li>Copy the token code and save it somewhere safe.</li>
+                    <li>Paste the token code above and click <span className="font-semibold text-slate-100">Connect</span>.</li>
                   </ol>
                 </div>
 

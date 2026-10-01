@@ -4117,14 +4117,58 @@ async def get_seedr_metadata_tree(force_refresh: bool = False) -> dict[str, Any]
                 folder_name_overrides,
             )
         except (HTTPException, SeedrError) as exc:
-            # Some Seedr API tokens can read tasks and file operations while
-            # denying the account-root filesystem listing. Reconstruct the
-            # visible library from task folder IDs instead of failing the
-            # entire Seedr Library panel.
-            if getattr(exc, "status_code", 0) not in {401, 403} or not task_folders:
+            # Some Seedr tokens can authenticate and manage transfers while
+            # denying the account-root filesystem listing. Do not turn that
+            # provider limitation into a library-wide error. Reconstruct the
+            # visible library from the task list and each task's own contents.
+            if getattr(exc, "status_code", 0) not in {401, 403}:
                 raise
 
+            # First collect folder IDs from the task list. Seedr may expose
+            # the created folder only after a task has started/completed, so
+            # also resolve task contents below when the task object has no
+            # folder_created_id.
+            task_candidates: list[dict[str, Any]] = []
+            try:
+                tasks_payload = seedr_data(await seedr_request("/tasks"))
+                for raw_task in arr(tasks_payload, ("tasks", "torrents", "items")):
+                    task = unwrap_seedr_task(seedr_data(raw_task))
+                    if task:
+                        task_candidates.append(task)
+            except (HTTPException, SeedrError):
+                task_candidates = []
+
             unique_folders: dict[str, str] = {}
+
+            for task in task_candidates:
+                tid = task_id(task)
+                task_name = (
+                    seedr_task_name(task)
+                    or (folder_name_overrides.get(seedr_task_folder_id(task)) if seedr_task_folder_id(task) else "")
+                    or f"Torrent {tid}"
+                ).strip()
+                folder_id = seedr_task_folder_id(task)
+
+                # If the task itself does not expose its created folder, the
+                # task contents endpoint often does. This is the same endpoint
+                # already used by the completion/progress flow.
+                if tid and (not folder_id or folder_id == "0"):
+                    try:
+                        task_files = await task_contents(tid)
+                        folder_id = _seedr_file_folder_id(task_files)
+                    except (HTTPException, SeedrError):
+                        folder_id = ""
+
+                if folder_id and folder_id != root:
+                    unique_folders.setdefault(
+                        folder_id,
+                        folder_name_overrides.get(folder_id)
+                        or _seedr_torrent_names.get(folder_id)
+                        or task_name
+                        or folder_id,
+                    )
+
+            # Preserve any folder IDs already learned from task metadata.
             for folder_id, task_name in task_folders:
                 if folder_id and folder_id != root:
                     unique_folders.setdefault(
@@ -4153,11 +4197,19 @@ async def get_seedr_metadata_tree(force_refresh: bool = False) -> dict[str, Any]
                 )
                 return summary
 
-            results = await asyncio.gather(
-                *(load_task_folder(folder_id, name) for folder_id, name in unique_folders.items()),
-                return_exceptions=True,
-            )
-            children = [result for result in results if isinstance(result, dict)]
+            if unique_folders:
+                results = await asyncio.gather(
+                    *(load_task_folder(folder_id, name) for folder_id, name in unique_folders.items()),
+                    return_exceptions=True,
+                )
+                children = [result for result in results if isinstance(result, dict)]
+            else:
+                children = []
+
+            # A denied root listing is a capability limitation, not an
+            # authentication failure. Returning an empty but valid library
+            # keeps Search/Prepare/Stream usable even for an account with no
+            # folders exposed through the token.
             root_summary = {
                 "id": root,
                 "folderId": root,
@@ -4768,8 +4820,22 @@ async def _seedr_media_source_url(file_id: str) -> str:
     return url
 
 
+_SEEDR_FFPROBE_CACHE_SECONDS = 600
+_seedr_ffprobe_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
 async def _ffprobe_seedr_file(file_id: str) -> dict[str, Any]:
-    """Inspect the original Seedr file without downloading it into Render."""
+    """Inspect a Seedr file and reuse the result for media/subtitle requests.
+
+    The same MKV was previously probed once for track discovery and then probed
+    again when the user selected an embedded subtitle. Reusing the probe keeps
+    Render Free from doing the expensive remote MKV inspection twice.
+    """
+    now = asyncio.get_running_loop().time()
+    cached = _seedr_ffprobe_cache.get(file_id)
+    if cached and cached[0] > now:
+        return cached[1]
+
     source_url = await _seedr_media_source_url(file_id)
     command = [
         "ffprobe",
@@ -4803,23 +4869,45 @@ async def _ffprobe_seedr_file(file_id: str) -> dict[str, Any]:
         raise HTTPException(502, detail or "FFprobe could not inspect the Seedr file")
 
     try:
-        return json.loads(stdout.decode("utf-8", errors="replace"))
+        data = json.loads(stdout.decode("utf-8", errors="replace"))
     except Exception as exc:
         raise HTTPException(502, "FFprobe returned invalid metadata") from exc
+
+    _seedr_ffprobe_cache[file_id] = (now + _SEEDR_FFPROBE_CACHE_SECONDS, data)
+    return data
 
 
 _SEEDR_MEDIA_INFO_CACHE_SECONDS = 600
 _seedr_media_info_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_SEEDR_EMBEDDED_SUBTITLE_CACHE_SECONDS = 600
+_seedr_embedded_subtitle_cache: dict[str, tuple[float, bytes]] = {}
+
+
+def _stream_tags(stream: dict[str, Any]) -> dict[str, Any]:
+    raw = stream.get("tags")
+    if not isinstance(raw, dict):
+        return {}
+    # FFprobe normally emits lowercase Matroska tag keys, but some containers
+    # expose alternate casing/names. Normalize them before building labels.
+    return {str(key).strip().lower(): value for key, value in raw.items()}
 
 
 def _track_language(stream: dict[str, Any]) -> str:
-    tags = stream.get("tags") if isinstance(stream.get("tags"), dict) else {}
-    return str(tags.get("language") or "").strip().lower()
+    tags = _stream_tags(stream)
+    for key in ("language", "lang", "language-eng", "language_ietf"):
+        value = str(tags.get(key) or "").strip().lower()
+        if value:
+            return value.split("-")[0]
+    return ""
 
 
 def _track_title(stream: dict[str, Any], fallback: str) -> str:
-    tags = stream.get("tags") if isinstance(stream.get("tags"), dict) else {}
-    return str(tags.get("title") or tags.get("handler_name") or fallback).strip()
+    tags = _stream_tags(stream)
+    for key in ("title", "handler_name", "name", "track_name"):
+        value = str(tags.get(key) or "").strip()
+        if value:
+            return value
+    return fallback
 
 
 @app.get("/api/seedr/media-info/{file_id}")
@@ -4887,14 +4975,41 @@ async def seedr_media_info(file_id: str):
             if codec in {"hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"}:
                 continue
             language_label = language_names.get(lang, lang.upper() if lang else "")
-            label = title or language_label or f"Subtitle {subtitle_index + 1}"
+            forced = bool(disposition.get("forced"))
+            default = bool(disposition.get("default"))
+            codec_label = {
+                "subrip": "SRT",
+                "ass": "ASS",
+                "ssa": "SSA",
+                "webvtt": "WebVTT",
+                "mov_text": "Text",
+                "text": "Text",
+            }.get(codec, codec.upper() or "Text")
+            # Preserve the real Matroska title/language whenever available.
+            # Some MKVs contain no subtitle language/title tags at all. In that
+            # case the old fallback produced identical entries such as
+            # "SRT", making it impossible to tell tracks apart. Give unnamed
+            # tracks a stable ordinal while keeping the real language when one
+            # is available.
+            if title:
+                label = title
+            elif language_label:
+                label = f"{language_label} {subtitle_index + 1}"
+            else:
+                label = f"{codec_label} {subtitle_index + 1}"
+
+            if forced and "forced" not in label.lower():
+                label += " · Forced"
+            elif default and "default" not in label.lower():
+                label += " · Default"
+            stream_index = int(stream.get("index") or 0)
             subtitle_tracks.append({
                 "index": subtitle_index,
-                "streamIndex": int(stream.get("index") or 0),
+                "streamIndex": stream_index,
                 "language": lang,
                 "title": label,
                 "codec": str(stream.get("codec_name") or "").upper(),
-                "url": f"/api/seedr/media-info/{quote(file_id, safe='')}/subtitle?track={subtitle_index}&name={quote(label, safe='')}",
+                "url": f"/api/seedr/media-info/{quote(file_id, safe='')}/subtitle?stream={stream_index}&name={quote(label, safe='')}",
             })
             subtitle_index += 1
 
@@ -4910,12 +5025,29 @@ async def seedr_media_info(file_id: str):
 @app.get("/api/seedr/media-info/{file_id}/subtitle")
 async def seedr_embedded_subtitle(
     file_id: str,
-    track: int = Query(..., ge=0),
+    track: int | None = Query(None, ge=0),
+    stream: int | None = Query(None, ge=0),
     name: str = Query("subtitle"),
 ):
     if not current_seedr_token():
         raise HTTPException(503, "Seedr is not configured")
 
+    cache_key = f"{file_id}:{track}"
+    now = asyncio.get_running_loop().time()
+    cached = _seedr_embedded_subtitle_cache.get(cache_key)
+    if cached and cached[0] > now:
+        return Response(
+            content=cached[1],
+            media_type="text/vtt; charset=utf-8",
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "private, max-age=600",
+                "Content-Disposition": f'inline; filename="{Path(name).name.replace(chr(34), "_")}.vtt"',
+            },
+        )
+
+    # Reuses the media-info FFprobe result instead of probing the remote MKV
+    # a second time when the user selects an embedded subtitle.
     data = await _ffprobe_seedr_file(file_id)
     streams = data.get("streams") if isinstance(data, dict) else []
     subtitle_streams = [
@@ -4923,11 +5055,25 @@ async def seedr_embedded_subtitle(
         if isinstance(stream, dict) and str(stream.get("codec_type") or "").lower() == "subtitle"
         and str(stream.get("codec_name") or "").lower() not in {"hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"}
     ]
-    if track >= len(subtitle_streams):
-        raise HTTPException(404, "Subtitle track not found")
+    if stream is not None:
+        selected = next(
+            (
+                item for item in subtitle_streams
+                if int(item.get("index") or -1) == stream
+            ),
+            None,
+        )
+        if selected is None:
+            raise HTTPException(404, "Subtitle stream not found")
+        stream_index = int(selected.get("index") or 0)
+        cache_key = f"{file_id}:stream:{stream_index}"
+    else:
+        if track is None or track >= len(subtitle_streams):
+            raise HTTPException(404, "Subtitle track not found")
+        stream_index = int(subtitle_streams[track].get("index") or 0)
+        cache_key = f"{file_id}:{track}"
 
     source_url = await _seedr_media_source_url(file_id)
-    stream_index = int(subtitle_streams[track].get("index") or 0)
     command = [
         "ffmpeg", "-v", "error", "-nostdin",
         "-i", source_url,
@@ -4956,12 +5102,17 @@ async def seedr_embedded_subtitle(
         detail = stderr.decode("utf-8", errors="replace")[-1000:]
         raise HTTPException(502, detail or "Subtitle extraction failed")
 
+    _seedr_embedded_subtitle_cache[cache_key] = (
+        now + _SEEDR_EMBEDDED_SUBTITLE_CACHE_SECONDS,
+        stdout,
+    )
+
     return Response(
         content=stdout,
         media_type="text/vtt; charset=utf-8",
         headers={
             "Access-Control-Allow-Origin": "*",
-            "Cache-Control": "no-store",
+            "Cache-Control": "private, max-age=600",
             "Content-Disposition": f'inline; filename="{Path(name).name.replace(chr(34), "_")}.vtt"',
         },
     )
@@ -5156,16 +5307,17 @@ async def seedr_audio_media_route(
         "-map", f"0:a:{track}",
     ]
 
-    # AAC can be copied directly into MP4, which makes the common case much
-    # faster. Other codecs are transcoded to AAC for broad browser support.
-    if codec == "aac":
-        command += ["-c:a", "copy"]
-    else:
-        command += ["-c:a", "aac", "-b:a", "192k"]
-
+    # Emit a plain MP3 stream for the hidden browser audio element.
+    # MP3 is broadly supported by Chrome/Edge/Android and does not require the
+    # fragmented MP4/WebM demuxers that can stall on a non-seekable pipe.
     command += [
-        "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-        "-f", "mp4",
+        "-vn",
+        "-sn",
+        "-dn",
+        "-ac", "2",
+        "-c:a", "libmp3lame",
+        "-b:a", "192k",
+        "-f", "mp3",
         "pipe:1",
     ]
 
@@ -5198,7 +5350,7 @@ async def seedr_audio_media_route(
 
     return StreamingResponse(
         body(),
-        media_type="audio/mp4",
+        media_type="audio/mpeg",
         headers={
             "Accept-Ranges": "bytes",
             "Cache-Control": "no-store",
@@ -5847,31 +5999,39 @@ async def submit_feedback(body: FeedbackRequest, request: Request):
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise HTTPException(500, "Feedback repository is not configured correctly")
 
-    label = {"review": "Review", "suggestion": "Suggestion", "bug": "Bug"}[feedback_type]
+    label = {"review": "Review", "suggestion": "Suggestion", "bug": "Bug report"}[feedback_type]
     title_prefix = {"review": "Review", "suggestion": "Suggestion", "bug": "Bug report"}[feedback_type]
     title_text = message.replace("\\n", " ").strip()
-    title_text = re.sub(r"\\s+", " ", title_text)[:90] or "New feedback"
-    title = f"[{title_prefix}] {title_text}"
+    title_text = re.sub(r"\\s+", " ", title_text)[:70] or "New feedback"
+
+    if feedback_type == "review" and rating is not None:
+        stars = "⭐" * rating
+        title = f"{stars} {rating}/5 Review"
+    else:
+        title = title_prefix
+
+    if name:
+        title += f" — {name}"
 
     submitted_at = datetime.now(timezone.utc).isoformat()
     forwarded_for = str(request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+
     body_lines = [
-        "## Torrent Studio Feedback",
+        f"# {('⭐' * rating + ' ' + str(rating) + '/5 Review') if feedback_type == 'review' and rating is not None else label}",
         "",
-        f"**Type:** {label}",
     ]
-    if rating is not None:
-        body_lines.append(f"**Rating:** {rating}/5")
     if name:
-        body_lines.append(f"**Name:** {name}")
+        body_lines.append(f"**👤 Name:** {name}")
+    else:
+        body_lines.append("**👤 Name:** Anonymous")
+    if rating is not None:
+        body_lines.append(f"**⭐ Rating:** {rating}/5")
     body_lines.extend([
-        f"**Submitted:** {submitted_at}",
+        f"**🕒 Submitted:** {submitted_at}",
         "",
-        "### Message",
-        message,
+        "### 💬 Feedback",
         "",
-        "---",
-        "_Submitted through the Torrent Studio feedback form._",
+        f"> {message.replace(chr(10), chr(10) + '> ')}",
     ])
     if forwarded_for:
         # Do not persist or expose the visitor IP in the feedback issue.
