@@ -1122,7 +1122,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
             <button
               onClick={copyStreamUrl}
               className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 flex items-center gap-1.5 transition"
@@ -1338,7 +1338,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
           </div>
 
           {/* Main Controls row */}
-          <div className="flex items-center justify-between gap-3 overflow-visible">
+          <div className="flex flex-wrap items-center justify-between gap-3 overflow-visible">
             {/* Left: Playback buttons */}
             <div className="flex items-center gap-2">
               <button
@@ -1366,7 +1366,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
               </button>
 
               {/* Volume */}
-              <div className="flex items-center gap-2 ml-2 pl-2 border-l border-slate-800">
+              <div className="flex shrink-0 items-center gap-2 ml-2 pl-2 border-l border-slate-800">
                 <button
                   onClick={toggleMute}
                   className="p-2 rounded-lg text-slate-400 hover:text-slate-200"
@@ -1386,7 +1386,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
             </div>
 
             {/* Right: Speed, PiP, Fullscreen */}
-            <div className="flex items-center gap-2 flex-nowrap justify-end min-w-0 overflow-visible">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2 overflow-visible">
               {tracksLoading && (
                 <div className="flex items-center gap-1.5 bg-slate-800/80 rounded-lg px-2 py-1.5 text-[11px] text-slate-400">
                   <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />
@@ -1395,13 +1395,13 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
               )}
 
               {audioTracks.length > 1 && (
-                <label className="flex items-center gap-2 rounded-xl border border-slate-700/80 bg-slate-800/90 px-2.5 py-1.5 shadow-sm">
+                <label className="flex min-w-0 max-w-full items-center gap-2 rounded-xl border border-slate-700/80 bg-slate-800/90 px-2.5 py-1.5 shadow-sm">
                   <Languages className="h-4 w-4 shrink-0 text-cyan-400" />
                   <span className="hidden text-[10px] font-semibold uppercase tracking-wide text-slate-500 sm:inline">Audio</span>
                   <select
                     value={selectedAudioIndex !== undefined ? selectedAudioIndex : (audioTracks[0]?.index ?? '')}
                     onChange={(e) => handleAudioTrackChange(e.target.value)}
-                    className="min-w-[115px] max-w-[185px] bg-transparent text-xs font-semibold text-slate-100 outline-none"
+                    className="w-[clamp(100px,18vw,185px)] min-w-0 bg-transparent text-xs font-semibold text-slate-100 outline-none"
                     title="Audio track"
                   >
                     {audioTracks.map((track, index) => (
@@ -1422,7 +1422,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
                     disabled={tracksLoading || (hlsSubtitleTracks.length === 0 && subtitleTracks.length === 0)}
                     value={selectedHlsSubtitleIndex !== undefined ? 'hls:' + selectedHlsSubtitleIndex : selectedSubtitleIndex !== undefined ? 'external:' + selectedSubtitleIndex : 'off'}
                     onChange={(e) => handleSubtitleTrackChange(e.target.value)}
-                    className="min-w-[110px] max-w-[185px] bg-transparent text-xs font-semibold text-slate-100 outline-none disabled:cursor-not-allowed disabled:text-slate-500 [color-scheme:dark]"
+                    className="w-[clamp(95px,16vw,185px)] min-w-0 bg-transparent text-xs font-semibold text-slate-100 outline-none disabled:cursor-not-allowed disabled:text-slate-500 [color-scheme:dark]"
                     title={tracksLoading ? 'Loading subtitles' : 'Subtitles'}
                   >
                     <option value="off" className="bg-slate-900 text-slate-100">{tracksLoading ? 'Loading…' : 'Subtitles Off'}</option>
@@ -1494,7 +1494,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
               )}
 
               {/* Playback Speed selector */}
-              <div className="flex items-center bg-slate-800/80 rounded-lg p-0.5 text-xs font-medium text-slate-300">
+              <div className="flex shrink-0 items-center bg-slate-800/80 rounded-lg p-0.5 text-xs font-medium text-slate-300">
                 {[0.75, 1, 1.25, 1.5, 2].map((s) => (
                   <button
                     key={s}
