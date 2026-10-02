@@ -21,6 +21,7 @@ type SeedrSearchFile = {
   size: number;
   folderId: string;
   folderPath: string;
+  torrentHash?: string;
 };
 
 interface TorrentSearchPanelProps {
@@ -79,38 +80,19 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const searchRequestRef = useRef<AbortController | null>(null);
   const searchGenerationRef = useRef(0);
 
-  const normalizeMatchText = (value: string) =>
-    String(value || '')
-      .toLowerCase()
-      .replace(/\.[a-z0-9]{2,5}$/i, '')
-      .replace(/[^a-z0-9]+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
+  const normalizeInfoHash = (value?: string) => {
+    const normalized = String(value || '').trim().toLowerCase();
+    return /^[0-9a-f]{40}$/.test(normalized) ? normalized : '';
+  };
 
   const findPreparedFiles = (result: TorrentSearchResult): SeedrSearchFile[] => {
-    const title = normalizeMatchText(result.title);
-    if (!title || title.length < 4) return [];
+    // A title is not a unique torrent identity: the same movie can have many
+    // search results with different hashes. Only the exact BitTorrent info
+    // hash may mark a search row as already prepared.
+    const resultHash = normalizeInfoHash(result.infoHash);
+    if (!resultHash) return [];
 
-    const exact: SeedrSearchFile[] = [];
-    const related: SeedrSearchFile[] = [];
-
-    for (const file of seedrFiles) {
-      const folderPath = String(file.folderPath || '');
-      const folderName = folderPath.split('/').filter(Boolean).pop() || '';
-      const fileName = normalizeMatchText(file.name);
-      const folder = normalizeMatchText(folderName);
-
-      if (folder === title || fileName === title) {
-        exact.push(file);
-        continue;
-      }
-
-      if (title.length >= 8 && (folder.includes(title) || title.includes(folder) || fileName.includes(title))) {
-        related.push(file);
-      }
-    }
-
-    return exact.length > 0 ? exact : related;
+    return seedrFiles.filter(file => normalizeInfoHash(file.torrentHash) === resultHash);
   };
 
   const preparedForResult = (result: TorrentSearchResult): SeedrSearchFile[] => {
