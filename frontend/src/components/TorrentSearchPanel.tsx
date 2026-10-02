@@ -308,7 +308,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   };
 
   const sortedResults = useMemo(() => {
-    const maxSeedrFriendlySize = 2 * 1024 * 1024 * 1024;
+    const maxSeedrFriendlySize = 5 * 1024 * 1024 * 1024;
     const sorted = results.filter(result => {
       const size = Number(result.size) || 0;
       if (size > maxSeedrFriendlySize) return false;
