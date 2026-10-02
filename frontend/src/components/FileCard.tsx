@@ -29,8 +29,6 @@ interface FileCardProps {
   canEdit?: boolean;
   canDelete?: boolean;
   streamLoading?: boolean;
-  onSeedrDownload?: (file: StorageFile) => void | Promise<void>;
-  onSeedrCopy?: (file: StorageFile) => void | Promise<void>;
   onSeedrDelete?: (file: StorageFile) => void | Promise<void>;
 }
 
@@ -43,8 +41,6 @@ export const FileCard: React.FC<FileCardProps> = ({
   canEdit = true,
   canDelete = true,
   streamLoading = false,
-  onSeedrDownload,
-  onSeedrCopy,
   onSeedrDelete
 }) => {
   const [copied, setCopied] = useState(false);
@@ -130,36 +126,27 @@ export const FileCard: React.FC<FileCardProps> = ({
           </button>
         )}
 
-        {/* Direct Download */}
-        {file.ownerId === 'seedr' && onSeedrDownload ? (
-          <button
-            type="button"
-            onClick={() => void onSeedrDownload(file)}
-            className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition tap-target flex items-center justify-center"
-            title="Download from Seedr"
-            aria-label="Download from Seedr"
-          >
-            <Download className="w-4 h-4" />
-          </button>
-        ) : (
-          <a
-            href={file.downloadUrl}
-            download={file.name}
-            className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition tap-target flex items-center justify-center"
-            title="Direct Download Link"
-          >
-            <Download className="w-4 h-4" />
-          </a>
-        )}
+        {/* Download/copy are intentionally hidden for Seedr cloud files. */}
+        {file.ownerId !== 'seedr' && (
+          <>
+            <a
+              href={file.downloadUrl}
+              download={file.name}
+              className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition tap-target flex items-center justify-center"
+              title="Direct Download Link"
+            >
+              <Download className="w-4 h-4" />
+            </a>
 
-        {/* Copy Direct Link */}
-        <button
-          onClick={copyLink}
-          className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-cyan-400 transition tap-target flex items-center justify-center"
-          title="Copy Direct Download Link"
-        >
-          {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
-        </button>
+            <button
+              onClick={copyLink}
+              className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-cyan-400 transition tap-target flex items-center justify-center"
+              title="Copy Direct Download Link"
+            >
+              {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+            </button>
+          </>
+        )}
 
         {/* Quick Delete File */}
         {canDelete && (
@@ -180,8 +167,9 @@ export const FileCard: React.FC<FileCardProps> = ({
           </button>
         )}
 
-        {/* More Menu Dropdown */}
-        <div className="relative">
+        {/* More menu is for local/non-Seedr files only. */}
+        {file.ownerId !== 'seedr' && (
+          <div className="relative">
           <button
             onClick={() => setShowMenu(!showMenu)}
             className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition tap-target flex items-center justify-center"
@@ -284,7 +272,8 @@ export const FileCard: React.FC<FileCardProps> = ({
               </div>
             </>
           )}
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );
