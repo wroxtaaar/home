@@ -1391,43 +1391,21 @@ export default function App() {
         throw error;
       }
 
-      // Pre-check Seedr quota before creating the task. Seedr can reject an
-      // over-quota torrent with a provider-specific 413 reason, so relying
-      // only on the provider response made the warning inconsistent.
+      // Seedr storage is handled by the backend during the add operation.
+      // When the account is short on space, the backend automatically removes
+      // the oldest completed Seedr torrent folders needed to make room.
+      // Keep the quota check informational only so it never blocks an add
+      // before automatic cleanup gets a chance to run.
       if (forceBackend !== 'qbittorrent') {
-        let required = Number(requiredBytes || 0);
-        if (!required && Array.isArray(manifest)) {
-          required = manifest
-            .filter(file => Number(file.priority || 0) > 0)
-            .reduce((sum, file) => sum + Math.max(0, Number(file.size || 0)), 0);
-        }
-
-        if (required > 0) {
-          try {
-            const quota = await api.getSeedrQuota();
-            setSeedrQuota({
-              maxSpace: quota.maxSpace,
-              usedSpace: quota.usedSpace,
-              remainingSpace: quota.remainingSpace,
-            });
-
-            if (quota.remainingSpace < required) {
-              setActiveTab('search');
-              setSeedrInsufficientSpacePrompt({
-                requiredBytes: required,
-                remainingBytes: quota.remainingSpace,
-                magnet,
-                category,
-                selectedFiles,
-                manifest,
-                existingHash,
-              });
-              return;
-            }
-          } catch {
-            // If quota lookup is temporarily unavailable, let Seedr make the
-            // authoritative decision below rather than blocking the add.
-          }
+        try {
+          const quota = await api.getSeedrQuota();
+          setSeedrQuota({
+            maxSpace: quota.maxSpace,
+            usedSpace: quota.usedSpace,
+            remainingSpace: quota.remainingSpace,
+          });
+        } catch {
+          // Quota is informational here; the backend is authoritative.
         }
       }
 
