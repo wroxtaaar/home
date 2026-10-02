@@ -38,6 +38,13 @@ interface TorrentSearchPanelProps {
   onOpenProgress?: () => void;
   seedrFiles?: SeedrSearchFile[];
   seedrDeletedFolderIds?: string[];
+  seedrFolders?: Array<{
+    folderId: string;
+    id: string;
+    name: string;
+    path: string;
+    totalSize: number;
+  }>;
   onPlaySeedrFile?: (file: SeedrSearchFile) => void | Promise<void>;
 }
 
@@ -48,7 +55,7 @@ function formatPublished(value?: string) {
   return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepare, onCancelPrepare, onOpenProgress, seedrFiles = [], seedrDeletedFolderIds = [], onPlaySeedrFile }) => {
+export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepare, onCancelPrepare, onOpenProgress, seedrFiles = [], seedrDeletedFolderIds = [], seedrFolders = [], onPlaySeedrFile }) => {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<TorrentSearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -171,15 +178,61 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       grouped.set(folderId, entry);
     }
 
-    const tolerance = Math.max(16 * 1024 * 1024, resultSize * 0.02);
-    const candidates = Array.from(grouped.entries()).filter(([, entry]) => {
-      const titleMatches = Array.from(entry.names).some(name =>
-        name === title || (name.length >= 8 && (name.includes(title) || title.includes(name)))
-      );
-      return titleMatches && Math.abs(entry.totalSize - resultSize) <= tolerance;
-    });
+    const tolerance = Math.max(64 * 1024 * 1024, resultSize * 0.10);
 
-    return candidates.length === 1 ? candidates[0][1].files : [];
+    // The library endpoint has the torrent-level folder name and total size.
+    // Prefer that metadata for the refresh/recovery case because Seedr file
+    // rows can contain provider-generated filenames that do not match the
+    // search result title.
+    const folderCandidates = seedrFolders
+      .map(folder => {
+        const folderId = String(folder.folderId || folder.id || '').trim();
+        const folderName = normalizeMatchText(folder.name || folder.path || '');
+        const titleMatches =
+          folderName === title ||
+          (folderName.length >= 8 && (folderName.includes(title) || title.includes(folderName)));
+        const totalSize = Number(folder.totalSize) || 0;
+        const sizeDelta = Math.abs(totalSize - resultSize);
+        return { folderId, titleMatches, totalSize, sizeDelta };
+      })
+      .filter(candidate =>
+        candidate.folderId &&
+        candidate.titleMatches &&
+        candidate.totalSize > 0 &&
+        candidate.sizeDelta <= tolerance
+      )
+      .sort((a, b) => a.sizeDelta - b.sizeDelta);
+
+    if (folderCandidates.length > 0) {
+      const best = folderCandidates[0];
+      const second = folderCandidates[1];
+      // Pick the closest uniquely identified folder. If two folders are
+      // equally close, leave the row as Prepare rather than falsely marking
+      // both/either release as already loaded.
+      if (!second || best.sizeDelta < second.sizeDelta) {
+        const folderFiles = seedrFiles.filter(file => String(file.folderId) === best.folderId);
+        if (folderFiles.length > 0) return folderFiles;
+      }
+    }
+
+    const candidates = Array.from(grouped.entries())
+      .filter(([, entry]) => {
+        const titleMatches = Array.from(entry.names).some(name =>
+          name === title || (name.length >= 8 && (name.includes(title) || title.includes(name)))
+        );
+        return titleMatches && Math.abs(entry.totalSize - resultSize) <= tolerance;
+      })
+      .sort((a, b) => Math.abs(a[1].totalSize - resultSize) - Math.abs(b[1].totalSize - resultSize));
+
+    if (candidates.length > 0) {
+      const best = candidates[0];
+      const second = candidates[1];
+      if (!second || Math.abs(best[1].totalSize - resultSize) < Math.abs(second[1].totalSize - resultSize)) {
+        return best[1].files;
+      }
+    }
+
+    return [];
   };
 
   const preparedForResult = (result: TorrentSearchResult): SeedrSearchFile[] => {
