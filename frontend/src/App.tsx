@@ -2695,6 +2695,13 @@ export default function App() {
             }}
             seedrFiles={seedrAllPrefetchedFiles}
             seedrDeletedFolderIds={seedrDeletedFolderIds}
+            seedrFolders={seedrLibraryFolders.map(folder => ({
+              folderId: String(folder.folderId || folder.id || ''),
+              id: String(folder.id || folder.folderId || ''),
+              name: String(folder.torrentName || folder.name || ''),
+              path: String(folder.path || ''),
+              totalSize: Number(folder.totalSize || 0),
+            }))}
             onPlaySeedrFile={handleStreamSeedrFile}
           />
 
