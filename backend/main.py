@@ -1714,6 +1714,10 @@ _seedr_metadata_task: asyncio.Task | None = None
 _seedr_folder_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _seedr_torrent_names: dict[str, str] = {}
 _seedr_torrent_names_by_task: dict[str, str] = {}
+# Map each Seedr torrent folder to the BitTorrent info hash that created it.
+# Search-result preparation uses this exact identity so identical titles do not
+# make multiple search rows appear prepared.
+_seedr_folder_info_hashes: dict[str, str] = {}
 
 SEEDR_AUTO_DELETE_SECONDS = 2 * 60 * 60
 SEEDR_CLEANUP_FILE = Path("/app/.seedr_cleanup.json")
@@ -4094,8 +4098,21 @@ async def get_seedr_metadata_tree(force_refresh: bool = False) -> dict[str, Any]
 
                 task_folder_id = seedr_task_folder_id(task)
                 task_name = seedr_task_name(task)
+                task_magnet = str(
+                    task.get("torrent_magnet")
+                    or task.get("magnet")
+                    or task.get("magnet_url")
+                    or ((task.get("torrent") or {}).get("torrent_magnet") if isinstance(task.get("torrent"), dict) else "")
+                    or ((task.get("torrent") or {}).get("magnet") if isinstance(task.get("torrent"), dict) else "")
+                    or ((task.get("torrent_payload") or {}).get("torrent_magnet") if isinstance(task.get("torrent_payload"), dict) else "")
+                    or ((task.get("torrent_payload") or {}).get("magnet") if isinstance(task.get("torrent_payload"), dict) else "")
+                    or ""
+                )
+                task_hash = info_hash(task_magnet)
 
                 if task_folder_id:
+                    if task_hash:
+                        _seedr_folder_info_hashes[str(task_folder_id)] = task_hash
                     task_folders.append((task_folder_id, task_name))
 
                 if task_folder_id and task_name:
@@ -4169,6 +4186,19 @@ async def get_seedr_metadata_tree(force_refresh: bool = False) -> dict[str, Any]
                         or task_name
                         or folder_id,
                     )
+                    task_magnet = str(
+                        task.get("torrent_magnet")
+                        or task.get("magnet")
+                        or task.get("magnet_url")
+                        or ((task.get("torrent") or {}).get("torrent_magnet") if isinstance(task.get("torrent"), dict) else "")
+                        or ((task.get("torrent") or {}).get("magnet") if isinstance(task.get("torrent"), dict) else "")
+                        or ((task.get("torrent_payload") or {}).get("torrent_magnet") if isinstance(task.get("torrent_payload"), dict) else "")
+                        or ((task.get("torrent_payload") or {}).get("magnet") if isinstance(task.get("torrent_payload"), dict) else "")
+                        or ""
+                    )
+                    task_hash = info_hash(task_magnet)
+                    if task_hash:
+                        _seedr_folder_info_hashes[str(folder_id)] = task_hash
 
             # Preserve any folder IDs already learned from task metadata.
             for folder_id, task_name in task_folders:
@@ -4252,6 +4282,7 @@ async def seedr_folder_contents(folder_id: str):
     for raw in arr(payload, ("files", "items")):
         file = normalize_file(raw, folder_id)
         file["url"] = None
+        file["torrentHash"] = _seedr_folder_info_hashes.get(str(folder_id), "")
         files.append(file)
 
     folders: list[dict[str, Any]] = []
