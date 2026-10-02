@@ -1052,6 +1052,7 @@ export default function App() {
         size: Number(file.size) || 0,
         folderId: file.folderId || folderId,
         folderPath,
+        torrentHash: file.torrentHash,
       }));
       setSeedrFolderContentsCache(prev => ({ ...prev, [folderId]: mapped }));
       setSeedrFiles(mapped);
