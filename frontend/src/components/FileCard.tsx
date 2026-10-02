@@ -48,16 +48,12 @@ export const FileCard: React.FC<FileCardProps> = ({
 
   const copyLink = async () => {
     try {
-      if (file.ownerId === 'seedr' && onSeedrCopy) {
-        await onSeedrCopy(file);
-      } else {
-        const directUrl = window.location.origin + file.downloadUrl;
-        await navigator.clipboard.writeText(directUrl);
-      }
+      const directUrl = window.location.origin + file.downloadUrl;
+      await navigator.clipboard.writeText(directUrl);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      // Parent handler reports the actual Seedr/API error.
+      // Clipboard access may be unavailable in restricted browser contexts.
     }
   };
 
@@ -184,49 +180,7 @@ export const FileCard: React.FC<FileCardProps> = ({
                 onClick={() => setShowMenu(false)}
               />
               <div className="absolute right-0 top-full mt-1.5 z-30 w-44 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl py-1 text-xs">
-                {file.ownerId === 'seedr' ? (
-                  <>
-                    {onSeedrDownload && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowMenu(false);
-                          void onSeedrDownload(file);
-                        }}
-                        className="w-full px-3 py-2 text-left hover:bg-slate-800 text-slate-300 flex items-center gap-2"
-                      >
-                        <Download className="w-3.5 h-3.5 text-cyan-400" />
-                        <span>Download from Seedr</span>
-                      </button>
-                    )}
-                    {onSeedrCopy && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowMenu(false);
-                          void onSeedrCopy(file);
-                        }}
-                        className="w-full px-3 py-2 text-left hover:bg-slate-800 text-slate-300 flex items-center gap-2"
-                      >
-                        <Copy className="w-3.5 h-3.5 text-cyan-400" />
-                        <span>Copy Seedr Link</span>
-                      </button>
-                    )}
-                    {canDelete && onSeedrDelete && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowMenu(false);
-                          void onSeedrDelete(file);
-                        }}
-                        className="w-full px-3 py-2 text-left hover:bg-rose-500/10 text-rose-400 flex items-center gap-2 border-t border-slate-800"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        <span>Delete from Seedr</span>
-                      </button>
-                    )}
-                  </>
-                ) : (
+
                   <>
                     {canEdit && (
                       <>
@@ -268,7 +222,6 @@ export const FileCard: React.FC<FileCardProps> = ({
                       </button>
                     )}
                   </>
-                )}
               </div>
             </>
           )}
