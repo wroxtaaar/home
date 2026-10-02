@@ -66,6 +66,8 @@ SEARCH_SOURCE_TIMEOUT_SECONDS = float(os.getenv("SEARCH_SOURCE_TIMEOUT_SECONDS",
 SEARCH_TOTAL_TIMEOUT_SECONDS = float(os.getenv("SEARCH_TOTAL_TIMEOUT_SECONDS", "3.5"))
 SEARCH_GRACE_SECONDS = float(os.getenv("SEARCH_GRACE_SECONDS", "0.2"))
 SEARCH_CACHE_SECONDS = float(os.getenv("SEARCH_CACHE_SECONDS", "60"))
+SEARCH_MIN_SIZE_BYTES = 100 * 1024 * 1024
+SEARCH_MAX_SIZE_BYTES = 5 * 1024 * 1024 * 1024
 FAST_SEARCH_TRACKERS = (
     "http://tracker.dler.org:6969/announce",
     "http://tracker2.dler.org:80/announce",
@@ -2131,8 +2133,8 @@ async def search_1337x_direct(query: str, limit: int = 50, pages: int = 3) -> li
         "User-Agent": user_agent,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     }
-    minimum_size = 100 * 1024 * 1024
-    maximum_size = 5 * 1024 * 1024 * 1024
+    minimum_size = SEARCH_MIN_SIZE_BYTES
+    maximum_size = SEARCH_MAX_SIZE_BYTES
 
     async with httpx.AsyncClient(
         timeout=min(SEARCH_SOURCE_TIMEOUT_SECONDS + 0.75, 3.0),
@@ -2829,8 +2831,8 @@ async def search_1337x(query: str, limit: int = 50, allow_series_fallback: bool 
     # Keep the server-side search pool focused on torrents that fit the
     # main Seedr workflow. This prevents tiny samples/extras and oversized
     # torrents from reaching the client at all.
-    minimum_search_size = 100 * 1024 * 1024
-    maximum_search_size = 5 * 1024 * 1024 * 1024
+    minimum_search_size = SEARCH_MIN_SIZE_BYTES
+    maximum_search_size = SEARCH_MAX_SIZE_BYTES
     results = [
         item for item in merged.values()
         if minimum_search_size <= int(item.get("size") or 0) <= maximum_search_size
