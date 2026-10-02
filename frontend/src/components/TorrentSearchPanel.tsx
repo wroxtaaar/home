@@ -85,14 +85,101 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     return /^[0-9a-f]{40}$/.test(normalized) ? normalized : '';
   };
 
-  const findPreparedFiles = (result: TorrentSearchResult): SeedrSearchFile[] => {
-    // A title is not a unique torrent identity: the same movie can have many
-    // search results with different hashes. Only the exact BitTorrent info
-    // hash may mark a search row as already prepared.
-    const resultHash = normalizeInfoHash(result.infoHash);
-    if (!resultHash) return [];
+  const normalizeMatchText = (value: string) =>
+    String(value || '')
+      .toLowerCase()
+      .replace(/\.[a-z0-9]{2,5}$/i, '')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
 
-    return seedrFiles.filter(file => normalizeInfoHash(file.torrentHash) === resultHash);
+  // Persist the exact search-result hash -> Seedr folder association. This
+  // survives a page refresh and gives Search a stable identity even when the
+  // Seedr task/listing response does not expose the original magnet hash.
+  const preparedHashFoldersRef = useRef<Map<string, string>>(
+    new Map(
+      (() => {
+        try {
+          const raw = localStorage.getItem('seedflow_prepared_seedr_hashes');
+          const parsed = raw ? JSON.parse(raw) : {};
+          return parsed && typeof parsed === 'object'
+            ? Object.entries(parsed)
+              .map(([hash, folderId]) => [normalizeInfoHash(hash), String(folderId || '').trim()] as const)
+              .filter(([hash, folderId]) => Boolean(hash && folderId))
+            : [];
+        } catch {
+          return [];
+        }
+      })()
+    )
+  );
+
+  const savePreparedHashFolders = () => {
+    const value: Record<string, string> = {};
+    for (const [hash, folderId] of preparedHashFoldersRef.current.entries()) {
+      value[hash] = folderId;
+    }
+    try {
+      localStorage.setItem('seedflow_prepared_seedr_hashes', JSON.stringify(value));
+    } catch {}
+  };
+
+  const findPreparedFiles = (result: TorrentSearchResult): SeedrSearchFile[] => {
+    const resultHash = normalizeInfoHash(result.infoHash);
+
+    // Primary path: the backend-provided hash is authoritative when present.
+    if (resultHash) {
+      const exactHashFiles = seedrFiles.filter(file => normalizeInfoHash(file.torrentHash) === resultHash);
+      if (exactHashFiles.length > 0) return exactHashFiles;
+    }
+
+    // After refresh, use the persisted hash -> folder mapping created when
+    // this search result was originally prepared.
+    if (resultHash) {
+      const rememberedFolderId = preparedHashFoldersRef.current.get(resultHash);
+      if (rememberedFolderId) {
+        const rememberedFiles = seedrFiles.filter(file => String(file.folderId) === rememberedFolderId);
+        if (rememberedFiles.length > 0) return rememberedFiles;
+      }
+    }
+
+    // Recovery for torrents that were already prepared before hash persistence
+    // was introduced. Use title + total Seedr folder size, but only when that
+    // combination identifies exactly one folder. This prevents identical-title
+    // search rows from all becoming Play.
+    const title = normalizeMatchText(result.title);
+    const resultSize = Number(result.size) || 0;
+    if (!title || resultSize <= 0) return [];
+
+    const grouped = new Map<string, { files: SeedrSearchFile[]; names: Set<string>; totalSize: number }>();
+    for (const file of seedrFiles) {
+      const folderId = String(file.folderId || '').trim();
+      if (!folderId) continue;
+
+      const entry = grouped.get(folderId) || {
+        files: [],
+        names: new Set<string>(),
+        totalSize: 0,
+      };
+      entry.files.push(file);
+      entry.totalSize += Math.max(0, Number(file.size) || 0);
+
+      const folderPath = String(file.folderPath || '');
+      const folderName = folderPath.split('/').filter(Boolean).pop() || '';
+      entry.names.add(normalizeMatchText(folderName));
+      entry.names.add(normalizeMatchText(file.name));
+      grouped.set(folderId, entry);
+    }
+
+    const tolerance = Math.max(16 * 1024 * 1024, resultSize * 0.02);
+    const candidates = Array.from(grouped.entries()).filter(([, entry]) => {
+      const titleMatches = Array.from(entry.names).some(name =>
+        name === title || (name.length >= 8 && (name.includes(title) || title.includes(name)))
+      );
+      return titleMatches && Math.abs(entry.totalSize - resultSize) <= tolerance;
+    });
+
+    return candidates.length === 1 ? candidates[0][1].files : [];
   };
 
   const preparedForResult = (result: TorrentSearchResult): SeedrSearchFile[] => {
@@ -632,10 +719,24 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                       preparedByKeyRef.current.delete(key);
                                     }
                                   }
+
+                                  for (const [hash, folderId] of preparedHashFoldersRef.current.entries()) {
+                                    if (deletedFolderIds.has(String(folderId))) {
+                                      preparedHashFoldersRef.current.delete(hash);
+                                    }
+                                  }
+                                  savePreparedHashFolders();
                                 }
 
                                 if (prepared?.files?.length) {
                                   preparedByKeyRef.current.set(torrentKey, { files: prepared.files });
+
+                                  const resultHash = normalizeInfoHash(result.infoHash);
+                                  const preparedFolderId = String(prepared.files[0]?.folderId || '').trim();
+                                  if (resultHash && preparedFolderId) {
+                                    preparedHashFoldersRef.current.set(resultHash, preparedFolderId);
+                                    savePreparedHashFolders();
+                                  }
                                 }
                                 setPrepareWaitOpen(false);
                               } catch (error: any) {
