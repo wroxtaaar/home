@@ -2716,8 +2716,6 @@ export default function App() {
             seedrFiles={seedrAllPrefetchedFiles}
             seedrDeletedFolderIds={seedrDeletedFolderIds}
             onPlaySeedrFile={handleStreamSeedrFile}
-            onDownloadSeedrFile={(file) => handleDownloadSeedrFile(file.id, file.name)}
-            onCopySeedrFileUrl={(file) => handleCopySeedrFileUrl(file.id)}
           />
 
           {seedrInsufficientSpacePrompt && (
