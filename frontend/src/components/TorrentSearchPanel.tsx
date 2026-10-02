@@ -204,6 +204,20 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       .sort((a, b) => a.sizeDelta - b.sizeDelta);
 
     if (folderCandidates.length > 0) {
+      // A single exact torrent-folder title is a safe migration path for files
+      // downloaded before hash persistence existed.
+      const exactNameFolders = folderCandidates.filter(candidate => {
+        const folder = seedrFolders.find(item =>
+          String(item.folderId || item.id || '').trim() === candidate.folderId
+        );
+        return normalizeMatchText(folder?.name || '') === title;
+      });
+
+      if (exactNameFolders.length === 1) {
+        const folderFiles = seedrFiles.filter(file => String(file.folderId) === exactNameFolders[0].folderId);
+        if (folderFiles.length > 0) return folderFiles;
+      }
+
       const best = folderCandidates[0];
       const second = folderCandidates[1];
       // Pick the closest uniquely identified folder. If two folders are
@@ -242,6 +256,29 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     const localFiles = local?.files?.filter(file => !deletedIds.has(String(file.folderId))) || [];
     return localFiles.length ? localFiles : findPreparedFiles(result);
   };
+
+  // One-time migration for torrents that were already downloaded before the
+  // exact info-hash mapping existed. Once a unique Seedr folder is identified,
+  // persist the result hash -> folder association so every later refresh uses
+  // the exact hash without repeating the legacy title/size lookup.
+  useEffect(() => {
+    let changed = false;
+    for (const result of results) {
+      const resultHash = normalizeInfoHash(result.infoHash);
+      if (!resultHash || preparedHashFoldersRef.current.has(resultHash)) continue;
+
+      const files = findPreparedFiles(result);
+      const folderIds = Array.from(new Set(
+        files.map(file => String(file.folderId || '').trim()).filter(Boolean)
+      ));
+      if (folderIds.length === 1) {
+        preparedHashFoldersRef.current.set(resultHash, folderIds[0]);
+        changed = true;
+      }
+    }
+
+    if (changed) savePreparedHashFolders();
+  }, [results, seedrFiles, seedrFolders]);
 
   const preparedByKeyRef = useRef(new Map<string, { files: SeedrSearchFile[] }>());
   const apiFetchRecent = (input: RequestInfo | URL, init?: RequestInit) => {
