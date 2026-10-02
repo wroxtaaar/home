@@ -1,5 +1,8 @@
 const KNABEN_URL = 'https://api.knaben.org/v1';
 
+const MIN_SEARCH_SIZE_BYTES = 100 * 1024 * 1024;
+const MAX_SEARCH_SIZE_BYTES = 5 * 1024 * 1024 * 1024;
+
 const STOPWORDS = new Set([
   'the', 'a', 'an', 'movie', 'film', 'series', 'season', 'episode',
   'web', 'show', 'tv'
@@ -138,6 +141,9 @@ export async function GET(req: Request): Promise<Response> {
         if (targetTokens.length && !titleMatches(name, targetTokens)) return false;
         if (!isMediaCategory(category)) return false;
         if (!seasonMatches(name, season, episode)) return false;
+
+        const size = parseIntSafe(hit?.bytes);
+        if (size < MIN_SEARCH_SIZE_BYTES || size > MAX_SEARCH_SIZE_BYTES) return false;
 
         return true;
       })
