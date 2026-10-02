@@ -5,7 +5,6 @@ import {
   Loader2,
   Download,
   Play,
-  Copy,
   ExternalLink,
   Users,
   Database,
@@ -39,8 +38,6 @@ interface TorrentSearchPanelProps {
   seedrFiles?: SeedrSearchFile[];
   seedrDeletedFolderIds?: string[];
   onPlaySeedrFile?: (file: SeedrSearchFile) => void | Promise<void>;
-  onDownloadSeedrFile?: (file: SeedrSearchFile) => void | Promise<void>;
-  onCopySeedrFileUrl?: (file: SeedrSearchFile) => void | Promise<void>;
 }
 
 function formatPublished(value?: string) {
@@ -50,7 +47,7 @@ function formatPublished(value?: string) {
   return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepare, onCancelPrepare, onOpenProgress, seedrFiles = [], seedrDeletedFolderIds = [], onPlaySeedrFile, onDownloadSeedrFile, onCopySeedrFileUrl }) => {
+export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepare, onCancelPrepare, onOpenProgress, seedrFiles = [], seedrDeletedFolderIds = [], onPlaySeedrFile }) => {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<TorrentSearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -584,18 +581,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   </div>
 
                   <div className="flex items-center gap-2 shrink-0">
-                    {result.infoUrl && (
-                      <a
-                        href={result.infoUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="p-1.5 sm:p-2 rounded-lg sm:rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition"
-                        title="Open result information"
-                      >
-                        <ExternalLink className="w-4 h-4" />
-                      </a>
-                    )}
-
                     {(() => {
                       const source = result.magnetUrl || result.downloadUrl || result.sourceUrl;
                       const torrentKey = result.infoHash || source || result.title;
@@ -628,24 +613,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                 ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
                                 : <Play className="w-3.5 h-3.5" />}
                               <span className="hidden sm:inline">{isPlaying ? 'Loading…' : 'Play'}</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void onDownloadSeedrFile?.(primaryFile)}
-                              className="px-2 py-1.5 rounded-lg bg-slate-800 text-slate-200 font-bold text-xs hover:bg-slate-700 transition flex items-center gap-1"
-                              title="Download from Seedr"
-                            >
-                              <Download className="w-3.5 h-3.5" />
-                              <span className="hidden sm:inline">Download</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void onCopySeedrFileUrl?.(primaryFile)}
-                              className="p-1.5 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 transition"
-                              title="Copy Seedr link"
-                              aria-label="Copy Seedr link"
-                            >
-                              <Copy className="w-3.5 h-3.5" />
                             </button>
                           </div>
                         );
