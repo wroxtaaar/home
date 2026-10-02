@@ -175,19 +175,19 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
       setIsLoading(true);
       setError('');
 
-      // A single-file torrent needs no selection UI. Use Seedr whenever
-      // the file fits in the currently available free-account space.
-      // There is no hard 5 GB cutoff: remaining quota is the limit.
+      // A single-file torrent needs no selection UI. Prefer Seedr whenever
+      // the account is configured, even when current free space is smaller
+      // than the file. The backend will automatically remove the oldest
+      // completed Seedr torrent folders needed to make room.
       let forceBackend: 'seedr' | 'qbittorrent' = 'qbittorrent';
-      if (fileSize > 0) {
-        try {
-          const quota = await api.getSeedrQuota();
-          if (quota.configured && fileSize <= quota.remainingSpace) {
-            forceBackend = 'seedr';
-          }
-        } catch {
-          // Quota lookup is best-effort; fall back to qBittorrent.
+      try {
+        const quota = await api.getSeedrQuota();
+        if (quota.configured) {
+          forceBackend = 'seedr';
         }
+      } catch {
+        // Quota lookup is best-effort; keep the qBittorrent fallback only
+        // when the Seedr account cannot be confirmed.
       }
 
       const selectedBackend = seedrTaskId != null ? 'seedr' : forceBackend;
