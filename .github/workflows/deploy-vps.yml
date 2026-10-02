@@ -1,0 +1,116 @@
+name: Deploy Torrent Studio to Oracle VPS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: torrent-studio-vps-main
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm install
+          npm run build
+
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_SSH_PORT: ${{ secrets.VPS_SSH_PORT || '22' }}
+        run: |
+          set -eu
+          test -n "$VPS_HOST" || { echo "Missing VPS_HOST"; exit 1; }
+          test -n "$VPS_SSH_KEY" || { echo "Missing VPS_SSH_KEY"; exit 1; }
+
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p "$VPS_SSH_PORT" "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy to VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_PORT: ${{ secrets.VPS_SSH_PORT || '22' }}
+        run: |
+          set -eu
+          test -n "$VPS_USER" || { echo "Missing VPS_USER"; exit 1; }
+
+          ssh -p "$VPS_SSH_PORT" "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -e
+
+          APP_DIR="$HOME/torrent-studio-debug"
+          IMAGE="torrent-studio-home"
+          CONTAINER="torrent-studio-home"
+          PREVIOUS="torrent-studio-home-previous"
+
+          cd "$APP_DIR"
+
+          echo "Updating repository..."
+          git fetch origin main
+          git reset --hard origin/main
+
+          echo "Building image..."
+          docker build -t "$IMAGE" .
+
+          rm_previous=0
+          if docker ps -a --format '{{.Names}}' | grep -qx "$PREVIOUS"; then
+            docker rm -f "$PREVIOUS"
+          fi
+
+          if docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER"; then
+            docker rename "$CONTAINER" "$PREVIOUS"
+            rm_previous=1
+          fi
+
+          echo "Starting new container..."
+          docker run -d             --name "$CONTAINER"             --restart unless-stopped             --env-file "$APP_DIR/.env.debug"             -p 0.0.0.0:10000:10000             "$IMAGE"
+
+          echo "Waiting for health check..."
+          healthy=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:10000/health >/tmp/torrent-health.json 2>/dev/null; then
+              healthy=1
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$healthy" -ne 1 ]; then
+            echo "Deployment failed health check."
+            docker logs --tail=100 "$CONTAINER" || true
+            docker rm -f "$CONTAINER" || true
+
+            if [ "$rm_previous" -eq 1 ]; then
+              docker rename "$PREVIOUS" "$CONTAINER"
+              docker start "$CONTAINER"
+              echo "Previous container restored."
+            fi
+
+            exit 1
+          fi
+
+          echo "Deployment successful:"
+          cat /tmp/torrent-health.json
+
+          if [ "$rm_previous" -eq 1 ]; then
+            docker rm -f "$PREVIOUS"
+          fi
+
+          docker image prune -f
+          REMOTE
