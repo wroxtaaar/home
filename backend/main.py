@@ -2132,7 +2132,7 @@ async def search_1337x_direct(query: str, limit: int = 50, pages: int = 3) -> li
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     }
     minimum_size = 100 * 1024 * 1024
-    maximum_size = 2 * 1024 * 1024 * 1024
+    maximum_size = 5 * 1024 * 1024 * 1024
 
     async with httpx.AsyncClient(
         timeout=min(SEARCH_SOURCE_TIMEOUT_SECONDS + 0.75, 3.0),
@@ -2715,7 +2715,7 @@ async def search_1337x(query: str, limit: int = 50, allow_series_fallback: bool 
     api_task = asyncio.create_task(search_apibay(query, limit))
 
     # A plain TV-show title often returns season packs from generic torrent
-    # indexes. Those packs are frequently larger than the UI's 2 GiB Seedr
+    # indexes. Those packs are frequently larger than the UI's 5 GiB Seedr
     # limit, so enrich generic searches with episode-level EZTV results.
     # search_tv_eztv already verifies the title against TVmaze before querying
     # EZTV, so movie searches do not get arbitrary TV results.
@@ -2830,7 +2830,7 @@ async def search_1337x(query: str, limit: int = 50, allow_series_fallback: bool 
     # main Seedr workflow. This prevents tiny samples/extras and oversized
     # torrents from reaching the client at all.
     minimum_search_size = 100 * 1024 * 1024
-    maximum_search_size = 2 * 1024 * 1024 * 1024
+    maximum_search_size = 5 * 1024 * 1024 * 1024
     results = [
         item for item in merged.values()
         if minimum_search_size <= int(item.get("size") or 0) <= maximum_search_size
@@ -2847,7 +2847,7 @@ async def search_1337x(query: str, limit: int = 50, allow_series_fallback: bool 
     # Keep the normal path fast. Only when the primary providers return
     # fewer than 8 usable torrents do we pay the cost of a direct 1337x
     # listing search. The direct fallback fetches only a few listing pages,
-    # filters the 100 MB–2 GB range locally, then resolves magnets for the
+    # filters the 100 MB–5 GB range locally, then resolves magnets for the
     # highest-seeded candidates.
     if allow_series_fallback and len(results) < 8:
         try:
