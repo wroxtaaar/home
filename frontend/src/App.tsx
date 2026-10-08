@@ -2696,6 +2696,30 @@ export default function App() {
             </div>
           </div>
 
+          {/* Primary navigation stays on the same header row to save vertical space. */}
+          <nav className="hidden md:flex items-center gap-1.5 ml-5 mr-auto">
+            <button
+              onClick={() => setActiveTab('search')}
+              className={activeTab === 'search'
+                ? 'px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/20'
+                : 'px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'}
+            >
+              <Search className="w-4 h-4" />
+              <span>Search</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('files')}
+              className={activeTab === 'files'
+                ? 'px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/20'
+                : 'px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'}
+            >
+              <Folder className="w-4 h-4" />
+              <span>My Cloud Files</span>
+              <span className="text-[10px] opacity-70">({files.length})</span>
+            </button>
+          </nav>
+
           {/* Right: Quick actions & User Switcher */}
           <div className="flex items-center gap-2">
             <button
@@ -2740,33 +2764,6 @@ export default function App() {
           </div>
         </div>
       </header>
-
-      {/* Desktop Subheader Navigation Tabs */}
-      <div className="hidden md:block bg-slate-900/60 border-b border-slate-800/80 px-6">
-        <div className="max-w-7xl mx-auto flex items-center gap-2 py-2">          <button
-            onClick={() => setActiveTab('search')}
-            className={activeTab === 'search'
-              ? 'px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/20'
-              : 'px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'}
-          >
-            <Search className="w-4 h-4" />
-            <span>Search</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('files')}
-            className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition ${
-              activeTab === 'files'
-                ? 'bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/20'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-            }`}
-          >
-            <Folder className="w-4 h-4" />
-            <span>My Cloud Files</span>
-            <span className="text-[10px] opacity-70">({files.length})</span>
-          </button>
-        </div>
-      </div>
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-2.5 sm:p-6 pb-20 md:pb-12">
