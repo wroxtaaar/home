@@ -69,6 +69,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [prepareWaitTitle, setPrepareWaitTitle] = useState('');
   const [prepareWaitOpen, setPrepareWaitOpen] = useState(false);
   const [prepareError, setPrepareError] = useState('');
+  const [fullTorrentTitle, setFullTorrentTitle] = useState<string | null>(null);
 
   // Metadata is prefetched in small batches so search remains fast while the
   // most likely results are already resolved when the user clicks Add.
@@ -401,6 +402,15 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!fullTorrentTitle) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setFullTorrentTitle(null);
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [fullTorrentTitle]);
 
   useEffect(() => {
     if (!showRecentSearches) return;
@@ -738,6 +748,40 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         </div>
       )}
 
+      {fullTorrentTitle && (
+        <div
+          className="fixed inset-0 z-[220] flex items-center justify-center bg-slate-950/60 backdrop-blur-sm p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Full torrent name"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setFullTorrentTitle(null);
+          }}
+        >
+          <div className="w-full max-w-2xl rounded-2xl border border-cyan-400/20 bg-slate-900 shadow-2xl">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
+              <div className="text-sm font-bold text-slate-100">Full torrent name</div>
+              <button
+                type="button"
+                onClick={() => setFullTorrentTitle(null)}
+                className="shrink-0 rounded-lg p-1.5 text-slate-500 hover:bg-slate-800 hover:text-slate-200 transition"
+                aria-label="Close full torrent name"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="max-h-[45vh] overflow-y-auto px-4 py-4">
+              <div className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-3 text-sm leading-6 text-slate-200 break-words select-text">
+                {fullTorrentTitle}
+              </div>
+              <div className="mt-2 text-[10px] text-slate-500">
+                Click outside this window or press Escape to close.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {prepareWaitOpen && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-950/45 backdrop-blur-sm p-4">
           <div className="w-full max-w-sm rounded-2xl border border-cyan-400/20 bg-slate-900/95 shadow-2xl p-5">
@@ -889,9 +933,15 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             <Database className="w-3.5 h-3.5 text-cyan-400" />
                           </div>
                           <div className="min-w-0 flex-1">
-                            <h3 className="text-[11px] leading-4 sm:text-sm font-semibold text-slate-100 line-clamp-2" title={result.title}>
+                            <button
+                              type="button"
+                              onClick={() => setFullTorrentTitle(String(result.title || result.mediaTitle || '').trim())}
+                              className="block w-full text-left text-[11px] leading-4 sm:text-sm font-semibold text-slate-100 line-clamp-2 hover:text-cyan-300 transition cursor-pointer"
+                              title="Click to view full torrent name"
+                              aria-label="View full torrent name"
+                            >
                               {result.mediaTitle || result.title}
-                            </h3>
+                            </button>
 
                             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1.5 text-[9px] sm:text-[11px]">
                               {extractedQuality(result) ? (
