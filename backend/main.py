@@ -3423,6 +3423,28 @@ def _poster_normalize_title(value: str) -> str:
     return re.sub(r"^(?:the|a|an)\s+", "", normalized)
 
 
+
+
+def _poster_title_matches(wanted: str, candidate: str) -> bool:
+    """Accept exact titles or a complete multi-word title embedded in a release title."""
+    if not wanted or not candidate:
+        return False
+    if wanted == candidate:
+        return True
+
+    wanted_tokens = wanted.split()
+    candidate_tokens = candidate.split()
+
+    # A short one-word provider title is too ambiguous to match as a fragment.
+    if len(candidate_tokens) < 2 or len(candidate_tokens) >= len(wanted_tokens):
+        return False
+
+    width = len(candidate_tokens)
+    return any(
+        wanted_tokens[index:index + width] == candidate_tokens
+        for index in range(len(wanted_tokens) - width + 1)
+    )
+
 def _poster_title_parts(raw_title: str) -> tuple[str, str]:
     """Extract a clean movie title/year from a torrent release name."""
     value = str(raw_title or "").replace(".", " ").replace("_", " ")
@@ -3494,7 +3516,7 @@ async def _cinemeta_poster_lookup(title: str, year: str = "") -> str | None:
                         candidate = _poster_normalize_title(name)
                         poster = str(row.get("poster") or "").strip()
                         imdb_id = str(row.get("id") or "").strip()
-                        if not name or candidate != wanted:
+                        if not name or not _poster_title_matches(wanted, candidate):
                             continue
 
                         candidate_year = str(
@@ -3561,7 +3583,7 @@ async def _poster_lookup_uncached(clean_title: str, clean_year: str, cache_key: 
                     image = str((row.get("i") or {}).get("imageUrl") or "").strip()
                     candidate = _poster_normalize_title(str(row.get("l") or ""))
                     candidate_year = str(row.get("y") or "")
-                    if not image or candidate != wanted:
+                    if not image or not _poster_title_matches(wanted, candidate):
                         continue
                     if wanted_year and candidate_year and candidate_year != wanted_year:
                         continue
