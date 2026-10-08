@@ -108,6 +108,24 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       result.title
     );
 
+  const fullTorrentTitleFor = (result: TorrentSearchResult) => {
+    // Indexer search pages can truncate the displayed title, while the magnet's
+    // dn parameter normally carries the actual full torrent name.
+    const magnet = String(result.magnetUrl || result.downloadUrl || '').trim();
+    if (magnet) {
+      try {
+        const query = magnet.includes('?') ? magnet.slice(magnet.indexOf('?') + 1) : '';
+        const params = new URLSearchParams(query);
+        const displayName = params.get('dn')?.trim();
+        if (displayName) return displayName;
+      } catch {
+        // Fall back to the API title below.
+      }
+    }
+
+    return String(result.title || result.mediaTitle || '').trim();
+  };
+
   const rawPosterUrlFor = (result: TorrentSearchResult) => {
     const raw = String(result.posterUrl || '').trim();
     if (!raw) return '';
@@ -932,7 +950,13 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           <div className="relative min-w-0 flex-1 z-10">
                             <button
                               type="button"
-                              onClick={() => showFullTorrentTitleBubble(result)}
+                              onClick={() => {
+                                const fullTitle = fullTorrentTitleFor(result);
+                                showFullTorrentTitleBubble({
+                                  ...result,
+                                  title: fullTitle || result.title
+                                });
+                              }}
                               className="block w-full text-left text-[11px] leading-4 sm:text-sm font-semibold text-slate-100 line-clamp-2 hover:text-cyan-300 transition cursor-pointer"
                               title="Click to view full torrent name"
                               aria-label="View full torrent name"
@@ -945,7 +969,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                 role="status"
                                 aria-live="polite"
                                 className={[
-                                  'absolute bottom-full left-0 mb-1.5 z-50 w-max max-w-[min(300px,75vw)] rounded-xl border border-cyan-400/25 bg-slate-950/95 px-3 py-2 text-[11px] leading-4 font-medium text-slate-100 shadow-xl transition-all duration-[350ms] ease-out',
+                                  'absolute bottom-full left-0 mb-1.5 z-50 w-max max-w-[min(420px,calc(100vw-24px))] rounded-xl border border-cyan-400/25 bg-slate-950/95 px-3 py-2 text-[11px] leading-4 font-medium text-slate-100 shadow-xl transition-all duration-[350ms] ease-out whitespace-normal break-words',
                                   fullTorrentTitleFading
                                     ? 'translate-y-1 opacity-0'
                                     : 'translate-y-0 opacity-100'
