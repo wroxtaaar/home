@@ -34,26 +34,13 @@ import {
   QbtSettings
 } from '../types/index.ts';
 
-// The frontend and API are served by the same Render service in the
-// all-in-one deployment. Keep an optional VITE_API_URL override for local
-// development or an external API, but default to the current browser origin.
-// Prefer an explicit API URL when one is configured. If the frontend is
-// served from the all-in-one Render service, same-origin is correct. If the
-// frontend is hosted separately (for example an older Vercel deployment),
-// never accidentally point API/media requests at the static frontend host.
+// Home is a VPS-only all-in-one deployment: the browser talks directly
+// to the same origin on the Oracle VPS for both the React UI and FastAPI.
+// Keep VITE_API_URL only as an optional override for local development.
 const configuredApiBase = String(import.meta.env.VITE_API_URL || '').trim();
-const currentHost = typeof window !== 'undefined' ? window.location.hostname : '';
-const isSeparateVercelHost =
-  currentHost.endsWith('.vercel.app') ||
-  currentHost === 'vercel.app' ||
-  currentHost.includes('.vercel.');
 export const API_BASE = (
   configuredApiBase ||
-  (isSeparateVercelHost
-    ? 'https://new-test-dmkr.onrender.com'
-    : typeof window !== 'undefined'
-      ? window.location.origin
-      : 'https://new-test-dmkr.onrender.com')
+  (typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:10000')
 ).replace(/\/+$/, '');
 const makeSeedrError = (data: any, body: string, status: number, fallback: string) => {
   const error = new Error(
