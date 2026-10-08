@@ -447,6 +447,7 @@ export default function App() {
   // stream URL, then the player shows its own browser-loading state.
   const [seedrStreamLoadingId, setSeedrStreamLoadingId] = useState<string | null>(null);
   const [isCancellingSeedr, setIsCancellingSeedr] = useState(false);
+  const seedrPrepareGenerationRef = useRef(0);
   const [activeSeedrFolderOpen, setActiveSeedrFolderOpen] = useState(false);
   const [selectedSeedrFolderId, setSelectedSeedrFolderId] = useState<string | null>(() => {
     try {
@@ -1224,6 +1225,8 @@ export default function App() {
     folderId: string;
     folderPath: string;
   }>; deletedFolderIds: string[] }> => {
+    const prepareGeneration = ++seedrPrepareGenerationRef.current;
+
     if (!seedrConnected) {
       // Preparing a search result requires a personal Seedr connection.
       // Open the same connection dialog used by the header instead of
@@ -1234,11 +1237,33 @@ export default function App() {
     }
 
     if (seedrDownloadActive) {
-      const message = 'One Seedr file is already loading. Cancel that loading or wait for it to finish before preparing another.';
-      setSeedrAddBlockedNotice(message);
-      setActiveTab('files');
-      window.setTimeout(() => setSeedrAddBlockedNotice(null), 5000);
-      throw new Error(message);
+      const previousTaskId = seedrNotice?.taskId;
+      if (previousTaskId != null) {
+        try {
+          setIsCancellingSeedr(true);
+          await api.deleteSeedrTask(previousTaskId);
+
+          const waiterKey = String(previousTaskId);
+          const waiter = seedrPrepareWaiters.current[waiterKey];
+          if (waiter) {
+            delete seedrPrepareWaiters.current[waiterKey];
+            waiter.reject(new Error('Seedr preparation was cancelled by another selection.'));
+          }
+
+          setSeedrNotice(null);
+        } catch (error: any) {
+          const message = error?.message || 'Could not cancel the current Seedr preparation.';
+          setSeedrAddBlockedNotice(message);
+          window.setTimeout(() => setSeedrAddBlockedNotice(null), 5000);
+          throw new Error(message);
+        } finally {
+          setIsCancellingSeedr(false);
+        }
+      }
+    }
+
+    if (prepareGeneration !== seedrPrepareGenerationRef.current) {
+      throw new Error('Seedr preparation was replaced by a newer selection.');
     }
 
     const source = String(result.magnetUrl || result.downloadUrl || result.sourceUrl || '').trim();
@@ -1250,6 +1275,10 @@ export default function App() {
 
     if (!magnet) {
       throw new Error('This search result does not contain a usable magnet link.');
+    }
+
+    if (prepareGeneration !== seedrPrepareGenerationRef.current) {
+      throw new Error('Seedr preparation was replaced by a newer selection.');
     }
 
     let resolvedMetadata = metadata;
@@ -1267,6 +1296,10 @@ export default function App() {
       String(result.title || '').trim() ||
       'Torrent';
     const requiredBytes = Number(resolvedMetadata?.totalSize || result.size || 0);
+
+    if (prepareGeneration !== seedrPrepareGenerationRef.current) {
+      throw new Error('Seedr preparation was replaced by a newer selection.');
+    }
 
     const prepared = await api.prepareSeedrMagnet(magnet, requiredBytes, torrentName);
 
@@ -1336,7 +1369,13 @@ export default function App() {
       ...completed,
       deletedFolderIds,
     };
-  }, [seedrConnected, seedrDownloadActive, rememberSeedrTorrentName]);
+  }, [
+    seedrConnected,
+    seedrDownloadActive,
+    seedrNotice,
+    rememberSeedrTorrentName,
+    isCancellingSeedr
+  ]);
 
   const handleSearchAdd = async (
     source: string,
