@@ -1009,7 +1009,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               {isPlaying
                                 ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
                                 : <Play className="w-3.5 h-3.5" />}
-                              <span className="hidden sm:inline">{isPlaying ? 'Loading…' : 'Play'}</span>
                             </button>
 
                             <button
