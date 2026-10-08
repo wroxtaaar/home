@@ -998,7 +998,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       if (preparedFiles.length > 0 && primaryFile) {
                         const isPlaying = playingTorrentKey === torrentKey;
                         return (
-                          <div className="flex items-center gap-1.5 shrink-0 w-full sm:w-auto">
+                          <div className="min-w-0 max-w-full flex flex-wrap items-center justify-end gap-1.5">
                             <button
                               type="button"
                               disabled={isPlaying}
@@ -1011,7 +1011,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                   setPlayingTorrentKey(current => current === torrentKey ? null : current);
                                 }
                               }}
-                              className="px-2 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold text-xs hover:bg-emerald-300 transition flex items-center gap-1 disabled:opacity-70 disabled:cursor-wait"
+                              className="shrink-0 px-2 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold text-xs hover:bg-emerald-300 transition flex items-center gap-1 disabled:opacity-70 disabled:cursor-wait whitespace-nowrap"
                               title={isPlaying ? "Opening stream…" : "Play from Seedr"}
                             >
                               {isPlaying
@@ -1023,7 +1023,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             <button
                               type="button"
                               onClick={() => api.openSeedrFileDownload(primaryFile.id, primaryFile.name)}
-                              className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition"
+                              className="shrink-0 p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition"
                               title="Download file"
                               aria-label="Download file"
                             >
@@ -1045,7 +1045,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                   setPrepareError('Could not copy the download link.');
                                 }
                               }}
-                              className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-cyan-400 transition disabled:opacity-60"
+                              className="shrink-0 p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-cyan-400 transition disabled:opacity-60"
                               title="Copy download link"
                               aria-label="Copy download link"
                             >
@@ -1058,7 +1058,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       }
 
                       return (
-                        <div className="flex items-center gap-1.5 shrink-0">
+                        <div className="min-w-0 max-w-full flex flex-wrap items-center justify-end gap-1.5">
                           <button
                             type="button"
                             disabled={!source || isPreparing}
@@ -1109,7 +1109,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             <button
                               type="button"
                               onClick={() => void onCancelPrepare()}
-                              className="px-2 py-1.5 rounded-lg bg-rose-500/10 border border-rose-500/25 text-rose-300 hover:bg-rose-500/20 text-[10px] font-bold transition"
+                              className="shrink-0 px-2 py-1.5 rounded-lg bg-rose-500/10 border border-rose-500/25 text-rose-300 hover:bg-rose-500/20 text-[10px] font-bold transition whitespace-nowrap"
                               title="Cancel preparation"
                             >
                               Cancel
