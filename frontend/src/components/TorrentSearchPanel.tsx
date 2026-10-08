@@ -573,16 +573,16 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 sm:block sm:rounded-2xl sm:border sm:border-slate-800 sm:overflow-hidden sm:bg-slate-900 sm:divide-y sm:divide-slate-800/80">
+          <div className="grid grid-cols-2 gap-2 sm:block sm:rounded-2xl sm:border sm:border-slate-800 sm:overflow-hidden sm:bg-slate-900 sm:divide-y sm:divide-slate-800/80 lg:grid lg:grid-cols-[repeat(auto-fill,minmax(220px,1fr))] lg:gap-[22px] lg:max-w-[1500px] lg:mx-auto lg:p-0 lg:border-0 lg:bg-transparent lg:divide-y-0">
             {sortedResults.map((result, index) => (
               <div
                 key={result.guid || result.infoHash || (result.title + '-' + index)}
-                className="min-w-0 rounded-xl border border-slate-800 bg-slate-900 p-2 hover:bg-slate-800/80 transition sm:rounded-none sm:border-0 sm:bg-transparent sm:p-2 sm:px-4 sm:py-4"
+                className="min-w-0 rounded-xl border border-slate-800 bg-slate-900 p-2 hover:bg-slate-800/80 transition sm:rounded-none sm:border-0 sm:bg-transparent sm:p-2 sm:px-4 sm:py-4 lg:flex lg:flex-col lg:rounded-[14px] lg:border lg:border-slate-800 lg:bg-slate-900 lg:p-0 lg:overflow-hidden lg:hover:-translate-y-1 lg:hover:border-slate-700"
               >
-                <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-2 sm:gap-3">
-                      <div className="relative w-full sm:w-24 shrink-0 aspect-[2/3] rounded-lg overflow-hidden border border-slate-800 bg-slate-950 shadow-md">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 lg:flex-col lg:items-stretch lg:gap-0">
+                  <div className="min-w-0 flex-1 lg:w-full">
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-2 sm:gap-3 lg:flex-col lg:gap-0">
+                      <div className="relative w-full sm:w-24 shrink-0 aspect-[2/3] rounded-lg overflow-hidden border border-slate-800 bg-slate-950 shadow-md lg:w-full lg:rounded-none lg:border-0 lg:shadow-none">
                         {posterUrlFor(result) ? (
                           <>
                             <img
@@ -613,7 +613,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                         )}
                       </div>
 
-                      <div className="min-w-0 flex-1">
+                      <div className="min-w-0 flex-1 lg:w-full lg:p-3">
                         <div className="flex items-start gap-2">
                           <div className="hidden sm:flex p-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20 shrink-0">
                             <Database className="w-3.5 h-3.5 text-cyan-400" />
@@ -672,7 +672,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-end gap-2 shrink-0 sm:min-w-[126px]">
+                  <div className="flex items-center justify-end gap-2 shrink-0 sm:min-w-[126px] lg:w-full lg:min-w-0 lg:p-3 lg:pt-0">
                     {(() => {
                       const source = result.magnetUrl || result.downloadUrl || result.sourceUrl;
                       const torrentKey = result.infoHash || source || result.title;
