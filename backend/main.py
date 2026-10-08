@@ -3099,7 +3099,7 @@ async def _search_1337x_uncached(
     This is intentionally conservative for Render Free: only the primary
     1337x/Knaben pair runs on the first pass. More expensive alternate queries
     and specialist providers are activated only when fewer than 8 usable
-    results survive the hard media and 100 MB-2 GB gates.
+    results survive the hard media and 100 MB-5 GB gates.
     """
     limit = 50
     kind = _search_media_kind(query)
