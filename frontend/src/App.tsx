@@ -157,6 +157,45 @@ export default function App() {
       return 'search';
     }
   });
+
+  // Treat the app's sections as browser-history states. Android back buttons
+  // and swipe-back gestures therefore move from Files/other sections to Search
+  // instead of immediately leaving the web app. Once already on Search, the
+  // next Back is allowed to leave the page normally.
+  useEffect(() => {
+    const currentState = window.history.state;
+    if (!currentState?.torrentStudio) {
+      window.history.replaceState(
+        { ...(currentState || {}), torrentStudio: true, tab: activeTab },
+        '',
+        window.location.href
+      );
+      return;
+    }
+
+    if (currentState.tab !== activeTab) {
+      window.history.pushState(
+        { ...currentState, torrentStudio: true, tab: activeTab },
+        '',
+        window.location.href
+      );
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const stateTab = window.history.state?.torrentStudio
+        ? window.history.state.tab
+        : null;
+
+      if (activeTab !== 'search' && stateTab === 'search') {
+        setActiveTab('search');
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [activeTab]);
   type BackgroundMetadataJobRecord = {
     jobId: string;
     hash: string;
