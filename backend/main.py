@@ -3602,9 +3602,9 @@ async def _cinemeta_poster_lookup(title: str, year: str = "") -> str | None:
                         # allow a different-year title just because its name is a
                         # fuzzy/contained match (e.g. "Justice League" 2017 must
                         # never satisfy "Justice League: War" 2014).
-                        if clean_year and candidate_year:
+                        if clean_year:
                             candidate_year_value = candidate_year[:4]
-                            if candidate_year_value != clean_year:
+                            if not candidate_year_value or candidate_year_value != clean_year:
                                 continue
 
                         score = 100
@@ -3671,8 +3671,9 @@ async def _poster_lookup_uncached(clean_title: str, clean_year: str, cache_key: 
                     candidate_year = str(row.get("y") or "")
                     if not image or not any(_poster_title_matches(wanted, candidate) for wanted in wanted_titles):
                         continue
-                    if wanted_year and candidate_year and candidate_year != wanted_year:
-                        continue
+                    if wanted_year:
+                        if not candidate_year or candidate_year != wanted_year:
+                            continue
                     score = 100
                     if wanted_year and candidate_year == wanted_year:
                         score += 100
@@ -3709,8 +3710,9 @@ async def _poster_lookup_uncached(clean_title: str, clean_year: str, cache_key: 
                         candidate_year = str(row.get("releaseDate") or "")[:4]
                         if not any(_poster_title_matches(wanted, candidate) for wanted in wanted_titles):
                             continue
-                        if wanted_year and candidate_year and candidate_year != wanted_year:
-                            continue
+                        if wanted_year:
+                            if not candidate_year or candidate_year != wanted_year:
+                                continue
                         score = 100
                         if wanted_year and candidate_year == wanted_year:
                             score += 100
