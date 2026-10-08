@@ -3422,6 +3422,7 @@ def _poster_normalize_title(value: str) -> str:
     value = str(value or "").lower().replace("’", "'")
     # Torrent sources frequently vary only in punctuation/spelling. Treat
     # possessives as the same words and normalize common title variants.
+    value = value.replace("&", " and ")
     value = value.replace("'", "")
     tokens = re.findall(r"[a-z0-9]+", value)
     token_aliases = {
@@ -3437,7 +3438,7 @@ def _poster_normalize_title(value: str) -> str:
 
 
 def _poster_title_matches(wanted: str, candidate: str) -> bool:
-    """Accept exact titles or a complete multi-word title embedded in a release title."""
+    """Accept exact titles or a complete multi-word title embedded in either side."""
     if not wanted or not candidate:
         return False
     if wanted == candidate:
@@ -3446,16 +3447,51 @@ def _poster_title_matches(wanted: str, candidate: str) -> bool:
     wanted_tokens = wanted.split()
     candidate_tokens = candidate.split()
 
-    # A short one-word provider title is too ambiguous to match as a fragment.
-    if len(candidate_tokens) < 2 or len(candidate_tokens) >= len(wanted_tokens):
+    # Avoid ambiguous one-word substring matches such as "Batman".
+    if len(wanted_tokens) < 2 or len(candidate_tokens) < 2:
         return False
 
-    width = len(candidate_tokens)
-    return any(
-        wanted_tokens[index:index + width] == candidate_tokens
-        for index in range(len(wanted_tokens) - width + 1)
-    )
+    def contains(shorter: list[str], longer: list[str]) -> bool:
+        width = len(shorter)
+        return any(
+            longer[index:index + width] == shorter
+            for index in range(len(longer) - width + 1)
+        )
 
+    if len(candidate_tokens) < len(wanted_tokens):
+        return contains(candidate_tokens, wanted_tokens)
+    return contains(wanted_tokens, candidate_tokens)
+
+
+def _poster_prepare_lookup_title(title: str, year: str = "") -> str:
+    """Strip common release artifacts before querying poster providers."""
+    value = str(title or "").strip()
+    clean_year = str(year or "").strip()
+
+    # The frontend can send both "(YEAR)" inside title and year=YEAR.
+    if clean_year:
+        value = re.sub(
+            rf"\s*[\(\[\-:]?\s*{re.escape(clean_year)}\s*[\)\]]?\s*$",
+            "",
+            value,
+            flags=re.I,
+        )
+
+    # Frontend poster candidates can end with a lone opening delimiter after
+    # removing release information (e.g. "Batman Returns (").
+    value = value.rstrip(" ([{").strip(" -._")
+
+    # Strip season/episode information and everything after it. This lets a
+    # series release such as "Batman The Animated Series S03E05 Time Out of Joint"
+    # resolve to the series poster instead of treating the episode title as a movie.
+    value = re.sub(
+        r"\s+S\d{1,2}(?:E\d{1,3})?\b.*$",
+        "",
+        value,
+        flags=re.I,
+    ).strip(" -._([")
+
+    return value.strip()
 
 def _poster_title_aliases(title: str, year: str = "") -> list[str]:
     """Return provider-friendly title aliases for common torrent shorthand."""
@@ -3685,8 +3721,8 @@ async def _poster_lookup_uncached(clean_title: str, clean_year: str, cache_key: 
 
 
 async def _poster_lookup(title: str, year: str = "") -> str | None:
-    clean_title = str(title or "").strip()
     clean_year = str(year or "").strip()
+    clean_title = _poster_prepare_lookup_title(title, clean_year)
     if not clean_title:
         return None
 
