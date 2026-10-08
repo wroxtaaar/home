@@ -3288,6 +3288,17 @@ async def _search_1337x_uncached(
 
     results = list(merged.values())
     enrich_movie_metadata(results)
+
+    # Poster artwork is resolved lazily by /api/poster so search latency is
+    # unaffected. Every normal movie result gets a cleaned poster URL,
+    # regardless of whether it came from YTS, Knaben, 1337x, or another source.
+    if kind == "both":
+        for item in results:
+            if not str(item.get("posterUrl") or "").strip():
+                poster_url = _poster_url_for_release(str(item.get("title") or ""))
+                if poster_url:
+                    item["posterUrl"] = poster_url
+
     results.sort(
         key=lambda item: (
             _title_relevance(str(item.get("title") or ""), query)[0],
@@ -3405,6 +3416,37 @@ _poster_cache: dict[str, tuple[float, str | None]] = {}
 
 def _poster_normalize_title(value: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", str(value or "").lower())).strip()
+
+
+def _poster_title_parts(raw_title: str) -> tuple[str, str]:
+    """Extract a clean movie title/year from a torrent release name."""
+    value = str(raw_title or "").replace(".", " ").replace("_", " ")
+    year_match = re.search(r"\b((?:19|20)\d{2})\b", value)
+    year = year_match.group(1) if year_match else ""
+
+    if year_match:
+        value = value[:year_match.start()]
+    else:
+        value = re.split(
+            r"\b(?:2160p|1440p|1080p|720p|576p|480p|4k|8k|"
+            r"web[- ]?dl|web[- ]?rip|webrip|bluray|brrip|hdrip|"
+            r"dvdrip|cam|hdcam|x264|x265|h264|h265|hevc)\b",
+            value,
+            maxsplit=1,
+            flags=re.I,
+        )[0]
+
+    value = re.sub(r"[\[\(].*?[\]\)]", " ", value)
+    value = re.sub(r"\s+", " ", value).strip(" -._")
+    return value, year
+
+
+def _poster_url_for_release(raw_title: str) -> str:
+    title, year = _poster_title_parts(raw_title)
+    if not title:
+        return ""
+    return f"/api/poster?{urlencode({'title': title, 'year': year})}"
+
 
 async def _poster_lookup(title: str, year: str = "") -> str | None:
     clean_title = str(title or "").strip()
