@@ -3193,7 +3193,7 @@ async def _search_1337x_uncached(
                     None,
                 )
             if metadata:
-                for field in ("mediaTitle", "year", "rating", "genres", "posterUrl", "quality"):
+                for field in ("mediaTitle", "year", "rating", "genres", "posterUrl"):
                     value = metadata.get(field)
                     if value not in (None, "", []):
                         item[field] = value
