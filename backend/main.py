@@ -2680,16 +2680,15 @@ LIMETORRENTS_HOSTS = tuple(
 
 
 def _limetorrents_rows(html_text: str, base_url: str) -> list[dict[str, str]]:
-    """Parse LimeTorrents result rows using the same structure as known working scrapers."""
+    """Parse LimeTorrents rows using the current table structure."""
     soup = BeautifulSoup(html_text or "", "html.parser")
     rows: list[dict[str, str]] = []
     seen: set[str] = set()
 
-    # LimeTorrents uses .table2 on the results table, not necessarily on each
-    # individual <tr>. Keep the selector broad across current mirrors.
-    result_rows = soup.select("#content .table2 tr, .table2 tr")
-    for row in result_rows:
-        title_anchor = row.select_one("a:not([rel])")
+    for row in soup.select(".table2 > tbody > tr[bgcolor], #content .table2 > tbody > tr[bgcolor]"):
+        title_anchor = row.select_one("div.tt-name > a[href^='/']")
+        if title_anchor is None:
+            title_anchor = row.select_one(".tt-name a[href^='/']")
         if title_anchor is None:
             continue
 
@@ -2697,27 +2696,6 @@ def _limetorrents_rows(html_text: str, base_url: str) -> list[dict[str, str]]:
         detail_href = str(title_anchor.get("href") or "").strip()
         if not title or not detail_href:
             continue
-        if detail_href.startswith("#") or detail_href.lower().endswith(".torrent"):
-            continue
-
-        # Category is exposed in the same .tdnormal cell used by existing
-        # LimeTorrents scrapers ("... in Movies"/"... in TV shows").
-        category_text = ""
-        category_cell = row.select_one(".tdnormal")
-        if category_cell is not None:
-            category_text = category_cell.get_text(" ", strip=True).lower()
-
-        category = ""
-        if " in tv shows" in category_text or "tv shows" in category_text:
-            category = "TV"
-        elif " in movies" in category_text or "movies" in category_text:
-            category = "Movies"
-
-        if not category:
-            # Keep unknown category rows; the Home media/title filters will
-            # make the final decision. This avoids losing valid releases when
-            # a mirror changes the category label.
-            category = "Unknown"
 
         seed_cell = row.select_one(".tdseed")
         leech_cell = row.select_one(".tdleech")
@@ -2732,16 +2710,14 @@ def _limetorrents_rows(html_text: str, base_url: str) -> list[dict[str, str]]:
             if match:
                 leechers = match.group(0).replace(",", "")
 
-        # Prefer the dedicated size cell when present; otherwise scan the row.
+        cells = row.find_all("td")
         size = ""
-        size_cell = row.select_one(".tdsize")
-        if size_cell is not None:
-            match = re.search(r"([\d.]+\s*[KMGT]i?B)", size_cell.get_text(" ", strip=True), re.I)
+        if len(cells) >= 3:
+            match = re.search(r"([\d.]+\s*[KMGT]i?B)", cells[2].get_text(" ", strip=True), re.I)
             if match:
                 size = match.group(1)
         if not size:
-            row_text = row.get_text(" ", strip=True)
-            match = re.search(r"([\d.]+\s*[KMGT]i?B)", row_text, re.I)
+            match = re.search(r"([\d.]+\s*[KMGT]i?B)", row.get_text(" ", strip=True), re.I)
             if match:
                 size = match.group(1)
 
@@ -2757,7 +2733,6 @@ def _limetorrents_rows(html_text: str, base_url: str) -> list[dict[str, str]]:
             "size": size,
             "seeders": seeders,
             "leechers": leechers,
-            "category": category,
         })
 
     return rows
@@ -2872,7 +2847,7 @@ async def search_limetorrents(
             ),
             reverse=True,
         )
-        parsed_rows = parsed_rows[:min(max(limit, 1), 30)]
+        parsed_rows = parsed_rows[:min(max(limit, 1), 12)]
 
         async def fetch_magnet(row: dict[str, Any]) -> dict[str, Any] | None:
             detail_url = str(row.get("detail_url") or "").strip()
@@ -2882,7 +2857,7 @@ async def search_limetorrents(
             try:
                 response = await client.get(
                     detail_url,
-                    timeout=SEARCH_SOURCE_TIMEOUT_SECONDS,
+                    timeout=min(1.5, SEARCH_SOURCE_TIMEOUT_SECONDS),
                     follow_redirects=True,
                 )
                 if response.status_code >= 400:
@@ -3409,7 +3384,7 @@ async def _search_1337x_uncached(
                     category="TV" if kind == "tv" else None,
                     provider_query=provider_query,
                 ),
-                timeout=max(2.5, SEARCH_TOTAL_TIMEOUT_SECONDS),
+                timeout=max(4.5, SEARCH_TOTAL_TIMEOUT_SECONDS + 1.0),
             )
         except Exception as exc:
             logger.info("1337x search failed for '%s' using '%s': %s", query, provider_query, exc)
@@ -3426,7 +3401,7 @@ async def _search_1337x_uncached(
                 timeout=max(2.5, SEARCH_TOTAL_TIMEOUT_SECONDS),
             )
         except Exception as exc:
-            logger.info("LimeTorrents search failed for '%s' using '%s': %s", query, provider_query, exc)
+            logger.warning("LimeTorrents search failed for '%s' using '%s': %s", query, provider_query, exc)
             return []
 
     async def run_knaben(provider_query: str):
