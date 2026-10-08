@@ -351,26 +351,18 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     const title = normalizeMatchText(result.title);
     if (!title || title.length < 4) return [];
 
-    const exact: SeedrSearchFile[] = [];
-    const related: SeedrSearchFile[] = [];
-
-    for (const file of seedrFiles) {
+    // Only auto-associate an existing Seedr file when the torrent title matches
+    // the actual Seedr folder/file name exactly. The previous fuzzy fallback
+    // could make one downloaded torrent appear as "Play" on several different
+    // search results for the same movie (e.g. different qualities/releases).
+    return seedrFiles.filter(file => {
       const folderPath = String(file.folderPath || '');
       const folderName = folderPath.split('/').filter(Boolean).pop() || '';
       const fileName = normalizeMatchText(file.name);
       const folder = normalizeMatchText(folderName);
 
-      if (folder === title || fileName === title) {
-        exact.push(file);
-        continue;
-      }
-
-      if (title.length >= 8 && (folder.includes(title) || title.includes(folder) || fileName.includes(title))) {
-        related.push(file);
-      }
-    }
-
-    return exact.length > 0 ? exact : related;
+      return folder === title || fileName === title;
+    });
   };
 
   const preparedForResult = (result: TorrentSearchResult): SeedrSearchFile[] => {
