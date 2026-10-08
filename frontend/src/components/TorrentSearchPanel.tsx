@@ -649,9 +649,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             <Search className="w-5 h-5 text-cyan-400" />
             Search Torrents
           </h2>
-          <p className="hidden sm:block text-xs text-slate-400">
-            Search cached torrent indexes for movies and TV. Search works independently of the Render backend.
-          </p>
         </div>
 
         <form data-torrent-search="true" onSubmit={runSearch} className="mt-2.5 sm:mt-4 flex flex-row gap-1.5 sm:gap-2">
