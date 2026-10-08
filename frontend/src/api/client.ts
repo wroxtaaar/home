@@ -1,6 +1,7 @@
 export interface TorrentSearchResult {
   guid?: string;
   title: string;
+  mediaTitle?: string;
   size: number;
   seeders: number;
   leechers: number;
@@ -13,6 +14,11 @@ export interface TorrentSearchResult {
   infoUrl?: string;
   sourceUrl?: string;
   descriptorUrl?: string;
+  year?: number | string | null;
+  rating?: number | null;
+  genres?: string[];
+  posterUrl?: string;
+  quality?: string;
 }
 
 import {
