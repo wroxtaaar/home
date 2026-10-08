@@ -439,13 +439,13 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
     fullTorrentTitleFadeTimerRef.current = window.setTimeout(() => {
       setFullTorrentTitleFading(true);
-    }, 1650);
+    }, 5550);
 
     fullTorrentTitleHideTimerRef.current = window.setTimeout(() => {
       setFullTorrentTitle(null);
       setFullTorrentTitleKey(null);
       setFullTorrentTitleFading(false);
-    }, 2000);
+    }, 6000);
   };
 
   useEffect(() => {
@@ -865,7 +865,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           </div>
 
           <div
-            className="grid grid-cols-2 gap-2 sm:block sm:rounded-2xl sm:border sm:border-slate-800 sm:overflow-hidden sm:bg-slate-900 sm:divide-y sm:divide-slate-800/80 lg:grid lg:grid-cols-[repeat(var(--desktop-result-columns),minmax(0,1fr))] lg:gap-[22px] lg:w-full lg:max-w-none lg:mx-0 lg:p-0 lg:border-0 lg:bg-transparent lg:divide-y-0"
+            className="grid grid-cols-2 gap-2 sm:block sm:rounded-2xl sm:border sm:border-slate-800 sm:overflow-hidden sm:bg-slate-900 sm:divide-y sm:divide-slate-800/80 lg:grid lg:grid-cols-[repeat(var(--desktop-result-columns),minmax(0,1fr))] lg:gap-[22px] lg:w-full lg:max-w-none lg:mx-0 lg:p-0 lg:border-0 lg:bg-transparent lg:divide-y-0 lg:overflow-visible"
             style={{ '--desktop-result-columns': Math.min(Math.max(sortedResults.length, 1), 6) } as React.CSSProperties}
           >
             {sortedResults.map((result, index) => (
@@ -969,7 +969,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                 role="status"
                                 aria-live="polite"
                                 className={[
-                                  'absolute bottom-full left-0 mb-1.5 z-50 w-max max-w-[min(420px,calc(100vw-24px))] rounded-xl border border-cyan-400/25 bg-slate-950/95 px-3 py-2 text-[11px] leading-4 font-medium text-slate-100 shadow-xl transition-all duration-[350ms] ease-out whitespace-normal break-words',
+                                  'absolute bottom-full left-0 mb-1.5 z-50 w-max max-w-[min(460px,calc(100vw-24px))] rounded-xl border border-cyan-400/25 bg-slate-950/95 px-3 py-2 text-[11px] leading-4 font-medium text-slate-100 shadow-xl transition-all duration-[450ms] ease-out whitespace-normal break-all',
                                   fullTorrentTitleFading
                                     ? 'translate-y-1 opacity-0'
                                     : 'translate-y-0 opacity-100'
