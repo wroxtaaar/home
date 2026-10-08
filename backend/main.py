@@ -3392,16 +3392,27 @@ async def _search_1337x_uncached(
 
     async def run_lime(provider_query: str):
         try:
-            return await asyncio.wait_for(
+            lime_results = await asyncio.wait_for(
                 search_limetorrents(
                     query,
-                    limit=30,
-                    pages=2,
+                    limit=12,
+                    pages=1,
                 ),
-                timeout=max(2.5, SEARCH_TOTAL_TIMEOUT_SECONDS),
+                timeout=max(5.0, SEARCH_TOTAL_TIMEOUT_SECONDS + 1.5),
             )
+            logger.warning(
+                "LimeTorrents primary source '%s': %d results",
+                query,
+                len(lime_results),
+            )
+            return lime_results
         except Exception as exc:
-            logger.warning("LimeTorrents search failed for '%s' using '%s': %s", query, provider_query, exc)
+            logger.warning(
+                "LimeTorrents search failed for '%s' using '%s': %s",
+                query,
+                provider_query,
+                exc,
+            )
             return []
 
     async def run_knaben(provider_query: str):
