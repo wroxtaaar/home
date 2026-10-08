@@ -11,7 +11,9 @@ import {
   Users,
   Database,
   AlertCircle,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Star,
+  Film
 } from 'lucide-react';
 import { api, TorrentSearchResult } from '../api/client.ts';
 import { formatBytes } from '../utils/formatters.ts';
@@ -313,7 +315,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   };
 
   const sortedResults = useMemo(() => {
-    const maxSeedrFriendlySize = 2 * 1024 * 1024 * 1024;
+    // Home intentionally allows up to 5 GB. new-test remains the 2 GB variant.
+    const maxSeedrFriendlySize = 5 * 1024 * 1024 * 1024;
     const sorted = results.filter(result => {
       const size = Number(result.size) || 0;
       if (size > maxSeedrFriendlySize) return false;
@@ -341,6 +344,19 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     });
     return sorted;
   }, [results, resolutionFilter, sizeSort, timeSort]);
+
+  const posterUrlFor = (result: TorrentSearchResult) => {
+    const raw = String(result.posterUrl || '').trim();
+    if (!raw) return '';
+    return raw.startsWith('/') ? API_BASE + raw : raw;
+  };
+
+  const extractedQuality = (result: TorrentSearchResult) => {
+    if (result.quality) return result.quality;
+    const title = String(result.title || '');
+    const match = title.match(/\b(2160p|1440p|1080p|720p|480p|4k|8k)\b(?:\s+(WEB-DL|WEBRip|BluRay|HDR|HEVC|x264|x265))?/i);
+    return match ? match[0] : '';
+  };
 
   return (
     <div className="space-y-2.5 sm:space-y-4">
@@ -565,34 +581,86 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               >
                 <div className="flex flex-row items-center gap-2 sm:gap-3">
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-start gap-2">
-                      <div className="p-1.5 sm:p-2 rounded-lg sm:rounded-xl bg-cyan-500/10 border border-cyan-500/20 shrink-0">
-                        <Database className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-cyan-400" />
+                    <div className="flex items-start gap-3">
+                      <div className="relative w-14 sm:w-20 shrink-0 aspect-[2/3] rounded-lg overflow-hidden border border-slate-800 bg-slate-950 shadow-md">
+                        {posterUrlFor(result) ? (
+                          <>
+                            <img
+                              src={posterUrlFor(result)}
+                              alt={result.mediaTitle || result.title}
+                              loading="lazy"
+                              className="w-full h-full object-cover"
+                              onError={(event) => {
+                                event.currentTarget.style.display = 'none';
+                                event.currentTarget.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.remove('hidden');
+                              }}
+                            />
+                            <div data-poster-placeholder="true" className="hidden absolute inset-0 items-center justify-center bg-slate-950 text-slate-700">
+                              <Film className="w-7 h-7" />
+                            </div>
+                          </>
+                        ) : (
+                          <div className="absolute inset-0 flex items-center justify-center bg-slate-950 text-slate-700">
+                            <Film className="w-7 h-7" />
+                          </div>
+                        )}
+
+                        {result.rating != null && Number(result.rating) > 0 && (
+                          <div className="absolute left-1.5 bottom-1.5 inline-flex items-center gap-1 rounded-md bg-black/80 px-1.5 py-1 text-[10px] font-bold text-amber-300">
+                            <Star className="w-3 h-3 fill-current" />
+                            {Number(result.rating).toFixed(1)}
+                          </div>
+                        )}
                       </div>
-                      <div className="min-w-0">
-                        <h3 className="text-[13px] sm:text-sm font-semibold text-slate-100 line-clamp-2">
-                          {result.title}
-                        </h3>
-                        <div className="flex flex-wrap items-center gap-x-2 sm:gap-x-3 gap-y-0.5 mt-1 text-[10px] sm:text-[11px] text-slate-500">
-                          <span>{result.indexer || 'Unknown indexer'}</span>
-                          <span>{formatPublished(result.publishDate)}</span>
-                          {result.protocol && <span className="uppercase">{result.protocol}</span>}
-                          {result.infoHash && (
-                            <span className="font-mono truncate max-w-[220px]" title={result.infoHash}>
-                              {result.infoHash}
-                            </span>
-                          )}
+
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start gap-2">
+                          <div className="hidden sm:flex p-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20 shrink-0">
+                            <Database className="w-3.5 h-3.5 text-cyan-400" />
+                          </div>
+                          <div className="min-w-0">
+                            <h3 className="text-[13px] sm:text-sm font-semibold text-slate-100 line-clamp-2">
+                              {result.mediaTitle || result.title}
+                            </h3>
+
+                            <div className="flex flex-wrap items-center gap-x-2 sm:gap-x-3 gap-y-1 mt-1.5 text-[10px] sm:text-[11px]">
+                              {result.year ? <span className="font-semibold text-slate-300">{result.year}</span> : null}
+                              {result.rating != null && Number(result.rating) > 0 ? (
+                                <span className="inline-flex items-center gap-1 text-amber-300">
+                                  <Star className="w-3 h-3 fill-current" />
+                                  {Number(result.rating).toFixed(1)}
+                                </span>
+                              ) : null}
+                              {extractedQuality(result) ? (
+                                <span className="rounded-md border border-cyan-400/20 bg-cyan-400/5 px-1.5 py-0.5 text-cyan-300">
+                                  {extractedQuality(result)}
+                                </span>
+                              ) : null}
+                              {result.indexer ? <span className="text-slate-500">{result.indexer}</span> : null}
+                            </div>
+
+                            {Array.isArray(result.genres) && result.genres.length > 0 && (
+                              <div className="flex flex-wrap gap-1.5 mt-2">
+                                {result.genres.slice(0, 3).map(genre => (
+                                  <span key={genre} className="rounded-full bg-slate-800/80 px-2 py-0.5 text-[9px] font-semibold text-slate-400">
+                                    {genre}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+
+                            <div className="flex flex-wrap items-center gap-2 sm:gap-3 mt-2.5 text-[11px] sm:text-xs text-slate-400">
+                              <span className="font-mono text-slate-300">{formatBytes(result.size)}</span>
+                              <span className="flex items-center gap-1 text-emerald-400">
+                                <Users className="w-3.5 h-3.5" />
+                                {result.seeders} seeders
+                              </span>
+                              <span className="text-slate-500">{result.leechers} leechers</span>
+                              {result.publishDate ? <span className="hidden sm:inline text-slate-600">{formatPublished(result.publishDate)}</span> : null}
+                            </div>
+                          </div>
                         </div>
                       </div>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-2 sm:gap-3 mt-2 sm:mt-3 text-[11px] sm:text-xs text-slate-400">
-                      <span className="font-mono">{formatBytes(result.size)}</span>
-                      <span className="flex items-center gap-1 text-emerald-400">
-                        <Users className="w-3.5 h-3.5" />
-                        {result.seeders} seeders
-                      </span>
-                      <span className="text-slate-500">{result.leechers} leechers</span>
                     </div>
                   </div>
 
