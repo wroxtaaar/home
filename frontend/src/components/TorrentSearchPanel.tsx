@@ -221,16 +221,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       image.src = url;
     });
 
-  const queuePosterRetry = (result: TorrentSearchResult) => {
-    const key = posterKeyFor(result);
-    if (!key || posterRetryQueuedRef.current.has(key)) return;
-
-    // Do not retry a poster that has already been recovered.
-    if (posterOverrides[key]) return;
-
-    posterRetryQueuedRef.current.add(key);
-    posterRetryQueueRef.current.push({ key, result });
-
+  const startPosterRetryWorker = () => {
     if (posterRetryRunningRef.current) return;
 
     posterRetryRunningRef.current = true;
@@ -273,11 +264,12 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               posterRetryAttemptsRef.current.set(job.key, attempts + 1);
               window.setTimeout(() => {
                 if (generation !== posterRetryGenerationRef.current) return;
+                if (posterRetryQueuedRef.current.has(job.key)) return;
+
                 posterRetryQueuedRef.current.add(job.key);
                 posterRetryQueueRef.current.push(job);
-                if (!posterRetryRunningRef.current) {
-                  queuePosterRetry(job.result);
-                }
+
+                startPosterRetryWorker();
               }, 45000);
             }
           }
@@ -290,10 +282,22 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           generation === posterRetryGenerationRef.current &&
           posterRetryQueueRef.current.length > 0
         ) {
-          queuePosterRetry(posterRetryQueueRef.current[0].result);
+          startPosterRetryWorker();
         }
       }
     })();
+  };
+
+  const queuePosterRetry = (result: TorrentSearchResult) => {
+    const key = posterKeyFor(result);
+    if (!key || posterRetryQueuedRef.current.has(key)) return;
+
+    // Do not retry a poster that has already been recovered.
+    if (posterOverrides[key]) return;
+
+    posterRetryQueuedRef.current.add(key);
+    posterRetryQueueRef.current.push({ key, result });
+    startPosterRetryWorker();
   };
 
   const auditTopPostersInBackground = (items: TorrentSearchResult[]) => {
