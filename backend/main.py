@@ -82,6 +82,13 @@ SEARCH_COMPOUND_ALIASES = {
     "captainamerica": "captain america",
     "guardiansofthegalaxy": "guardians of the galaxy",
 }
+# Match the movie app's mirror strategy. YTS availability varies by ISP/domain,
+# so keep multiple API mirrors and allow an environment override for ordering.
+YTS_API_HOSTS = tuple(
+    host.strip()
+    for host in os.getenv("YTS_API_HOSTS", "yts.mx,yts.am,yts.lt,yts.rs").split(",")
+    if host.strip()
+)
 FAST_SEARCH_TRACKERS = (
     "http://tracker.dler.org:6969/announce",
     "http://tracker2.dler.org:80/announce",
@@ -2463,7 +2470,7 @@ async def search_yts_movies(query: str, limit: int = 50) -> list[dict[str, Any]]
 
     payload = None
     async with httpx.AsyncClient(timeout=12, follow_redirects=True) as client:
-        for host in ("yts.mx", "yts.am", "yts.rs"):
+        for host in YTS_API_HOSTS:
             try:
                 response = await client.get(
                     f"https://{host}/api/v2/list_movies.json",
