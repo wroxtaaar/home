@@ -3636,26 +3636,26 @@ async def _poster_lookup_uncached(clean_title: str, clean_year: str, cache_key: 
                     candidates.append((score, image))
                 if candidates:
                     candidates.sort(key=lambda pair: pair[0], reverse=True)
-                if candidates:
-                    candidates.sort(key=lambda pair: pair[0], reverse=True)
                     poster = candidates[0][1]
     except Exception:
         pass
 
     if not poster:
         try:
+            title_aliases = _poster_title_aliases(clean_title, clean_year)
+            wanted_titles = [_poster_normalize_title(value) for value in title_aliases]
+            wanted_year = clean_year
+            candidates: list[tuple[int, str]] = []
             async with httpx.AsyncClient(timeout=4, follow_redirects=True) as client:
-                response = await client.get(
-                    "https://itunes.apple.com/search",
-                    params={"term": (clean_title + " " + clean_year).strip(), "limit": "25"},
-                    headers={"Accept": "application/json"},
-                )
-                if response.status_code == 200:
+                for alias in title_aliases:
+                    response = await client.get(
+                        "https://itunes.apple.com/search",
+                        params={"term": (alias + " " + clean_year).strip(), "limit": "25"},
+                        headers={"Accept": "application/json"},
+                    )
+                    if response.status_code != 200:
+                        continue
                     data = response.json()
-                    title_aliases = _poster_title_aliases(clean_title, clean_year)
-                    wanted_titles = [_poster_normalize_title(value) for value in title_aliases]
-                    wanted_year = clean_year
-                    candidates: list[tuple[int, str]] = []
                     for row in data.get("results") or []:
                         if str(row.get("kind") or "") != "feature-movie" or not row.get("artworkUrl100"):
                             continue
@@ -3669,9 +3669,9 @@ async def _poster_lookup_uncached(clean_title: str, clean_year: str, cache_key: 
                         if wanted_year and candidate_year == wanted_year:
                             score += 100
                         candidates.append((score, str(row["artworkUrl100"]).replace("100x100bb", "600x600bb")))
-                    if candidates:
-                        candidates.sort(key=lambda pair: pair[0], reverse=True)
-                        poster = candidates[0][1]
+                if candidates:
+                    candidates.sort(key=lambda pair: pair[0], reverse=True)
+                    poster = candidates[0][1]
         except Exception:
             pass
 
