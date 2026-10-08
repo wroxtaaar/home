@@ -84,9 +84,14 @@ SEARCH_COMPOUND_ALIASES = {
 }
 # Match the movie app's mirror strategy. YTS availability varies by ISP/domain,
 # so keep multiple API mirrors and allow an environment override for ordering.
+# YTS domains are inconsistent across networks. The accelerator API is a
+# keyless YTS-compatible mirror, followed by the public YTS domains.
 YTS_API_HOSTS = tuple(
     host.strip()
-    for host in os.getenv("YTS_API_HOSTS", "yts.mx,yts.am,yts.lt,yts.rs").split(",")
+    for host in os.getenv(
+        "YTS_API_HOSTS",
+        "movies-api.accel.li,yts.bz,yts.mx,yts.am,yts.lt,yts.rs",
+    ).split(",")
     if host.strip()
 )
 FAST_SEARCH_TRACKERS = (
