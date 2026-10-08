@@ -577,12 +577,12 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             {sortedResults.map((result, index) => (
               <div
                 key={result.guid || result.infoHash || (result.title + '-' + index)}
-                className="p-2.5 sm:p-4 hover:bg-slate-900/80 transition"
+                className="p-2 sm:p-4 hover:bg-slate-900/80 transition"
               >
                 <div className="flex flex-row items-center gap-2 sm:gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-start gap-3">
-                      <div className="relative w-14 sm:w-20 shrink-0 aspect-[2/3] rounded-lg overflow-hidden border border-slate-800 bg-slate-950 shadow-md">
+                      <div className="relative w-20 sm:w-24 shrink-0 aspect-[2/3] rounded-lg overflow-hidden border border-slate-800 bg-slate-950 shadow-md">
                         {posterUrlFor(result) ? (
                           <>
                             <img
@@ -657,7 +657,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               </div>
                             )}
 
-                            <div className="flex flex-wrap items-center gap-2 sm:gap-3 mt-2.5 text-[11px] sm:text-xs text-slate-400">
+                            <div className="flex flex-wrap items-center gap-x-2 sm:gap-3 gap-y-0.5 mt-2 text-[10px] sm:text-xs text-slate-400">
                               <span className="font-mono text-slate-300">{formatBytes(result.size)}</span>
                               <span className="flex items-center gap-1 text-emerald-400">
                                 <Users className="w-3.5 h-3.5" />
