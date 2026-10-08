@@ -2668,6 +2668,257 @@ async def search_tv_eztv(query: str, limit: int = 30) -> list[dict[str, Any]]:
     return results[:limit]
 
 
+
+LIMETORRENTS_HOSTS = tuple(
+    host.strip()
+    for host in os.getenv(
+        "LIMETORRENTS_HOSTS",
+        "limetorrents.fun,limetorrents.info,limetorrents.pro,limetorrents.at",
+    ).split(",")
+    if host.strip()
+)
+
+
+def _limetorrents_rows(html_text: str, base_url: str) -> list[dict[str, str]]:
+    """Parse LimeTorrents seed-sorted result rows."""
+    soup = BeautifulSoup(html_text or "", "html.parser")
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    for row in soup.select("tr.table2, table.table2 tr"):
+        title_anchor = None
+        for anchor in row.select(".tt-name a, .tt-name > a"):
+            href = str(anchor.get("href") or "").strip()
+            text_value = anchor.get_text(" ", strip=True)
+            if not href or not text_value:
+                continue
+            if "download-torrent" in href.lower() or href.lower().endswith(".torrent"):
+                continue
+            if len(text_value) >= 3:
+                title_anchor = anchor
+                break
+
+        if title_anchor is None:
+            anchors = [
+                anchor for anchor in row.find_all("a", href=True)
+                if anchor.get_text(" ", strip=True)
+                and not str(anchor.get("href") or "").lower().endswith(".torrent")
+            ]
+            if not anchors:
+                continue
+            title_anchor = anchors[-1]
+
+        title = title_anchor.get_text(" ", strip=True)
+        detail_href = str(title_anchor.get("href") or "").strip()
+        if not title or not detail_href:
+            continue
+
+        torrent_anchor = row.select_one("a.csprite_dl14[href]")
+        torrent_href = str(torrent_anchor.get("href") or "").strip() if torrent_anchor else ""
+
+        cells = row.find_all("td")
+        cell_text = [cell.get_text(" ", strip=True) for cell in cells]
+        row_text = " ".join(cell_text)
+
+        def cell_number(selector: str) -> str:
+            cell = row.select_one(selector)
+            if cell is None:
+                return "0"
+            match = re.search(r"\d[\d,]*", cell.get_text(" ", strip=True))
+            return match.group(0).replace(",", "") if match else "0"
+
+        seeders = cell_number(".tdseed")
+        leechers = cell_number(".tdleech")
+
+        size = ""
+        for text_value in cell_text:
+            match = re.search(r"([\d.]+\s*[KMGT]i?B)", text_value, re.I)
+            if match:
+                size = match.group(1)
+                break
+        if not size:
+            match = re.search(r"([\d.]+\s*[KMGT]i?B)", row_text, re.I)
+            if match:
+                size = match.group(1)
+
+        source_url = urljoin(base_url + "/", detail_href)
+        descriptor_url = urljoin(base_url + "/", torrent_href) if torrent_href else ""
+        key = source_url.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+
+        rows.append({
+            "title": title,
+            "detail_url": source_url,
+            "descriptor_url": descriptor_url,
+            "size": size,
+            "seeders": seeders,
+            "leechers": leechers,
+        })
+
+    return rows
+
+
+async def search_limetorrents(
+    query: str,
+    limit: int = 50,
+    pages: int = 2,
+) -> list[dict[str, Any]]:
+    """Search LimeTorrents directly using its seed-sorted media search."""
+    _title_query, season, episode = _media_search_parts(query)
+    provider_query = _media_provider_query(query)
+
+    # Keep language terms in the provider query so "thor hindi" searches the
+    # Hindi result pool directly instead of searching only for "thor".
+    _, languages = _search_query_constraints(query)
+    language_terms = [
+        language
+        for language in languages
+        if language in {
+            "hindi", "tamil", "telugu", "malayalam", "kannada",
+            "bengali", "marathi", "punjabi", "gujarati", "urdu",
+        }
+    ]
+    provider_query = re.sub(
+        r"\s+",
+        " ",
+        f"{provider_query} {' '.join(language_terms)}".strip(),
+    )
+    if not provider_query:
+        return []
+
+    category = "tv" if season is not None or episode is not None else "movies"
+    encoded = quote(provider_query, safe="")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+
+    async with httpx.AsyncClient(
+        timeout=SEARCH_SOURCE_TIMEOUT_SECONDS,
+        follow_redirects=True,
+        headers=headers,
+    ) as client:
+        pages_html: list[tuple[str, str]] = []
+
+        for host in LIMETORRENTS_HOSTS:
+            base = f"https://{host}"
+            urls = [f"{base}/search/{category}/{encoded}/seeds/1/"]
+            if pages > 1:
+                urls.append(f"{base}/search/{category}/{encoded}/seeds/2/")
+
+            async def fetch_page(url: str) -> str:
+                try:
+                    response = await client.get(url)
+                    if response.status_code < 400 and response.text:
+                        return response.text
+                except httpx.HTTPError:
+                    pass
+                return ""
+
+            fetched_pages = await asyncio.gather(
+                *(fetch_page(url) for url in urls),
+                return_exceptions=False,
+            )
+            usable = [(base, text_value) for text_value in fetched_pages if text_value]
+            if usable and any(_limetorrents_rows(text_value, base) for base, text_value in usable):
+                pages_html = usable
+                break
+
+        if not pages_html:
+            logger.info("LimeTorrents unavailable for '%s'", query)
+            return []
+
+        raw_rows: list[dict[str, str]] = []
+        for base, html_text in pages_html:
+            raw_rows.extend(_limetorrents_rows(html_text, base))
+
+        units = {
+            "KB": 1024, "KIB": 1024,
+            "MB": 1024**2, "MIB": 1024**2,
+            "GB": 1024**3, "GIB": 1024**3,
+            "TB": 1024**4, "TIB": 1024**4,
+        }
+
+        parsed_rows: list[dict[str, Any]] = []
+        for row in raw_rows:
+            size_match = re.match(
+                r"([\d.]+)\s*([KMGT]i?B)",
+                row.get("size", ""),
+                re.I,
+            )
+            if not size_match:
+                continue
+            size = int(
+                float(size_match.group(1))
+                * units[size_match.group(2).upper()]
+            )
+            parsed_rows.append({**row, "size_bytes": size})
+
+        parsed_rows.sort(
+            key=lambda row: (
+                int(row.get("seeders") or 0),
+                int(row.get("leechers") or 0),
+            ),
+            reverse=True,
+        )
+        parsed_rows = parsed_rows[:min(max(limit, 1), 30)]
+
+        async def fetch_magnet(row: dict[str, Any]) -> dict[str, Any] | None:
+            detail_url = str(row.get("detail_url") or "").strip()
+            if not detail_url:
+                return None
+
+            try:
+                response = await client.get(
+                    detail_url,
+                    timeout=SEARCH_SOURCE_TIMEOUT_SECONDS,
+                    follow_redirects=True,
+                )
+                if response.status_code >= 400:
+                    return None
+            except httpx.HTTPError:
+                return None
+
+            magnet_match = re.search(
+                r"magnet:\?xt=urn:btih:[^\"'<\s]+",
+                response.text,
+                re.IGNORECASE,
+            )
+            if not magnet_match:
+                return None
+
+            magnet = unescape(magnet_match.group(0))
+            h = info_hash(magnet)
+            if not h:
+                return None
+
+            return {
+                "guid": f"limetorrents-{h}",
+                "title": str(row.get("title") or ""),
+                "size": int(row.get("size_bytes") or 0),
+                "seeders": int(row.get("seeders") or 0),
+                "leechers": int(row.get("leechers") or 0),
+                "indexer": "LimeTorrents",
+                "protocol": "torrent",
+                "publishDate": "",
+                "magnetUrl": magnet,
+                "infoHash": h,
+                "downloadUrl": magnet,
+                "infoUrl": detail_url,
+                "sourceUrl": detail_url,
+                "descriptorUrl": str(row.get("descriptor_url") or ""),
+                "category": "TV" if category == "tv" else "Movies",
+            }
+
+        fetched = await asyncio.gather(
+            *(fetch_magnet(row) for row in parsed_rows),
+            return_exceptions=True,
+        )
+
+    return [item for item in fetched if isinstance(item, dict)]
+
 async def search_knaben(
     query: str,
     limit: int = 100,
@@ -3134,6 +3385,20 @@ async def _search_1337x_uncached(
             logger.info("1337x search failed for '%s' using '%s': %s", query, provider_query, exc)
             return []
 
+    async def run_lime(provider_query: str):
+        try:
+            return await asyncio.wait_for(
+                search_limetorrents(
+                    query,
+                    limit=30,
+                    pages=2,
+                ),
+                timeout=max(2.5, SEARCH_TOTAL_TIMEOUT_SECONDS),
+            )
+        except Exception as exc:
+            logger.info("LimeTorrents search failed for '%s' using '%s': %s", query, provider_query, exc)
+            return []
+
     async def run_knaben(provider_query: str):
         try:
             return await search_knaben(
@@ -3156,8 +3421,9 @@ async def _search_1337x_uncached(
         else None
     )
 
-    primary_1337x, primary_knaben = await asyncio.gather(
+    primary_1337x, primary_lime, primary_knaben = await asyncio.gather(
         run_1337x(primary_provider_query),
+        run_lime(primary_provider_query),
         run_knaben(primary_provider_query),
         return_exceptions=False,
     )
@@ -3179,6 +3445,7 @@ async def _search_1337x_uncached(
                 results.append(item)
 
     add_filtered(primary_1337x)
+    add_filtered(primary_lime)
     add_filtered(primary_knaben)
     add_filtered(yts_primary)
 
