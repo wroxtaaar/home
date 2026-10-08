@@ -585,9 +585,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     return sorted;
   }, [results, resolutionFilter, sizeSort, timeSort]);
 
-  const posterUrlFor = (result: TorrentSearchResult) =>
-    posterOverrides[posterKeyFor(result)] || rawPosterUrlFor(result);
-
   const extractedQuality = (result: TorrentSearchResult) => {
     if (result.quality) return result.quality;
     const title = String(result.title || '');
