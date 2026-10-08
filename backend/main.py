@@ -3597,6 +3597,16 @@ async def _cinemeta_poster_lookup(title: str, year: str = "") -> str | None:
                             or row.get("year")
                             or ""
                         ).strip()
+
+                        # Once the torrent/search result gives us a year, do not
+                        # allow a different-year title just because its name is a
+                        # fuzzy/contained match (e.g. "Justice League" 2017 must
+                        # never satisfy "Justice League: War" 2014).
+                        if clean_year and candidate_year:
+                            candidate_year_value = candidate_year[:4]
+                            if candidate_year_value != clean_year:
+                                continue
+
                         score = 100
                         if clean_year and candidate_year:
                             if candidate_year == clean_year or candidate_year.startswith(clean_year):
