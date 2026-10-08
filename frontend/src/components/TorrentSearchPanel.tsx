@@ -814,7 +814,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             {sortedResults.map((result, index) => (
               <div
                 key={result.guid || result.infoHash || (result.title + '-' + index)}
-                className="min-w-0 rounded-xl border border-slate-800 bg-slate-900 p-2 hover:bg-slate-800/80 transition sm:rounded-none sm:border-0 sm:bg-transparent sm:p-2 sm:px-4 sm:py-4 lg:flex lg:flex-col lg:rounded-[14px] lg:border lg:border-slate-800 lg:bg-slate-900 lg:p-0 lg:overflow-hidden lg:hover:-translate-y-1 lg:hover:border-slate-700"
+                className="min-w-0 rounded-xl border border-slate-800 bg-slate-900 p-2 hover:bg-slate-800/80 transition sm:rounded-none sm:border-0 sm:bg-transparent sm:p-2 sm:px-4 sm:py-4 lg:flex lg:flex-col lg:self-start lg:h-fit lg:rounded-[14px] lg:border lg:border-slate-800 lg:bg-slate-900 lg:p-0 lg:overflow-hidden lg:hover:-translate-y-1 lg:hover:border-slate-700"
               >
                 <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 lg:flex-col lg:items-stretch lg:gap-0">
                   <div className="min-w-0 flex-1 lg:w-full">
@@ -859,66 +859,56 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           </div>
                         )}
 
+                        {result.seeders > 0 && (
+                          <div className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-md bg-black/80 px-2 py-1 text-[10px] font-bold text-emerald-400">
+                            <Users className="w-3 h-3" />
+                            {result.seeders}
+                          </div>
+                        )}
+
+                        {result.indexer && (
+                          <div
+                            className="absolute right-2 top-2 max-w-[70%] truncate rounded-md bg-black/75 px-2 py-1 text-[10px] font-medium text-slate-300"
+                            title={result.indexer}
+                          >
+                            {result.indexer}
+                          </div>
+                        )}
+
                         {result.rating != null && Number(result.rating) > 0 && (
-                          <div className="absolute left-1.5 bottom-1.5 inline-flex items-center gap-1 rounded-md bg-black/80 px-1.5 py-1 text-[10px] font-bold text-amber-300">
+                          <div className="absolute left-2 bottom-2 inline-flex items-center gap-1 rounded-md bg-black/80 px-1.5 py-1 text-[10px] font-bold text-amber-300">
                             <Star className="w-3 h-3 fill-current" />
                             {Number(result.rating).toFixed(1)}
                           </div>
                         )}
                       </div>
 
-                      <div className="min-w-0 flex-1 lg:w-full lg:p-3">
+                      <div className="min-w-0 flex-1 lg:w-full lg:flex-none lg:p-3">
                         <div className="flex items-start gap-2">
-                          <div className="hidden sm:flex p-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20 shrink-0">
+                          <div className="hidden sm:flex lg:hidden p-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20 shrink-0">
                             <Database className="w-3.5 h-3.5 text-cyan-400" />
                           </div>
-                          <div className="min-w-0">
-                            <h3 className="text-[11px] leading-4 sm:text-sm font-semibold text-slate-100 line-clamp-2">
+                          <div className="min-w-0 flex-1">
+                            <h3 className="text-[11px] leading-4 sm:text-sm font-semibold text-slate-100 line-clamp-2" title={result.title}>
                               {result.mediaTitle || result.title}
                             </h3>
-                            {result.mediaTitle && result.title && result.mediaTitle.trim().toLowerCase() !== result.title.trim().toLowerCase() ? (
-                              <div
-                                className="hidden sm:block mt-0.5 text-[10px] text-slate-500 line-clamp-1"
-                                title={result.title}
-                              >
-                                {result.title}
-                              </div>
-                            ) : null}
 
-                            <div className="flex flex-wrap items-center gap-x-1.5 sm:gap-x-3 gap-y-1 mt-1.5 text-[9px] sm:text-[11px]">
-                              {result.year ? <span className="font-semibold text-slate-300">{result.year}</span> : null}
-                              {result.rating != null && Number(result.rating) > 0 ? (
-                                <span className="inline-flex items-center gap-1 text-amber-300">
-                                  <Star className="w-3 h-3 fill-current" />
-                                  {Number(result.rating).toFixed(1)}
-                                </span>
-                              ) : null}
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1.5 text-[9px] sm:text-[11px]">
                               {extractedQuality(result) ? (
                                 <span className="rounded-md border border-cyan-400/20 bg-cyan-400/5 px-1.5 py-0.5 text-cyan-300">
                                   {extractedQuality(result)}
                                 </span>
                               ) : null}
-                              {result.indexer ? <span className="text-slate-500">{result.indexer}</span> : null}
+                              {result.year ? <span className="font-semibold text-slate-300">{result.year}</span> : null}
                             </div>
 
-                            {Array.isArray(result.genres) && result.genres.length > 0 && (
-                              <div className="hidden sm:flex flex-wrap gap-1.5 mt-2">
-                                {result.genres.slice(0, 3).map(genre => (
-                                  <span key={genre} className="rounded-full bg-slate-800/80 px-2 py-0.5 text-[9px] font-semibold text-slate-400">
-                                    {genre}
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-
-                            <div className="flex flex-wrap items-center gap-x-1.5 sm:gap-3 gap-y-0.5 mt-2 text-[9px] sm:text-xs text-slate-400">
+                            <div className="flex flex-wrap items-center gap-x-2 sm:gap-x-3 gap-y-1 mt-1.5 text-[9px] sm:text-xs text-slate-400">
                               <span className="font-mono text-slate-300">{formatBytes(result.size)}</span>
                               <span className="flex items-center gap-1 text-emerald-400">
                                 <Users className="w-3.5 h-3.5" />
-                                {result.seeders} seeders
+                                {result.seeders}
                               </span>
                               <span className="text-slate-500">{result.leechers} leechers</span>
-                              {result.publishDate ? <span className="hidden sm:inline text-slate-600">{formatPublished(result.publishDate)}</span> : null}
                             </div>
                           </div>
                         </div>
@@ -926,7 +916,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-end gap-2 shrink-0 sm:min-w-[126px] lg:w-full lg:min-w-0 lg:p-3 lg:pt-0">
+                  <div className="flex items-center justify-end gap-2 shrink-0 sm:min-w-[126px] lg:w-full lg:min-w-0 lg:p-3 lg:pt-0 lg:mt-0">
                     {(() => {
                       const source = result.magnetUrl || result.downloadUrl || result.sourceUrl;
                       const torrentKey = result.infoHash || source || result.title;
