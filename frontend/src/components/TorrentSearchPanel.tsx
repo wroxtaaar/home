@@ -622,6 +622,14 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             <h3 className="text-[13px] sm:text-sm font-semibold text-slate-100 line-clamp-2">
                               {result.mediaTitle || result.title}
                             </h3>
+                            {result.mediaTitle && result.title && result.mediaTitle.trim().toLowerCase() !== result.title.trim().toLowerCase() ? (
+                              <div
+                                className="mt-0.5 text-[10px] text-slate-500 line-clamp-1"
+                                title={result.title}
+                              >
+                                {result.title}
+                              </div>
+                            ) : null}
 
                             <div className="flex flex-wrap items-center gap-x-2 sm:gap-x-3 gap-y-1 mt-1.5 text-[10px] sm:text-[11px]">
                               {result.year ? <span className="font-semibold text-slate-300">{result.year}</span> : null}
