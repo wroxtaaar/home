@@ -777,40 +777,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         </div>
       )}
 
-      {fullTorrentTitle && (
-        <div
-          className="fixed inset-0 z-[220] flex items-center justify-center bg-slate-950/60 backdrop-blur-sm p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Full torrent name"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setFullTorrentTitle(null);
-          }}
-        >
-          <div className="w-full max-w-2xl rounded-2xl border border-cyan-400/20 bg-slate-900 shadow-2xl">
-            <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
-              <div className="text-sm font-bold text-slate-100">Full torrent name</div>
-              <button
-                type="button"
-                onClick={() => setFullTorrentTitle(null)}
-                className="shrink-0 rounded-lg p-1.5 text-slate-500 hover:bg-slate-800 hover:text-slate-200 transition"
-                aria-label="Close full torrent name"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="max-h-[45vh] overflow-y-auto px-4 py-4">
-              <div className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-3 text-sm leading-6 text-slate-200 break-words select-text">
-                {fullTorrentTitle}
-              </div>
-              <div className="mt-2 text-[10px] text-slate-500">
-                Click outside this window or press Escape to close.
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
       {prepareWaitOpen && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-950/45 backdrop-blur-sm p-4">
           <div className="w-full max-w-sm rounded-2xl border border-cyan-400/20 bg-slate-900/95 shadow-2xl p-5">
@@ -887,7 +853,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             {sortedResults.map((result, index) => (
               <div
                 key={result.guid || result.infoHash || (result.title + '-' + index)}
-                className="min-w-0 rounded-xl border border-slate-800 bg-slate-900 p-2 hover:bg-slate-800/80 transition sm:rounded-none sm:border-0 sm:bg-transparent sm:p-2 sm:px-4 sm:py-4 lg:flex lg:flex-col lg:self-start lg:h-fit lg:rounded-[14px] lg:border lg:border-slate-800 lg:bg-slate-900 lg:p-0 lg:overflow-hidden lg:hover:-translate-y-1 lg:hover:border-slate-700"
+                className={[
+                  'relative min-w-0 rounded-xl border border-slate-800 bg-slate-900 p-2 hover:bg-slate-800/80 transition sm:rounded-none sm:border-0 sm:bg-transparent sm:p-2 sm:px-4 sm:py-4 lg:flex lg:flex-col lg:self-start lg:h-fit lg:rounded-[14px] lg:border lg:border-slate-800 lg:bg-slate-900 lg:p-0 lg:hover:-translate-y-1 lg:hover:border-slate-700',
+                  fullTorrentTitleKey === posterKeyFor(result) ? 'z-50' : 'z-0'
+                ].join(' ')}
               >
                 <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 lg:flex-col lg:items-stretch lg:gap-0">
                   <div className="min-w-0 flex-1 lg:w-full">
@@ -976,14 +945,14 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                 role="status"
                                 aria-live="polite"
                                 className={[
-                                  'absolute bottom-full left-1/2 mb-1.5 w-max max-w-[min(280px,80vw)] -translate-x-1/2 rounded-xl border border-cyan-400/25 bg-slate-950/95 px-3 py-2 text-[11px] leading-4 font-medium text-slate-100 shadow-xl transition-all duration-350 ease-out',
+                                  'absolute bottom-full left-0 mb-1.5 z-50 w-max max-w-[min(300px,75vw)] rounded-xl border border-cyan-400/25 bg-slate-950/95 px-3 py-2 text-[11px] leading-4 font-medium text-slate-100 shadow-xl transition-all duration-[350ms] ease-out',
                                   fullTorrentTitleFading
                                     ? 'translate-y-1 opacity-0'
                                     : 'translate-y-0 opacity-100'
                                 ].join(' ')}
                               >
                                 {fullTorrentTitle}
-                                <span className="absolute left-1/2 top-full h-2 w-2 -translate-x-1/2 -translate-y-1 rotate-45 border-r border-b border-cyan-400/25 bg-slate-950/95" />
+                                <span className="absolute left-4 top-full h-2.5 w-2.5 -translate-y-1 rotate-45 border-r border-b border-cyan-400/25 bg-slate-950/95" />
                               </div>
                             )}
                           </div>
