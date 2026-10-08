@@ -84,6 +84,251 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const searchRequestRef = useRef<AbortController | null>(null);
   const searchGenerationRef = useRef(0);
 
+  // Poster loading stays independent from torrent ranking. Failed/missing
+  // posters are retried slowly in the background using alternate title forms.
+  const [posterOverrides, setPosterOverrides] = useState<Record<string, string>>({});
+  const posterLoadedRef = useRef(new Set<string>());
+  const posterRetryQueueRef = useRef<Array<{ key: string; result: TorrentSearchResult }>>([]);
+  const posterRetryQueuedRef = useRef(new Set<string>());
+  const posterRetryRunningRef = useRef(false);
+  const posterRetryGenerationRef = useRef(0);
+  const posterRetryAttemptsRef = useRef(new Map<string, number>());
+
+  const posterKeyFor = (result: TorrentSearchResult) =>
+    String(
+      result.guid ||
+      result.infoHash ||
+      result.magnetUrl ||
+      result.downloadUrl ||
+      result.title
+    );
+
+  const rawPosterUrlFor = (result: TorrentSearchResult) => {
+    const raw = String(result.posterUrl || '').trim();
+    if (!raw) return '';
+    return raw.startsWith('/') ? API_BASE + raw : raw;
+  };
+
+  const posterRetryCandidateUrlsFor = (result: TorrentSearchResult) => {
+    const candidates: string[] = [];
+    const seen = new Set<string>();
+
+    const addUrl = (url: string) => {
+      const value = String(url || '').trim();
+      if (value && !seen.has(value)) {
+        seen.add(value);
+        candidates.push(value);
+      }
+    };
+
+    const addTitle = (title: string, year = '') => {
+      const clean = String(title || '')
+        .replace(/[._]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replace(/^[-._\s]+|[-._\s]+$/g, '');
+      if (!clean) return;
+
+      const inferredYear = year || (clean.match(/\b((?:19|20)\d{2})\b/)?.[1] || '');
+      const titleOnly = clean.replace(/\b((?:19|20)\d{2})\b.*$/i, '').trim() || clean;
+
+      const params = new URLSearchParams({ title: titleOnly });
+      if (inferredYear) params.set('year', inferredYear);
+      addUrl(API_BASE + '/api/poster?' + params.toString());
+    };
+
+    // Retry the exact URL first in case the initial browser load was transient.
+    addUrl(rawPosterUrlFor(result));
+
+    const explicitYear = result.year ? String(result.year) : '';
+    const mediaTitle = String(result.mediaTitle || '').trim();
+    const rawTitle = String(result.title || '').trim();
+    const baseTitle = mediaTitle || rawTitle;
+
+    addTitle(mediaTitle, explicitYear);
+
+    let cleaned = baseTitle
+      .replace(/[._]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const yearMatch = cleaned.match(/\b((?:19|20)\d{2})\b/);
+    const year = explicitYear || yearMatch?.[1] || '';
+
+    // Prefer everything before the release year when the result has no
+    // provider-clean mediaTitle.
+    if (!mediaTitle && yearMatch?.index != null) {
+      addTitle(cleaned.slice(0, yearMatch.index), year);
+    }
+
+    // Also try stopping at the first common release/quality token.
+    const releaseCut = cleaned.split(
+      /\b(?:2160p|1440p|1080p|720p|576p|480p|4k|8k|web[- ]?dl|web[- ]?rip|webrip|bluray|brrip|hdrip|dvdrip|cam|hdcam|x264|x265|h264|h265|hevc|aac|ddp|atmos|proper|repack|remastered|extended|unrated|directors?\s+cut)\b/i
+    )[0].trim();
+    if (releaseCut) addTitle(releaseCut, year);
+
+    // Remove common audio/language/release markers and try the cleaner name.
+    const softClean = cleaned
+      .replace(
+        /\b(?:hindi|tamil|telugu|malayalam|kannada|bengali|marathi|punjabi|gujarati|urdu|dual\s+audio|multi\s+audio|dubbed|dub|multi|proper|repack|remastered|extended|unrated|imax|hdr10\+?|dolby\s+vision)\b/gi,
+        ' '
+      )
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (softClean) addTitle(softClean, year);
+
+    // Handle the common compact-vs-spaced superhero title spellings.
+    const aliasPairs: Array<[RegExp, string]> = [
+      [/\bspiderman\b/gi, 'Spider Man'],
+      [/\bspider\s+man\b/gi, 'Spiderman'],
+      [/\bantman\b/gi, 'Ant Man'],
+      [/\bant\s+man\b/gi, 'Antman'],
+      [/\bironman\b/gi, 'Iron Man'],
+      [/\biron\s+man\b/gi, 'Ironman'],
+      [/\bblackpanther\b/gi, 'Black Panther'],
+      [/\bblack\s+panther\b/gi, 'Blackpanther'],
+      [/\bdoctorstrange\b/gi, 'Doctor Strange'],
+      [/\bdoctor\s+strange\b/gi, 'Doctorstrange'],
+      [/\bcaptainamerica\b/gi, 'Captain America'],
+      [/\bcaptain\s+america\b/gi, 'Captainamerica'],
+      [/\bguardiansofthegalaxy\b/gi, 'Guardians of the Galaxy'],
+    ];
+
+    for (const [pattern, replacement] of aliasPairs) {
+      if (pattern.test(cleaned)) {
+        addTitle(cleaned.replace(pattern, replacement), year);
+      }
+    }
+
+    return candidates;
+  };
+
+  const probePoster = (url: string, timeoutMs = 7000): Promise<boolean> =>
+    new Promise(resolve => {
+      const image = new Image();
+      let settled = false;
+      const finish = (value: boolean) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeoutId);
+        image.onload = null;
+        image.onerror = null;
+        resolve(value);
+      };
+      const timeoutId = window.setTimeout(() => finish(false), timeoutMs);
+      image.onload = () => finish(true);
+      image.onerror = () => finish(false);
+      image.src = url;
+    });
+
+  const queuePosterRetry = (result: TorrentSearchResult) => {
+    const key = posterKeyFor(result);
+    if (!key || posterRetryQueuedRef.current.has(key)) return;
+
+    // Do not retry a poster that has already been recovered.
+    if (posterOverrides[key]) return;
+
+    posterRetryQueuedRef.current.add(key);
+    posterRetryQueueRef.current.push({ key, result });
+
+    if (posterRetryRunningRef.current) return;
+
+    posterRetryRunningRef.current = true;
+    const generation = posterRetryGenerationRef.current;
+
+    void (async () => {
+      try {
+        while (
+          generation === posterRetryGenerationRef.current &&
+          posterRetryQueueRef.current.length > 0
+        ) {
+          const job = posterRetryQueueRef.current.shift();
+          if (!job) break;
+
+          posterRetryQueuedRef.current.delete(job.key);
+
+          const urls = posterRetryCandidateUrlsFor(job.result);
+          let recovered = false;
+
+          for (const url of urls) {
+            if (generation !== posterRetryGenerationRef.current) return;
+
+            if (await probePoster(url)) {
+              setPosterOverrides(prev => {
+                if (prev[job.key] === url) return prev;
+                return { ...prev, [job.key]: url };
+              });
+              recovered = true;
+              break;
+            }
+
+            // Keep the retry worker deliberately gentle so poster lookups do
+            // not compete with the actual torrent search.
+            await new Promise(resolve => window.setTimeout(resolve, 350));
+          }
+
+          if (!recovered) {
+            const attempts = posterRetryAttemptsRef.current.get(job.key) || 0;
+            if (attempts < 1 && generation === posterRetryGenerationRef.current) {
+              posterRetryAttemptsRef.current.set(job.key, attempts + 1);
+              window.setTimeout(() => {
+                if (generation !== posterRetryGenerationRef.current) return;
+                posterRetryQueuedRef.current.add(job.key);
+                posterRetryQueueRef.current.push(job);
+                if (!posterRetryRunningRef.current) {
+                  queuePosterRetry(job.result);
+                }
+              }, 45000);
+            }
+          }
+
+          await new Promise(resolve => window.setTimeout(resolve, 700));
+        }
+      } finally {
+        posterRetryRunningRef.current = false;
+        if (
+          generation === posterRetryGenerationRef.current &&
+          posterRetryQueueRef.current.length > 0
+        ) {
+          queuePosterRetry(posterRetryQueueRef.current[0].result);
+        }
+      }
+    })();
+  };
+
+  const auditTopPostersInBackground = (items: TorrentSearchResult[]) => {
+    const generation = posterRetryGenerationRef.current;
+    const auditItems = items.slice(0, 12);
+
+    window.setTimeout(() => {
+      void (async () => {
+        for (const result of auditItems) {
+          if (generation !== posterRetryGenerationRef.current) return;
+
+          const key = posterKeyFor(result);
+          if (!key || posterLoadedRef.current.has(key) || posterOverrides[key]) {
+            continue;
+          }
+
+          const currentUrl = rawPosterUrlFor(result);
+          if (!currentUrl) {
+            queuePosterRetry(result);
+            continue;
+          }
+
+          const loaded = await probePoster(currentUrl);
+          if (!loaded) {
+            queuePosterRetry(result);
+          } else {
+            posterLoadedRef.current.add(key);
+          }
+
+          await new Promise(resolve => window.setTimeout(resolve, 300));
+        }
+      })();
+    }, 900);
+  };
+
   const normalizeMatchText = (value: string) =>
     String(value || '')
       .toLowerCase()
@@ -234,6 +479,12 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       setError('');
       setResults([]);
       setSearched(false);
+      setPosterOverrides({});
+      posterLoadedRef.current.clear();
+      posterRetryQueueRef.current = [];
+      posterRetryQueuedRef.current.clear();
+      posterRetryAttemptsRef.current.clear();
+      posterRetryGenerationRef.current += 1;
       saveRecentSearch(trimmed);
 
       // The backend owns low-result TV/season fallback. Keeping that logic
@@ -246,6 +497,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
       setResults(data);
       setSearched(true);
+      auditTopPostersInBackground(data);
 
       // Do not wait for metadata before displaying results. Start resolving
       // the first two results immediately, then the next two after that batch
@@ -345,11 +597,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     return sorted;
   }, [results, resolutionFilter, sizeSort, timeSort]);
 
-  const posterUrlFor = (result: TorrentSearchResult) => {
-    const raw = String(result.posterUrl || '').trim();
-    if (!raw) return '';
-    return raw.startsWith('/') ? API_BASE + raw : raw;
-  };
+  const posterUrlFor = (result: TorrentSearchResult) =>
+    posterOverrides[posterKeyFor(result)] || rawPosterUrlFor(result);
 
   const extractedQuality = (result: TorrentSearchResult) => {
     if (result.quality) return result.quality;
@@ -590,9 +839,18 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               alt={result.mediaTitle || result.title}
                               loading="lazy"
                               className="w-full h-full object-cover"
+                              onLoad={(event) => {
+                                const key = posterKeyFor(result);
+                                posterLoadedRef.current.add(key);
+                                event.currentTarget.style.display = '';
+                                event.currentTarget.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.add('hidden');
+                              }}
                               onError={(event) => {
+                                const key = posterKeyFor(result);
+                                posterLoadedRef.current.delete(key);
                                 event.currentTarget.style.display = 'none';
                                 event.currentTarget.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.remove('hidden');
+                                queuePosterRetry(result);
                               }}
                             />
                             <div data-poster-placeholder="true" className="hidden absolute inset-0 items-center justify-center bg-slate-950 text-slate-700">
