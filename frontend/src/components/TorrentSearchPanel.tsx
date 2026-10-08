@@ -919,10 +919,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           </div>
                         )}
 
-                        {result.rating != null && Number(result.rating) > 0 && (
-                          <div className="absolute left-2 bottom-2 inline-flex items-center gap-1 rounded-md bg-black/80 px-1.5 py-1 text-[10px] font-bold text-amber-300">
-                            <Star className="w-3 h-3 fill-current" />
-                            {Number(result.rating).toFixed(1)}
+                        {extractedQuality(result) && (
+                          <div className="absolute left-2 bottom-2 rounded-md border border-cyan-400/30 bg-slate-950/85 px-2 py-1 text-[10px] font-bold text-cyan-300">
+                            {extractedQuality(result)}
                           </div>
                         )}
                       </div>
@@ -943,22 +942,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               {result.mediaTitle || result.title}
                             </button>
 
-                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1.5 text-[9px] sm:text-[11px]">
-                              {extractedQuality(result) ? (
-                                <span className="rounded-md border border-cyan-400/20 bg-cyan-400/5 px-1.5 py-0.5 text-cyan-300">
-                                  {extractedQuality(result)}
-                                </span>
-                              ) : null}
-                              {result.year ? <span className="font-semibold text-slate-300">{result.year}</span> : null}
-                            </div>
-
-                            <div className="flex flex-wrap items-center gap-x-2 sm:gap-x-3 gap-y-1 mt-1.5 text-[9px] sm:text-xs text-slate-400">
+                            <div className="mt-1.5 text-[9px] sm:text-[11px] text-slate-400">
                               <span className="font-mono text-slate-300">{formatBytes(result.size)}</span>
-                              <span className="flex items-center gap-1 text-emerald-400">
-                                <Users className="w-3.5 h-3.5" />
-                                {result.seeders}
-                              </span>
-                              <span className="text-slate-500">{result.leechers} leechers</span>
                             </div>
                           </div>
                         </div>
@@ -1082,10 +1067,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                 setPreparingTorrentKey(current => current === torrentKey ? null : current);
                               }
                             }}
-                            className="w-full sm:w-auto px-2 py-1.5 sm:px-3.5 sm:py-2 rounded-lg sm:rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-60 disabled:cursor-not-allowed text-slate-950 text-xs font-bold flex items-center gap-1.5 transition"
+                            className="w-full sm:w-auto px-3 py-2 rounded-lg sm:rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-60 disabled:cursor-not-allowed text-slate-950 text-xs font-bold transition"
                           >
-                            {isPreparing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-                            <span>{isPreparing ? 'Preparing…' : 'Prepare'}</span>
+                            {isPreparing ? 'Preparing…' : 'Prepare'}
                           </button>
                           {isPreparing && onCancelPrepare && (
                             <button
