@@ -3305,6 +3305,81 @@ def parse_size(value: str) -> int:
     units = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
     return int(n * units[m.group(2).upper()])
 
+_POSTER_CACHE_SECONDS = 6 * 60 * 60
+_poster_cache: dict[str, tuple[float, str | None]] = {}
+
+def _poster_normalize_title(value: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", str(value or "").lower())).strip()
+
+async def _poster_lookup(title: str, year: str = "") -> str | None:
+    clean_title = str(title or "").strip()
+    clean_year = str(year or "").strip()
+    if not clean_title:
+        return None
+
+    cache_key = f"{_poster_normalize_title(clean_title)}|{clean_year}"
+    now = time.time()
+    cached = _poster_cache.get(cache_key)
+    if cached and now - cached[0] < _POSTER_CACHE_SECONDS:
+        return cached[1]
+
+    poster = None
+    try:
+        query = quote((clean_title + " " + clean_year).strip(), safe="")
+        async with httpx.AsyncClient(timeout=4, follow_redirects=True) as client:
+            response = await client.get(
+                f"https://v3.sg.media-imdb.com/suggestion/titles/x/{query}.json?includeVideos=0",
+                headers={"Accept": "application/json"},
+            )
+            if response.status_code == 200:
+                data = response.json()
+                wanted = _poster_normalize_title(clean_title)
+                wanted_year = clean_year
+                for row in data.get("d") or []:
+                    if not isinstance(row, dict):
+                        continue
+                    image = str((row.get("i") or {}).get("imageUrl") or "").strip()
+                    candidate = _poster_normalize_title(str(row.get("l") or ""))
+                    candidate_year = str(row.get("y") or "")
+                    if image and candidate == wanted and (not wanted_year or not candidate_year or candidate_year == wanted_year):
+                        poster = image
+                        break
+    except Exception:
+        pass
+
+    if not poster:
+        try:
+            async with httpx.AsyncClient(timeout=4, follow_redirects=True) as client:
+                response = await client.get(
+                    "https://itunes.apple.com/search",
+                    params={"term": (clean_title + " " + clean_year).strip(), "limit": "25"},
+                    headers={"Accept": "application/json"},
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    wanted = _poster_normalize_title(clean_title)
+                    wanted_year = clean_year
+                    for row in data.get("results") or []:
+                        if str(row.get("kind") or "") != "feature-movie" or not row.get("artworkUrl100"):
+                            continue
+                        candidate = _poster_normalize_title(str(row.get("trackName") or row.get("collectionName") or ""))
+                        candidate_year = str(row.get("releaseDate") or "")[:4]
+                        if candidate == wanted and (not wanted_year or not candidate_year or candidate_year == wanted_year):
+                            poster = str(row["artworkUrl100"]).replace("100x100bb", "600x600bb")
+                            break
+        except Exception:
+            pass
+
+    _poster_cache[cache_key] = (now, poster)
+    return poster
+
+@app.get("/api/poster")
+async def api_poster(title: str = Query(..., min_length=1), year: str = Query("")):
+    poster = await _poster_lookup(title, year)
+    if not poster:
+        raise HTTPException(404, "Poster not found")
+    return RedirectResponse(poster, status_code=302)
+
 @app.get("/")
 async def root():
     return {"name": APP_NAME, "status": "ok"}
