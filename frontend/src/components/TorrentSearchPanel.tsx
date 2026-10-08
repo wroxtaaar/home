@@ -139,7 +139,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     // cache as normal image rendering, so successful work is shared.
     const rawUrl = rawPosterUrlFor(result);
     if (rawUrl) {
-      const separator = rawUrl.includes('?') ? '&' : '?';
       addCandidate(
         rawUrl.split('?title=')[1]?.split('&')[0]
           ? decodeURIComponent(rawUrl.split('?title=')[1].split('&')[0].replace(/\+/g, ' '))
@@ -244,7 +243,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           if (generation !== posterBackgroundGenerationRef.current) return;
 
           const key = job.key;
-          const currentRawUrl = rawPosterUrlFor(job.result);
 
           // A visible/loaded poster wins immediately; don't spend background
           // work resolving something the browser already has.
@@ -279,8 +277,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               startPosterBackgroundWorkers();
             }, 45000);
           }
-
-          void currentRawUrl;
         } finally {
           posterBackgroundActiveRef.current = Math.max(
             0,
