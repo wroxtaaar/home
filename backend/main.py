@@ -2929,7 +2929,19 @@ async def search_limetorrents(
         )
 
     results = [item for item in fetched if isinstance(item, dict)]
-    logger.warning("LimeTorrents returned '%s': %d usable results", query, len(results))
+    if results:
+        preview = ", ".join(
+            f"{item.get('seeders', 0)}:{str(item.get('title') or '')[:55]}"
+            for item in results[:5]
+        )
+        logger.warning(
+            "LimeTorrents returned '%s': %d usable results; top=%s",
+            query,
+            len(results),
+            preview,
+        )
+    else:
+        logger.warning("LimeTorrents returned '%s': 0 usable results", query)
     return results
 
 async def search_knaben(
@@ -3250,8 +3262,13 @@ def _search_quality_filter(item: dict[str, Any], query: str) -> bool:
 
     normalized = _normalize_title(title)
     compact = normalized.replace(" ", "")
-    query_title, season, episode = _media_search_parts(query)
-    target_tokens = _search_tokens(query_title)
+    _query_title, season, episode = _media_search_parts(query)
+    # Language/codec/year qualifiers are validated separately below. The title
+    # matcher should use only the actual media title, otherwise a release using
+    # "Hin"/"Dub" instead of the exact query word "Hindi" gets discarded even
+    # though the provider found it correctly.
+    provider_title = _media_provider_query(query)
+    target_tokens = _search_tokens(provider_title)
     compact_target = "".join(target_tokens)
 
     # Punctuation and spacing are intentionally ignored, so both
@@ -3568,6 +3585,16 @@ async def _search_1337x_uncached(
 
     results = list(merged.values())
     enrich_movie_metadata(results)
+
+    source_counts: dict[str, int] = {}
+    for item in results:
+        source_name = str(item.get("indexer") or "unknown").strip() or "unknown"
+        source_counts[source_name] = source_counts.get(source_name, 0) + 1
+    logger.warning(
+        "Search result sources for '%s': %s",
+        query,
+        ", ".join(f"{name}={count}" for name, count in sorted(source_counts.items())),
+    )
 
     # Poster artwork is resolved lazily by /api/poster so search latency is
     # unaffected. Every normal movie result gets a cleaned poster URL,
