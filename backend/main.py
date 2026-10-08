@@ -3412,11 +3412,15 @@ def parse_size(value: str) -> int:
     return int(n * units[m.group(2).upper()])
 
 _POSTER_CACHE_SECONDS = 6 * 60 * 60
+_POSTER_NEGATIVE_CACHE_SECONDS = 2 * 60
+_CINEMETA_BASE_URL = "https://v3-cinemeta.strem.io"
 _poster_cache: dict[str, tuple[float, str | None]] = {}
+_poster_inflight: dict[str, asyncio.Task[str | None]] = {}
+
 
 def _poster_normalize_title(value: str) -> str:
     normalized = " ".join(re.findall(r"[a-z0-9]+", str(value or "").lower())).strip()
-    return re.sub(r"^(?:the|a|an)\\s+", "", normalized)
+    return re.sub(r"^(?:the|a|an)\s+", "", normalized)
 
 
 def _poster_title_parts(raw_title: str) -> tuple[str, str]:
@@ -3449,20 +3453,96 @@ def _poster_url_for_release(raw_title: str) -> str:
     return f"/api/poster?{urlencode({'title': title, 'year': year})}"
 
 
-async def _poster_lookup(title: str, year: str = "") -> str | None:
+async def _cinemeta_poster_lookup(title: str, year: str = "") -> str | None:
+    """Resolve title/year through Cinemeta's catalog, then use its stable ID metadata."""
     clean_title = str(title or "").strip()
     clean_year = str(year or "").strip()
     if not clean_title:
         return None
 
-    cache_key = f"{_poster_normalize_title(clean_title)}|{clean_year}"
-    now = time.time()
-    cached = _poster_cache.get(cache_key)
-    cache_ttl = _POSTER_CACHE_SECONDS if cached and cached[1] else 10 * 60
-    if cached and now - cached[0] < cache_ttl:
-        return cached[1]
+    wanted = _poster_normalize_title(clean_title)
+    queries = []
+    for query_value in (
+        f"{clean_title} {clean_year}".strip(),
+        clean_title,
+    ):
+        if query_value and query_value not in queries:
+            queries.append(query_value)
 
+    try:
+        async with httpx.AsyncClient(timeout=4, follow_redirects=True) as client:
+            for media_type in ("movie", "series"):
+                for query_value in queries:
+                    encoded = quote(query_value, safe="")
+                    response = await client.get(
+                        f"{_CINEMETA_BASE_URL}/catalog/{media_type}/top/search={encoded}.json",
+                        headers={"Accept": "application/json", "User-Agent": "TorrentStudio/1.0"},
+                    )
+                    if response.status_code != 200:
+                        continue
+
+                    data = response.json()
+                    metas = data.get("metas") if isinstance(data, dict) else None
+                    if not isinstance(metas, list):
+                        continue
+
+                    candidates: list[tuple[int, str, str]] = []
+                    for row in metas:
+                        if not isinstance(row, dict):
+                            continue
+                        name = str(row.get("name") or "").strip()
+                        candidate = _poster_normalize_title(name)
+                        poster = str(row.get("poster") or "").strip()
+                        imdb_id = str(row.get("id") or "").strip()
+                        if not name or candidate != wanted:
+                            continue
+
+                        candidate_year = str(
+                            row.get("releaseInfo")
+                            or row.get("year")
+                            or ""
+                        ).strip()
+                        score = 100
+                        if clean_year and candidate_year:
+                            if candidate_year == clean_year or candidate_year.startswith(clean_year):
+                                score += 120
+                            else:
+                                score -= 80
+                        if poster:
+                            score += 30
+                        if imdb_id.startswith("tt"):
+                            score += 10
+                        candidates.append((score, poster, imdb_id))
+
+                    if not candidates:
+                        continue
+
+                    candidates.sort(key=lambda item: item[0], reverse=True)
+                    _score, poster, imdb_id = candidates[0]
+                    if poster:
+                        return poster
+
+                    if imdb_id.startswith("tt"):
+                        meta_response = await client.get(
+                            f"{_CINEMETA_BASE_URL}/meta/{media_type}/{quote(imdb_id, safe='')}.json",
+                            headers={"Accept": "application/json", "User-Agent": "TorrentStudio/1.0"},
+                        )
+                        if meta_response.status_code == 200:
+                            meta_data = meta_response.json()
+                            meta = meta_data.get("meta") if isinstance(meta_data, dict) else None
+                            poster = str(meta.get("poster") or "").strip() if isinstance(meta, dict) else ""
+                            if poster:
+                                return poster
+    except Exception:
+        pass
+
+    return None
+
+
+async def _poster_lookup_uncached(clean_title: str, clean_year: str, cache_key: str) -> str | None:
+    now = time.time()
     poster = None
+
     try:
         query = quote((clean_title + " " + clean_year).strip(), safe="")
         async with httpx.AsyncClient(timeout=4, follow_redirects=True) as client:
@@ -3530,8 +3610,43 @@ async def _poster_lookup(title: str, year: str = "") -> str | None:
         except Exception:
             pass
 
+    # Cinemeta is intentionally last: it is a metadata/identity fallback and
+    # never sits on the torrent-search critical path.
+    if not poster:
+        poster = await _cinemeta_poster_lookup(clean_title, clean_year)
+
     _poster_cache[cache_key] = (now, poster)
     return poster
+
+
+async def _poster_lookup(title: str, year: str = "") -> str | None:
+    clean_title = str(title or "").strip()
+    clean_year = str(year or "").strip()
+    if not clean_title:
+        return None
+
+    cache_key = f"{_poster_normalize_title(clean_title)}|{clean_year}"
+    now = time.time()
+    cached = _poster_cache.get(cache_key)
+    cache_ttl = _POSTER_CACHE_SECONDS if cached and cached[1] else _POSTER_NEGATIVE_CACHE_SECONDS
+    if cached and now - cached[0] < cache_ttl:
+        return cached[1]
+
+    existing = _poster_inflight.get(cache_key)
+    if existing is not None and not existing.done():
+        try:
+            return await asyncio.shield(existing)
+        except Exception:
+            return None
+
+    task = asyncio.create_task(_poster_lookup_uncached(clean_title, clean_year, cache_key))
+    _poster_inflight[cache_key] = task
+    try:
+        return await asyncio.shield(task)
+    finally:
+        if _poster_inflight.get(cache_key) is task:
+            _poster_inflight.pop(cache_key, None)
+
 
 @app.get("/api/poster")
 async def api_poster(title: str = Query(..., min_length=1), year: str = Query("")):
@@ -3539,6 +3654,14 @@ async def api_poster(title: str = Query(..., min_length=1), year: str = Query(""
     if not poster:
         raise HTTPException(404, "Poster not found")
     return RedirectResponse(poster, status_code=302)
+
+
+@app.get("/api/poster/resolve")
+async def api_poster_resolve(title: str = Query(..., min_length=1), year: str = Query("")):
+    poster = await _poster_lookup(title, year)
+    if not poster:
+        raise HTTPException(404, "Poster not found")
+    return {"url": poster}
 
 @app.get("/")
 async def root():
