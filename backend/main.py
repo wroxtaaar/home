@@ -3395,10 +3395,10 @@ async def _search_1337x_uncached(
             lime_results = await asyncio.wait_for(
                 search_limetorrents(
                     query,
-                    limit=12,
+                    limit=20,
                     pages=1,
                 ),
-                timeout=max(5.0, SEARCH_TOTAL_TIMEOUT_SECONDS + 1.5),
+                timeout=10.0,
             )
             logger.warning(
                 "LimeTorrents primary source '%s': %d results",
@@ -3408,10 +3408,11 @@ async def _search_1337x_uncached(
             return lime_results
         except Exception as exc:
             logger.warning(
-                "LimeTorrents search failed for '%s' using '%s': %s",
+                "LimeTorrents search failed for '%s' using '%s': %s: %s",
                 query,
                 provider_query,
-                exc,
+                type(exc).__name__,
+                str(exc) or "<no message>",
             )
             return []
 
