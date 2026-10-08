@@ -2673,76 +2673,79 @@ LIMETORRENTS_HOSTS = tuple(
     host.strip()
     for host in os.getenv(
         "LIMETORRENTS_HOSTS",
-        "limetorrents.fun,limetorrents.info,limetorrents.pro,limetorrents.at",
+        "www.limetorrents.fun,www.limetorrents.lol,limetorrents.fun,limetorrents.lol",
     ).split(",")
     if host.strip()
 )
 
 
 def _limetorrents_rows(html_text: str, base_url: str) -> list[dict[str, str]]:
-    """Parse LimeTorrents seed-sorted result rows."""
+    """Parse LimeTorrents result rows using the same structure as known working scrapers."""
     soup = BeautifulSoup(html_text or "", "html.parser")
     rows: list[dict[str, str]] = []
     seen: set[str] = set()
 
-    for row in soup.select("tr.table2, table.table2 tr"):
-        title_anchor = None
-        for anchor in row.select(".tt-name a, .tt-name > a"):
-            href = str(anchor.get("href") or "").strip()
-            text_value = anchor.get_text(" ", strip=True)
-            if not href or not text_value:
-                continue
-            if "download-torrent" in href.lower() or href.lower().endswith(".torrent"):
-                continue
-            if len(text_value) >= 3:
-                title_anchor = anchor
-                break
-
+    # LimeTorrents uses .table2 on the results table, not necessarily on each
+    # individual <tr>. Keep the selector broad across current mirrors.
+    result_rows = soup.select("#content .table2 tr, .table2 tr")
+    for row in result_rows:
+        title_anchor = row.select_one("a:not([rel])")
         if title_anchor is None:
-            anchors = [
-                anchor for anchor in row.find_all("a", href=True)
-                if anchor.get_text(" ", strip=True)
-                and not str(anchor.get("href") or "").lower().endswith(".torrent")
-            ]
-            if not anchors:
-                continue
-            title_anchor = anchors[-1]
+            continue
 
         title = title_anchor.get_text(" ", strip=True)
         detail_href = str(title_anchor.get("href") or "").strip()
         if not title or not detail_href:
             continue
+        if detail_href.startswith("#") or detail_href.lower().endswith(".torrent"):
+            continue
 
-        torrent_anchor = row.select_one("a.csprite_dl14[href]")
-        torrent_href = str(torrent_anchor.get("href") or "").strip() if torrent_anchor else ""
+        # Category is exposed in the same .tdnormal cell used by existing
+        # LimeTorrents scrapers ("... in Movies"/"... in TV shows").
+        category_text = ""
+        category_cell = row.select_one(".tdnormal")
+        if category_cell is not None:
+            category_text = category_cell.get_text(" ", strip=True).lower()
 
-        cells = row.find_all("td")
-        cell_text = [cell.get_text(" ", strip=True) for cell in cells]
-        row_text = " ".join(cell_text)
+        category = ""
+        if " in tv shows" in category_text or "tv shows" in category_text:
+            category = "TV"
+        elif " in movies" in category_text or "movies" in category_text:
+            category = "Movies"
 
-        def cell_number(selector: str) -> str:
-            cell = row.select_one(selector)
-            if cell is None:
-                return "0"
-            match = re.search(r"\d[\d,]*", cell.get_text(" ", strip=True))
-            return match.group(0).replace(",", "") if match else "0"
+        if not category:
+            # Keep unknown category rows; the Home media/title filters will
+            # make the final decision. This avoids losing valid releases when
+            # a mirror changes the category label.
+            category = "Unknown"
 
-        seeders = cell_number(".tdseed")
-        leechers = cell_number(".tdleech")
+        seed_cell = row.select_one(".tdseed")
+        leech_cell = row.select_one(".tdleech")
+        seeders = "0"
+        leechers = "0"
+        if seed_cell is not None:
+            match = re.search(r"\d[\d,]*", seed_cell.get_text(" ", strip=True))
+            if match:
+                seeders = match.group(0).replace(",", "")
+        if leech_cell is not None:
+            match = re.search(r"\d[\d,]*", leech_cell.get_text(" ", strip=True))
+            if match:
+                leechers = match.group(0).replace(",", "")
 
+        # Prefer the dedicated size cell when present; otherwise scan the row.
         size = ""
-        for text_value in cell_text:
-            match = re.search(r"([\d.]+\s*[KMGT]i?B)", text_value, re.I)
+        size_cell = row.select_one(".tdsize")
+        if size_cell is not None:
+            match = re.search(r"([\d.]+\s*[KMGT]i?B)", size_cell.get_text(" ", strip=True), re.I)
             if match:
                 size = match.group(1)
-                break
         if not size:
+            row_text = row.get_text(" ", strip=True)
             match = re.search(r"([\d.]+\s*[KMGT]i?B)", row_text, re.I)
             if match:
                 size = match.group(1)
 
-        source_url = urljoin(base_url + "/", detail_href)
-        descriptor_url = urljoin(base_url + "/", torrent_href) if torrent_href else ""
+        source_url = urljoin(base_url.rstrip("/") + "/", detail_href.lstrip("/"))
         key = source_url.lower()
         if key in seen:
             continue
@@ -2751,10 +2754,10 @@ def _limetorrents_rows(html_text: str, base_url: str) -> list[dict[str, str]]:
         rows.append({
             "title": title,
             "detail_url": source_url,
-            "descriptor_url": descriptor_url,
             "size": size,
             "seeders": seeders,
             "leechers": leechers,
+            "category": category,
         })
 
     return rows
@@ -2804,9 +2807,9 @@ async def search_limetorrents(
 
         for host in LIMETORRENTS_HOSTS:
             base = f"https://{host}"
-            urls = [f"{base}/search/{category}/{encoded}/seeds/1/"]
+            urls = [f"{base}/search/all/{encoded}/seeds/1/"]
             if pages > 1:
-                urls.append(f"{base}/search/{category}/{encoded}/seeds/2/")
+                urls.append(f"{base}/search/all/{encoded}/seeds/2/")
 
             async def fetch_page(url: str) -> str:
                 try:
@@ -2827,12 +2830,18 @@ async def search_limetorrents(
                 break
 
         if not pages_html:
-            logger.info("LimeTorrents unavailable for '%s'", query)
+            logger.warning("LimeTorrents unavailable for '%s' (hosts=%s)", query, ",".join(LIMETORRENTS_HOSTS))
             return []
 
         raw_rows: list[dict[str, str]] = []
         for base, html_text in pages_html:
             raw_rows.extend(_limetorrents_rows(html_text, base))
+        logger.warning(
+            "LimeTorrents parsed '%s': %d rows for provider query '%s'",
+            query,
+            len(raw_rows),
+            provider_query,
+        )
 
         units = {
             "KB": 1024, "KIB": 1024,
@@ -2909,7 +2918,9 @@ async def search_limetorrents(
                 "infoUrl": detail_url,
                 "sourceUrl": detail_url,
                 "descriptorUrl": str(row.get("descriptor_url") or ""),
-                "category": "TV" if category == "tv" else "Movies",
+                "category": (
+                    "TV" if category == "tv" else "Movies"
+                ) if row.get("category") in {"Unknown", "Movies", "TV"} else "Movies",
             }
 
         fetched = await asyncio.gather(
@@ -2917,7 +2928,9 @@ async def search_limetorrents(
             return_exceptions=True,
         )
 
-    return [item for item in fetched if isinstance(item, dict)]
+    results = [item for item in fetched if isinstance(item, dict)]
+    logger.warning("LimeTorrents returned '%s': %d usable results", query, len(results))
+    return results
 
 async def search_knaben(
     query: str,
