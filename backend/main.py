@@ -70,6 +70,18 @@ SEARCH_CACHE_SECONDS = float(os.getenv("SEARCH_CACHE_SECONDS", "60"))
 SEARCH_CACHE_STALE_SECONDS = float(os.getenv("SEARCH_CACHE_STALE_SECONDS", "600"))
 SEARCH_CACHE_MAX_ENTRIES = int(os.getenv("SEARCH_CACHE_MAX_ENTRIES", "75"))
 SEARCH_CACHE_MIN_RESULTS = int(os.getenv("SEARCH_CACHE_MIN_RESULTS", "8"))
+# Home intentionally uses the wider 100 MB–5 GB search window.
+# new-test remains the separate 100 MB–2 GB variant.
+MAX_SEARCH_RESULT_SIZE_BYTES = 5 * 1024 * 1024 * 1024
+SEARCH_COMPOUND_ALIASES = {
+    "antman": "ant man",
+    "spiderman": "spider man",
+    "ironman": "iron man",
+    "blackpanther": "black panther",
+    "doctorstrange": "doctor strange",
+    "captainamerica": "captain america",
+    "guardiansofthegalaxy": "guardians of the galaxy",
+}
 FAST_SEARCH_TRACKERS = (
     "http://tracker.dler.org:6969/announce",
     "http://tracker2.dler.org:80/announce",
@@ -2512,6 +2524,12 @@ async def search_yts_movies(query: str, limit: int = 50) -> list[dict[str, Any]]
             results.append({
                 "guid": f"yts-{h}",
                 "title": display_title,
+                "mediaTitle": title,
+                "year": int(movie.get("year") or 0) or None,
+                "rating": float(movie.get("rating") or 0) or None,
+                "genres": [str(g).strip() for g in (movie.get("genres") or []) if str(g).strip()],
+                "posterUrl": f"/api/poster?title={quote(title, safe='')}&year={quote(str(movie.get('year') or ''), safe='')}",
+                "quality": suffix,
                 "size": int(float(torrent.get("size_bytes") or 0)),
                 "seeders": int(torrent.get("seeds") or 0),
                 "leechers": int(torrent.get("peers") or 0),
@@ -2867,6 +2885,18 @@ def _search_media_kind(query: str) -> str:
     return "both"
 
 
+def _expand_compound_search_title(value: str) -> str:
+    title = str(value or "")
+    for compact, canonical in SEARCH_COMPOUND_ALIASES.items():
+        title = re.sub(
+            rf"(?<![a-z]){re.escape(compact)}(?![a-z])",
+            canonical,
+            title,
+            flags=re.I,
+        )
+    return title
+
+
 def _media_provider_query(value: str) -> str:
     """Return the title portion used for provider searches, excluding qualifiers."""
     title, _season, _episode = _media_search_parts(value)
@@ -2878,6 +2908,7 @@ def _media_provider_query(value: str) -> str:
             title,
             flags=re.I,
         )
+    title = _expand_compound_search_title(title)
     title = re.sub(r"\bspider[- ]?man\b", "spider man", title, flags=re.I)
     title = re.sub(r"\bant[- ]?man\b", "ant man", title, flags=re.I)
     return re.sub(r"\s+", " ", title).strip()
@@ -2970,7 +3001,7 @@ def _search_quality_filter(item: dict[str, Any], query: str) -> bool:
         return False
 
     size = int(item.get("size") or 0)
-    return 100 * 1024 * 1024 <= size <= 2 * 1024 * 1024 * 1024
+    return 100 * 1024 * 1024 <= size <= MAX_SEARCH_RESULT_SIZE_BYTES
 
 
 def _title_relevance(title: str, query: str) -> tuple[int, int]:
@@ -3102,11 +3133,29 @@ async def _search_1337x_uncached(
             logger.info("Knaben search failed for '%s' using '%s': %s", query, provider_query, exc)
             return []
 
+    yts_task = (
+        asyncio.create_task(
+            asyncio.wait_for(
+                search_yts_movies(query, min(limit, 20)),
+                timeout=SEARCH_SOURCE_TIMEOUT_SECONDS + 0.75,
+            )
+        )
+        if kind == "both"
+        else None
+    )
+
     primary_1337x, primary_knaben = await asyncio.gather(
         run_1337x(primary_provider_query),
         run_knaben(primary_provider_query),
         return_exceptions=False,
     )
+
+    yts_primary: list[dict[str, Any]] = []
+    if yts_task is not None:
+        try:
+            yts_primary = await yts_task
+        except Exception as exc:
+            logger.info("YTS primary search failed for '%s': %s", query, exc)
 
     results: list[dict[str, Any]] = []
 
@@ -3119,6 +3168,37 @@ async def _search_1337x_uncached(
 
     add_filtered(primary_1337x)
     add_filtered(primary_knaben)
+    add_filtered(yts_primary)
+
+    yts_metadata: dict[str, dict[str, Any]] = {}
+    for item in yts_primary:
+        media_title = _normalize_title(str(item.get("mediaTitle") or ""))
+        if media_title:
+            yts_metadata.setdefault(media_title, item)
+
+    def enrich_movie_metadata(items: list[dict[str, Any]]) -> None:
+        for item in items:
+            provider_title = str(item.get("mediaTitle") or item.get("title") or "")
+            media_title = _normalize_title(_media_provider_query(provider_title))
+            if not media_title:
+                continue
+            metadata = yts_metadata.get(media_title)
+            if not metadata:
+                compact = media_title.replace(" ", "")
+                metadata = next(
+                    (
+                        candidate for key, candidate in yts_metadata.items()
+                        if compact and key.replace(" ", "") == compact
+                    ),
+                    None,
+                )
+            if metadata:
+                for field in ("mediaTitle", "year", "rating", "genres", "posterUrl", "quality"):
+                    value = metadata.get(field)
+                    if value not in (None, "", []):
+                        item[field] = value
+
+    enrich_movie_metadata(results)
 
     # When the primary title spelling cannot get enough usable hits, retry
     # with the alternate spelling and a short anchor in parallel. This is the
@@ -3180,6 +3260,8 @@ async def _search_1337x_uncached(
             elif isinstance(value, dict):
                 add_filtered(value.get("results", []))
 
+        enrich_movie_metadata(results)
+
     merged: dict[str, dict[str, Any]] = {}
     for item in results:
         key = str(
@@ -3193,6 +3275,7 @@ async def _search_1337x_uncached(
             merged.setdefault(key, item)
 
     results = list(merged.values())
+    enrich_movie_metadata(results)
     results.sort(
         key=lambda item: (
             _title_relevance(str(item.get("title") or ""), query)[0],
