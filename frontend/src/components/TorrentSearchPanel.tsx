@@ -1096,16 +1096,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           >
                             {isPreparing ? 'Preparing…' : 'Prepare'}
                           </button>
-                          {isPreparing && onCancelPrepare && (
-                            <button
-                              type="button"
-                              onClick={() => void onCancelPrepare()}
-                              className="shrink-0 px-2 py-1.5 rounded-lg bg-rose-500/10 border border-rose-500/25 text-rose-300 hover:bg-rose-500/20 text-[10px] font-bold transition whitespace-nowrap"
-                              title="Cancel preparation"
-                            >
-                              Cancel
-                            </button>
-                          )}
                         </div>
                       );
                     })()}
