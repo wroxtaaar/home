@@ -84,15 +84,16 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const searchRequestRef = useRef<AbortController | null>(null);
   const searchGenerationRef = useRef(0);
 
-  // Poster loading stays independent from torrent ranking. Failed/missing
-  // posters are retried slowly in the background using alternate title forms.
+  // Poster resolution runs independently of torrent search and ranking.
+  // Results are queued in seed order, but only two background resolutions run
+  // at once so this never becomes a search bottleneck.
   const [posterOverrides, setPosterOverrides] = useState<Record<string, string>>({});
   const posterLoadedRef = useRef(new Set<string>());
-  const posterRetryQueueRef = useRef<Array<{ key: string; result: TorrentSearchResult }>>([]);
-  const posterRetryQueuedRef = useRef(new Set<string>());
-  const posterRetryRunningRef = useRef(false);
-  const posterRetryGenerationRef = useRef(0);
-  const posterRetryAttemptsRef = useRef(new Map<string, number>());
+  const posterBackgroundQueueRef = useRef<Array<{ key: string; result: TorrentSearchResult }>>([]);
+  const posterBackgroundQueuedRef = useRef(new Set<string>());
+  const posterBackgroundActiveRef = useRef(0);
+  const posterBackgroundGenerationRef = useRef(0);
+  const posterBackgroundAttemptsRef = useRef(new Map<string, number>());
 
   const posterKeyFor = (result: TorrentSearchResult) =>
     String(
@@ -109,45 +110,52 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     return raw.startsWith('/') ? API_BASE + raw : raw;
   };
 
-  const posterRetryCandidateUrlsFor = (result: TorrentSearchResult) => {
+  const posterResolveCandidateUrlsFor = (result: TorrentSearchResult) => {
     const candidates: string[] = [];
     const seen = new Set<string>();
 
-    const addUrl = (url: string) => {
-      const value = String(url || '').trim();
-      if (value && !seen.has(value)) {
-        seen.add(value);
-        candidates.push(value);
-      }
-    };
-
-    const addTitle = (title: string, year = '') => {
+    const addCandidate = (title: string, year = '') => {
       const clean = String(title || '')
         .replace(/[._]+/g, ' ')
         .replace(/\s+/g, ' ')
-        .trim()
-        .replace(/^[-._\s]+|[-._\s]+$/g, '');
+        .replace(/^[-._\s]+|[-._\s]+$/g, '')
+        .trim();
       if (!clean) return;
 
-      const inferredYear = year || (clean.match(/\b((?:19|20)\d{2})\b/)?.[1] || '');
-      const titleOnly = clean.replace(/\b((?:19|20)\d{2})\b.*$/i, '').trim() || clean;
+      const yearMatch = clean.match(/\b((?:19|20)\d{2})\b/);
+      const inferredYear = year || yearMatch?.[1] || '';
+      const titleOnly = clean.replace(/\s*\b((?:19|20)\d{2})\b.*$/i, '').trim() || clean;
 
       const params = new URLSearchParams({ title: titleOnly });
       if (inferredYear) params.set('year', inferredYear);
-      addUrl(API_BASE + '/api/poster?' + params.toString());
+      const url = API_BASE + '/api/poster/resolve?' + params.toString();
+      if (!seen.has(url)) {
+        seen.add(url);
+        candidates.push(url);
+      }
     };
 
-    // Retry the exact URL first in case the initial browser load was transient.
-    addUrl(rawPosterUrlFor(result));
+    // Ask the existing poster resolver first. This uses the same lookup and
+    // cache as normal image rendering, so successful work is shared.
+    const rawUrl = rawPosterUrlFor(result);
+    if (rawUrl) {
+      const separator = rawUrl.includes('?') ? '&' : '?';
+      addCandidate(
+        rawUrl.split('?title=')[1]?.split('&')[0]
+          ? decodeURIComponent(rawUrl.split('?title=')[1].split('&')[0].replace(/\+/g, ' '))
+          : String(result.mediaTitle || result.title || ''),
+        String(result.year || '')
+      );
+    }
 
     const explicitYear = result.year ? String(result.year) : '';
     const mediaTitle = String(result.mediaTitle || '').trim();
     const rawTitle = String(result.title || '').trim();
     const baseTitle = mediaTitle || rawTitle;
 
-    addTitle(mediaTitle, explicitYear);
+    addCandidate(mediaTitle, explicitYear);
 
-    let cleaned = baseTitle
+    const cleaned = baseTitle
       .replace(/[._]+/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
@@ -155,19 +163,15 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     const yearMatch = cleaned.match(/\b((?:19|20)\d{2})\b/);
     const year = explicitYear || yearMatch?.[1] || '';
 
-    // Prefer everything before the release year when the result has no
-    // provider-clean mediaTitle.
     if (!mediaTitle && yearMatch?.index != null) {
-      addTitle(cleaned.slice(0, yearMatch.index), year);
+      addCandidate(cleaned.slice(0, yearMatch.index), year);
     }
 
-    // Also try stopping at the first common release/quality token.
     const releaseCut = cleaned.split(
       /\b(?:2160p|1440p|1080p|720p|576p|480p|4k|8k|web[- ]?dl|web[- ]?rip|webrip|bluray|brrip|hdrip|dvdrip|cam|hdcam|x264|x265|h264|h265|hevc|aac|ddp|atmos|proper|repack|remastered|extended|unrated|directors?\s+cut)\b/i
     )[0].trim();
-    if (releaseCut) addTitle(releaseCut, year);
+    if (releaseCut) addCandidate(releaseCut, year);
 
-    // Remove common audio/language/release markers and try the cleaner name.
     const softClean = cleaned
       .replace(
         /\b(?:hindi|tamil|telugu|malayalam|kannada|bengali|marathi|punjabi|gujarati|urdu|dual\s+audio|multi\s+audio|dubbed|dub|multi|proper|repack|remastered|extended|unrated|imax|hdr10\+?|dolby\s+vision)\b/gi,
@@ -175,9 +179,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       )
       .replace(/\s+/g, ' ')
       .trim();
-    if (softClean) addTitle(softClean, year);
+    if (softClean) addCandidate(softClean, year);
 
-    // Handle the common compact-vs-spaced superhero title spellings.
     const aliasPairs: Array<[RegExp, string]> = [
       [/\bspiderman\b/gi, 'Spider Man'],
       [/\bspider\s+man\b/gi, 'Spiderman'],
@@ -196,142 +199,127 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
     for (const [pattern, replacement] of aliasPairs) {
       if (pattern.test(cleaned)) {
-        addTitle(cleaned.replace(pattern, replacement), year);
+        addCandidate(cleaned.replace(pattern, replacement), year);
       }
     }
 
     return candidates;
   };
 
-  const probePoster = (url: string, timeoutMs = 7000): Promise<boolean> =>
-    new Promise(resolve => {
-      const image = new Image();
-      let settled = false;
-      const finish = (value: boolean) => {
-        if (settled) return;
-        settled = true;
-        window.clearTimeout(timeoutId);
-        image.onload = null;
-        image.onerror = null;
-        resolve(value);
-      };
-      const timeoutId = window.setTimeout(() => finish(false), timeoutMs);
-      image.onload = () => finish(true);
-      image.onerror = () => finish(false);
-      image.src = url;
-    });
+  const resolvePosterInBackground = async (url: string, generation: number) => {
+    if (generation !== posterBackgroundGenerationRef.current) return '';
 
-  const startPosterRetryWorker = () => {
-    if (posterRetryRunningRef.current) return;
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        credentials: 'include',
+        cache: 'force-cache'
+      });
 
-    posterRetryRunningRef.current = true;
-    const generation = posterRetryGenerationRef.current;
+      if (!response.ok) return '';
 
-    void (async () => {
-      try {
-        while (
-          generation === posterRetryGenerationRef.current &&
-          posterRetryQueueRef.current.length > 0
-        ) {
-          const job = posterRetryQueueRef.current.shift();
-          if (!job) break;
-
-          posterRetryQueuedRef.current.delete(job.key);
-
-          const urls = posterRetryCandidateUrlsFor(job.result);
-          let recovered = false;
-
-          for (const url of urls) {
-            if (generation !== posterRetryGenerationRef.current) return;
-
-            if (await probePoster(url)) {
-              setPosterOverrides(prev => {
-                if (prev[job.key] === url) return prev;
-                return { ...prev, [job.key]: url };
-              });
-              recovered = true;
-              break;
-            }
-
-            // Keep the retry worker deliberately gentle so poster lookups do
-            // not compete with the actual torrent search.
-            await new Promise(resolve => window.setTimeout(resolve, 350));
-          }
-
-          if (!recovered) {
-            const attempts = posterRetryAttemptsRef.current.get(job.key) || 0;
-            if (attempts < 1 && generation === posterRetryGenerationRef.current) {
-              posterRetryAttemptsRef.current.set(job.key, attempts + 1);
-              window.setTimeout(() => {
-                if (generation !== posterRetryGenerationRef.current) return;
-                if (posterRetryQueuedRef.current.has(job.key)) return;
-
-                posterRetryQueuedRef.current.add(job.key);
-                posterRetryQueueRef.current.push(job);
-
-                startPosterRetryWorker();
-              }, 45000);
-            }
-          }
-
-          await new Promise(resolve => window.setTimeout(resolve, 700));
-        }
-      } finally {
-        posterRetryRunningRef.current = false;
-        if (
-          generation === posterRetryGenerationRef.current &&
-          posterRetryQueueRef.current.length > 0
-        ) {
-          startPosterRetryWorker();
-        }
-      }
-    })();
+      const data = await response.json().catch(() => null);
+      const resolved = String(data?.url || '').trim();
+      return resolved;
+    } catch {
+      return '';
+    }
   };
 
-  const queuePosterRetry = (result: TorrentSearchResult) => {
-    const key = posterKeyFor(result);
-    if (!key || posterRetryQueuedRef.current.has(key)) return;
+  const startPosterBackgroundWorkers = () => {
+    const generation = posterBackgroundGenerationRef.current;
 
-    // Do not retry a poster that has already been recovered.
-    if (posterOverrides[key]) return;
+    while (
+      posterBackgroundActiveRef.current < 2 &&
+      posterBackgroundQueueRef.current.length > 0
+    ) {
+      const job = posterBackgroundQueueRef.current.shift();
+      if (!job) break;
 
-    posterRetryQueuedRef.current.add(key);
-    posterRetryQueueRef.current.push({ key, result });
-    startPosterRetryWorker();
-  };
+      posterBackgroundQueuedRef.current.delete(job.key);
+      posterBackgroundActiveRef.current += 1;
 
-  const auditTopPostersInBackground = (items: TorrentSearchResult[]) => {
-    const generation = posterRetryGenerationRef.current;
-    const auditItems = items.slice(0, 12);
-
-    window.setTimeout(() => {
       void (async () => {
-        for (const result of auditItems) {
-          if (generation !== posterRetryGenerationRef.current) return;
+        try {
+          if (generation !== posterBackgroundGenerationRef.current) return;
 
-          const key = posterKeyFor(result);
-          if (!key || posterLoadedRef.current.has(key) || posterOverrides[key]) {
-            continue;
+          const key = job.key;
+          const currentRawUrl = rawPosterUrlFor(job.result);
+
+          // A visible/loaded poster wins immediately; don't spend background
+          // work resolving something the browser already has.
+          if (posterLoadedRef.current.has(key)) return;
+
+          const candidates = posterResolveCandidateUrlsFor(job.result);
+          for (const candidate of candidates) {
+            if (generation !== posterBackgroundGenerationRef.current) return;
+
+            const resolved = await resolvePosterInBackground(candidate, generation);
+            if (resolved) {
+              setPosterOverrides(prev => (
+                prev[key] === resolved ? prev : { ...prev, [key]: resolved }
+              ));
+              return;
+            }
+
+            await new Promise(resolve => window.setTimeout(resolve, 250));
           }
 
-          const currentUrl = rawPosterUrlFor(result);
-          if (!currentUrl) {
-            queuePosterRetry(result);
-            continue;
+          // One delayed retry gives transient provider failures another chance.
+          const attempts = posterBackgroundAttemptsRef.current.get(key) || 0;
+          if (attempts < 1 && generation === posterBackgroundGenerationRef.current) {
+            posterBackgroundAttemptsRef.current.set(key, attempts + 1);
+            window.setTimeout(() => {
+              if (generation !== posterBackgroundGenerationRef.current) return;
+              if (posterLoadedRef.current.has(key)) return;
+              if (posterBackgroundQueuedRef.current.has(key)) return;
+
+              posterBackgroundQueuedRef.current.add(key);
+              posterBackgroundQueueRef.current.push(job);
+              startPosterBackgroundWorkers();
+            }, 45000);
           }
 
-          const loaded = await probePoster(currentUrl);
-          if (!loaded) {
-            queuePosterRetry(result);
-          } else {
-            posterLoadedRef.current.add(key);
-          }
+          void currentRawUrl;
+        } finally {
+          posterBackgroundActiveRef.current = Math.max(
+            0,
+            posterBackgroundActiveRef.current - 1
+          );
 
-          await new Promise(resolve => window.setTimeout(resolve, 300));
+          if (generation === posterBackgroundGenerationRef.current) {
+            startPosterBackgroundWorkers();
+          }
         }
       })();
-    }, 900);
+    }
   };
+
+  const startPosterBackgroundSearch = (items: TorrentSearchResult[]) => {
+    posterBackgroundGenerationRef.current += 1;
+    posterBackgroundQueueRef.current = [];
+    posterBackgroundQueuedRef.current.clear();
+    posterBackgroundAttemptsRef.current.clear();
+    posterLoadedRef.current.clear();
+
+    const generation = posterBackgroundGenerationRef.current;
+
+    for (const result of items) {
+      const key = posterKeyFor(result);
+      if (!key || posterBackgroundQueuedRef.current.has(key)) continue;
+
+      posterBackgroundQueuedRef.current.add(key);
+      posterBackgroundQueueRef.current.push({ key, result });
+    }
+
+    // Start immediately after results arrive, but never await this work.
+    if (generation === posterBackgroundGenerationRef.current) {
+      startPosterBackgroundWorkers();
+    }
+  };
+
+  const posterUrlFor = (result: TorrentSearchResult) =>
+    posterOverrides[posterKeyFor(result)] || rawPosterUrlFor(result);
 
   const normalizeMatchText = (value: string) =>
     String(value || '')
@@ -485,10 +473,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       setSearched(false);
       setPosterOverrides({});
       posterLoadedRef.current.clear();
-      posterRetryQueueRef.current = [];
-      posterRetryQueuedRef.current.clear();
-      posterRetryAttemptsRef.current.clear();
-      posterRetryGenerationRef.current += 1;
+      posterBackgroundQueueRef.current = [];
+      posterBackgroundQueuedRef.current.clear();
+      posterBackgroundAttemptsRef.current.clear();
+      posterBackgroundGenerationRef.current += 1;
       saveRecentSearch(trimmed);
 
       // The backend owns low-result TV/season fallback. Keeping that logic
@@ -501,7 +489,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
       setResults(data);
       setSearched(true);
-      auditTopPostersInBackground(data);
+      startPosterBackgroundSearch(data);
 
       // Do not wait for metadata before displaying results. Start resolving
       // the first two results immediately, then the next two after that batch
@@ -854,7 +842,15 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                 posterLoadedRef.current.delete(key);
                                 event.currentTarget.style.display = 'none';
                                 event.currentTarget.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.remove('hidden');
-                                queuePosterRetry(result);
+
+                                if (
+                                  !posterBackgroundQueuedRef.current.has(key) &&
+                                  !posterOverrides[key]
+                                ) {
+                                  posterBackgroundQueuedRef.current.add(key);
+                                  posterBackgroundQueueRef.current.unshift({ key, result });
+                                  startPosterBackgroundWorkers();
+                                }
                               }}
                             />
                             <div data-poster-placeholder="true" className="hidden absolute inset-0 items-center justify-center bg-slate-950 text-slate-700">
