@@ -3419,7 +3419,18 @@ _poster_inflight: dict[str, asyncio.Task[str | None]] = {}
 
 
 def _poster_normalize_title(value: str) -> str:
-    normalized = " ".join(re.findall(r"[a-z0-9]+", str(value or "").lower())).strip()
+    value = str(value or "").lower().replace("’", "'")
+    # Torrent sources frequently vary only in punctuation/spelling. Treat
+    # possessives as the same words and normalize common title variants.
+    value = value.replace("'", "")
+    tokens = re.findall(r"[a-z0-9]+", value)
+    token_aliases = {
+        "v": "vs",
+        "vs": "vs",
+        "carribean": "caribbean",
+    }
+    tokens = [token_aliases.get(token, token) for token in tokens]
+    normalized = " ".join(tokens).strip()
     return re.sub(r"^(?:the|a|an)\s+", "", normalized)
 
 
