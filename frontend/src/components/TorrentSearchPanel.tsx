@@ -12,7 +12,6 @@ import {
   Database,
   AlertCircle,
   SlidersHorizontal,
-  Star,
   Film
 } from 'lucide-react';
 import { api, API_BASE, TorrentSearchResult } from '../api/client.ts';
