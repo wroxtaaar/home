@@ -5,6 +5,8 @@ import {
   Loader2,
   Download,
   Play,
+  Copy,
+  Check,
   ExternalLink,
   Users,
   Database,
@@ -21,7 +23,6 @@ type SeedrSearchFile = {
   size: number;
   folderId: string;
   folderPath: string;
-  torrentHash?: string;
 };
 
 interface TorrentSearchPanelProps {
@@ -38,13 +39,6 @@ interface TorrentSearchPanelProps {
   onOpenProgress?: () => void;
   seedrFiles?: SeedrSearchFile[];
   seedrDeletedFolderIds?: string[];
-  seedrFolders?: Array<{
-    folderId: string;
-    id: string;
-    name: string;
-    path: string;
-    totalSize: number;
-  }>;
   onPlaySeedrFile?: (file: SeedrSearchFile) => void | Promise<void>;
 }
 
@@ -55,7 +49,7 @@ function formatPublished(value?: string) {
   return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepare, onCancelPrepare, onOpenProgress, seedrFiles = [], seedrDeletedFolderIds = [], seedrFolders = [], onPlaySeedrFile }) => {
+export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepare, onCancelPrepare, onOpenProgress, seedrFiles = [], seedrDeletedFolderIds = [], onPlaySeedrFile }) => {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<TorrentSearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -69,6 +63,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [showRecentSearches, setShowRecentSearches] = useState(false);
   const [preparingTorrentKey, setPreparingTorrentKey] = useState<string | null>(null);
   const [playingTorrentKey, setPlayingTorrentKey] = useState<string | null>(null);
+  const [copiedTorrentKey, setCopiedTorrentKey] = useState<string | null>(null);
   const [prepareWaitTitle, setPrepareWaitTitle] = useState('');
   const [prepareWaitOpen, setPrepareWaitOpen] = useState(false);
   const [prepareError, setPrepareError] = useState('');
@@ -87,11 +82,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const searchRequestRef = useRef<AbortController | null>(null);
   const searchGenerationRef = useRef(0);
 
-  const normalizeInfoHash = (value?: string) => {
-    const normalized = String(value || '').trim().toLowerCase();
-    return /^[0-9a-f]{40}$/.test(normalized) ? normalized : '';
-  };
-
   const normalizeMatchText = (value: string) =>
     String(value || '')
       .toLowerCase()
@@ -100,153 +90,30 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       .replace(/\s+/g, ' ')
       .trim();
 
-  // Persist the exact search-result hash -> Seedr folder association. This
-  // survives a page refresh and gives Search a stable identity even when the
-  // Seedr task/listing response does not expose the original magnet hash.
-  const preparedHashFoldersRef = useRef<Map<string, string>>(
-    new Map(
-      (() => {
-        try {
-          const raw = localStorage.getItem('seedflow_prepared_seedr_hashes');
-          const parsed = raw ? JSON.parse(raw) : {};
-          return parsed && typeof parsed === 'object'
-            ? Object.entries(parsed)
-              .map(([hash, folderId]) => [normalizeInfoHash(hash), String(folderId || '').trim()] as const)
-              .filter(([hash, folderId]) => Boolean(hash && folderId))
-            : [];
-        } catch {
-          return [];
-        }
-      })()
-    )
-  );
-
-  const savePreparedHashFolders = () => {
-    const value: Record<string, string> = {};
-    for (const [hash, folderId] of preparedHashFoldersRef.current.entries()) {
-      value[hash] = folderId;
-    }
-    try {
-      localStorage.setItem('seedflow_prepared_seedr_hashes', JSON.stringify(value));
-    } catch {}
-  };
-
   const findPreparedFiles = (result: TorrentSearchResult): SeedrSearchFile[] => {
-    const resultHash = normalizeInfoHash(result.infoHash);
-
-    // Primary path: the backend-provided hash is authoritative when present.
-    if (resultHash) {
-      const exactHashFiles = seedrFiles.filter(file => normalizeInfoHash(file.torrentHash) === resultHash);
-      if (exactHashFiles.length > 0) return exactHashFiles;
-    }
-
-    // After refresh, use the persisted hash -> folder mapping created when
-    // this search result was originally prepared.
-    if (resultHash) {
-      const rememberedFolderId = preparedHashFoldersRef.current.get(resultHash);
-      if (rememberedFolderId) {
-        const rememberedFiles = seedrFiles.filter(file => String(file.folderId) === rememberedFolderId);
-        if (rememberedFiles.length > 0) return rememberedFiles;
-      }
-    }
-
-    // Recovery for torrents that were already prepared before hash persistence
-    // was introduced. Use title + total Seedr folder size, but only when that
-    // combination identifies exactly one folder. This prevents identical-title
-    // search rows from all becoming Play.
     const title = normalizeMatchText(result.title);
-    const resultSize = Number(result.size) || 0;
-    if (!title || resultSize <= 0) return [];
+    if (!title || title.length < 4) return [];
 
-    const grouped = new Map<string, { files: SeedrSearchFile[]; names: Set<string>; totalSize: number }>();
+    const exact: SeedrSearchFile[] = [];
+    const related: SeedrSearchFile[] = [];
+
     for (const file of seedrFiles) {
-      const folderId = String(file.folderId || '').trim();
-      if (!folderId) continue;
-
-      const entry = grouped.get(folderId) || {
-        files: [],
-        names: new Set<string>(),
-        totalSize: 0,
-      };
-      entry.files.push(file);
-      entry.totalSize += Math.max(0, Number(file.size) || 0);
-
       const folderPath = String(file.folderPath || '');
       const folderName = folderPath.split('/').filter(Boolean).pop() || '';
-      entry.names.add(normalizeMatchText(folderName));
-      entry.names.add(normalizeMatchText(file.name));
-      grouped.set(folderId, entry);
-    }
+      const fileName = normalizeMatchText(file.name);
+      const folder = normalizeMatchText(folderName);
 
-    const tolerance = Math.max(64 * 1024 * 1024, resultSize * 0.10);
-
-    // The library endpoint has the torrent-level folder name and total size.
-    // Prefer that metadata for the refresh/recovery case because Seedr file
-    // rows can contain provider-generated filenames that do not match the
-    // search result title.
-    const folderCandidates = seedrFolders
-      .map(folder => {
-        const folderId = String(folder.folderId || folder.id || '').trim();
-        const folderName = normalizeMatchText(folder.name || folder.path || '');
-        const titleMatches =
-          folderName === title ||
-          (folderName.length >= 8 && (folderName.includes(title) || title.includes(folderName)));
-        const totalSize = Number(folder.totalSize) || 0;
-        const sizeDelta = Math.abs(totalSize - resultSize);
-        return { folderId, titleMatches, totalSize, sizeDelta };
-      })
-      .filter(candidate =>
-        candidate.folderId &&
-        candidate.titleMatches &&
-        candidate.totalSize > 0 &&
-        candidate.sizeDelta <= tolerance
-      )
-      .sort((a, b) => a.sizeDelta - b.sizeDelta);
-
-    if (folderCandidates.length > 0) {
-      // A single exact torrent-folder title is a safe migration path for files
-      // downloaded before hash persistence existed.
-      const exactNameFolders = folderCandidates.filter(candidate => {
-        const folder = seedrFolders.find(item =>
-          String(item.folderId || item.id || '').trim() === candidate.folderId
-        );
-        return normalizeMatchText(folder?.name || '') === title;
-      });
-
-      if (exactNameFolders.length === 1) {
-        const folderFiles = seedrFiles.filter(file => String(file.folderId) === exactNameFolders[0].folderId);
-        if (folderFiles.length > 0) return folderFiles;
+      if (folder === title || fileName === title) {
+        exact.push(file);
+        continue;
       }
 
-      const best = folderCandidates[0];
-      const second = folderCandidates[1];
-      // Pick the closest uniquely identified folder. If two folders are
-      // equally close, leave the row as Prepare rather than falsely marking
-      // both/either release as already loaded.
-      if (!second || best.sizeDelta < second.sizeDelta) {
-        const folderFiles = seedrFiles.filter(file => String(file.folderId) === best.folderId);
-        if (folderFiles.length > 0) return folderFiles;
+      if (title.length >= 8 && (folder.includes(title) || title.includes(folder) || fileName.includes(title))) {
+        related.push(file);
       }
     }
 
-    const candidates = Array.from(grouped.entries())
-      .filter(([, entry]) => {
-        const titleMatches = Array.from(entry.names).some(name =>
-          name === title || (name.length >= 8 && (name.includes(title) || title.includes(name)))
-        );
-        return titleMatches && Math.abs(entry.totalSize - resultSize) <= tolerance;
-      })
-      .sort((a, b) => Math.abs(a[1].totalSize - resultSize) - Math.abs(b[1].totalSize - resultSize));
-
-    if (candidates.length > 0) {
-      const best = candidates[0];
-      const second = candidates[1];
-      if (!second || Math.abs(best[1].totalSize - resultSize) < Math.abs(second[1].totalSize - resultSize)) {
-        return best[1].files;
-      }
-    }
-
-    return [];
+    return exact.length > 0 ? exact : related;
   };
 
   const preparedForResult = (result: TorrentSearchResult): SeedrSearchFile[] => {
@@ -256,29 +123,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     const localFiles = local?.files?.filter(file => !deletedIds.has(String(file.folderId))) || [];
     return localFiles.length ? localFiles : findPreparedFiles(result);
   };
-
-  // One-time migration for torrents that were already downloaded before the
-  // exact info-hash mapping existed. Once a unique Seedr folder is identified,
-  // persist the result hash -> folder association so every later refresh uses
-  // the exact hash without repeating the legacy title/size lookup.
-  useEffect(() => {
-    let changed = false;
-    for (const result of results) {
-      const resultHash = normalizeInfoHash(result.infoHash);
-      if (!resultHash || preparedHashFoldersRef.current.has(resultHash)) continue;
-
-      const files = findPreparedFiles(result);
-      const folderIds = Array.from(new Set(
-        files.map(file => String(file.folderId || '').trim()).filter(Boolean)
-      ));
-      if (folderIds.length === 1) {
-        preparedHashFoldersRef.current.set(resultHash, folderIds[0]);
-        changed = true;
-      }
-    }
-
-    if (changed) savePreparedHashFolders();
-  }, [results, seedrFiles, seedrFolders]);
 
   const preparedByKeyRef = useRef(new Map<string, { files: SeedrSearchFile[] }>());
   const apiFetchRecent = (input: RequestInfo | URL, init?: RequestInit) => {
@@ -386,6 +230,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       setIsSearching(true);
       setShowRecentSearches(false);
       setError('');
+      setResults([]);
+      setSearched(false);
       saveRecentSearch(trimmed);
 
       // The backend owns low-result TV/season fallback. Keeping that logic
@@ -467,11 +313,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   };
 
   const sortedResults = useMemo(() => {
-    const minSeedrFriendlySize = 100 * 1024 * 1024;
-    const maxSeedrFriendlySize = 5 * 1024 * 1024 * 1024;
+    const maxSeedrFriendlySize = 2 * 1024 * 1024 * 1024;
     const sorted = results.filter(result => {
       const size = Number(result.size) || 0;
-      if (size < minSeedrFriendlySize || size > maxSeedrFriendlySize) return false;
+      if (size > maxSeedrFriendlySize) return false;
       if (resolutionFilter) {
         const title = String(result.title || '');
         const pattern = resolutionFilter === '720p' ? /(?:^|[^0-9])720p(?:[^0-9]|$)/i : /(?:^|[^0-9])1080p(?:[^0-9]|$)/i;
@@ -610,7 +455,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             className="w-10 sm:w-auto px-2 sm:px-4 py-2 rounded-lg sm:rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 disabled:cursor-not-allowed text-slate-950 text-xs font-bold flex items-center justify-center gap-2 transition"
           >
             {isSearching ? (
-              <Search className="w-4 h-4 opacity-70" />
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span className="hidden sm:inline">Searching...</span>
+              </>
             ) : (
               <>
                 <Search className="w-4 h-4" />
@@ -622,6 +470,14 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
 
       </div>
+
+      {isSearching && (
+        <div className="p-5 sm:p-7 rounded-xl sm:rounded-2xl bg-slate-900 border border-slate-800 flex flex-col items-center justify-center gap-3">
+          <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
+          <div className="text-sm font-semibold text-slate-200">Searching torrents...</div>
+          <div className="text-xs text-slate-500 text-center">Checking the fastest media sources and waiting for results.</div>
+        </div>
+      )}
 
       {prepareError && (
         <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex items-center justify-between gap-2">
@@ -774,6 +630,40 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                 : <Play className="w-3.5 h-3.5" />}
                               <span className="hidden sm:inline">{isPlaying ? 'Loading…' : 'Play'}</span>
                             </button>
+
+                            <button
+                              type="button"
+                              onClick={() => api.openSeedrFileDownload(primaryFile.id, primaryFile.name)}
+                              className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition"
+                              title="Download file"
+                              aria-label="Download file"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                            </button>
+
+                            <button
+                              type="button"
+                              disabled={copiedTorrentKey === torrentKey}
+                              onClick={async () => {
+                                try {
+                                  const data = await api.getSeedrFileDownload(primaryFile.id);
+                                  await navigator.clipboard.writeText(data.url);
+                                  setCopiedTorrentKey(torrentKey);
+                                  window.setTimeout(() => {
+                                    setCopiedTorrentKey(current => current === torrentKey ? null : current);
+                                  }, 2000);
+                                } catch {
+                                  setPrepareError('Could not copy the download link.');
+                                }
+                              }}
+                              className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-cyan-400 transition disabled:opacity-60"
+                              title="Copy download link"
+                              aria-label="Copy download link"
+                            >
+                              {copiedTorrentKey === torrentKey
+                                ? <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                : <Copy className="w-3.5 h-3.5" />}
+                            </button>
                           </div>
                         );
                       }
@@ -809,24 +699,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                       preparedByKeyRef.current.delete(key);
                                     }
                                   }
-
-                                  for (const [hash, folderId] of preparedHashFoldersRef.current.entries()) {
-                                    if (deletedFolderIds.has(String(folderId))) {
-                                      preparedHashFoldersRef.current.delete(hash);
-                                    }
-                                  }
-                                  savePreparedHashFolders();
                                 }
 
                                 if (prepared?.files?.length) {
                                   preparedByKeyRef.current.set(torrentKey, { files: prepared.files });
-
-                                  const resultHash = normalizeInfoHash(result.infoHash);
-                                  const preparedFolderId = String(prepared.files[0]?.folderId || '').trim();
-                                  if (resultHash && preparedFolderId) {
-                                    preparedHashFoldersRef.current.set(resultHash, preparedFolderId);
-                                    savePreparedHashFolders();
-                                  }
                                 }
                                 setPrepareWaitOpen(false);
                               } catch (error: any) {

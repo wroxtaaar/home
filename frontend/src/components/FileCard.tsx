@@ -122,27 +122,23 @@ export const FileCard: React.FC<FileCardProps> = ({
           </button>
         )}
 
-        {/* Download/copy are intentionally hidden for Seedr cloud files. */}
-        {file.ownerId !== 'seedr' && (
-          <>
-            <a
-              href={file.downloadUrl}
-              download={file.name}
-              className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition tap-target flex items-center justify-center"
-              title="Direct Download Link"
-            >
-              <Download className="w-4 h-4" />
-            </a>
+        {/* Download and copy link are available for both local and Seedr files. */}
+        <a
+          href={file.downloadUrl}
+          download={file.name}
+          className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition tap-target flex items-center justify-center"
+          title="Direct Download Link"
+        >
+          <Download className="w-4 h-4" />
+        </a>
 
-            <button
-              onClick={copyLink}
-              className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-cyan-400 transition tap-target flex items-center justify-center"
-              title="Copy Direct Download Link"
-            >
-              {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
-            </button>
-          </>
-        )}
+        <button
+          onClick={copyLink}
+          className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-cyan-400 transition tap-target flex items-center justify-center"
+          title="Copy Direct Download Link"
+        >
+          {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+        </button>
 
         {/* Quick Delete File */}
         {canDelete && (
