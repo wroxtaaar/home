@@ -15,7 +15,7 @@ import {
   Star,
   Film
 } from 'lucide-react';
-import { api, TorrentSearchResult } from '../api/client.ts';
+import { api, API_BASE, TorrentSearchResult } from '../api/client.ts';
 import { formatBytes } from '../utils/formatters.ts';
 
 type SeedrSearchFile = {
