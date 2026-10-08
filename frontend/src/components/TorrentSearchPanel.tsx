@@ -807,7 +807,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 sm:block sm:rounded-2xl sm:border sm:border-slate-800 sm:overflow-hidden sm:bg-slate-900 sm:divide-y sm:divide-slate-800/80 lg:grid lg:grid-cols-[repeat(auto-fill,minmax(220px,1fr))] lg:gap-[22px] lg:max-w-[1500px] lg:mx-auto lg:p-0 lg:border-0 lg:bg-transparent lg:divide-y-0">
+          <div
+            className="grid grid-cols-2 gap-2 sm:block sm:rounded-2xl sm:border sm:border-slate-800 sm:overflow-hidden sm:bg-slate-900 sm:divide-y sm:divide-slate-800/80 lg:grid lg:grid-cols-[repeat(var(--desktop-result-columns),minmax(0,1fr))] lg:gap-[22px] lg:w-full lg:max-w-none lg:mx-0 lg:p-0 lg:border-0 lg:bg-transparent lg:divide-y-0"
+            style={{ '--desktop-result-columns': Math.min(Math.max(sortedResults.length, 1), 6) } as React.CSSProperties}
+          >
             {sortedResults.map((result, index) => (
               <div
                 key={result.guid || result.infoHash || (result.title + '-' + index)}
