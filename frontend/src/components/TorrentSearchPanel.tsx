@@ -69,6 +69,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [prepareWaitOpen, setPrepareWaitOpen] = useState(false);
   const [prepareError, setPrepareError] = useState('');
   const [fullTorrentTitle, setFullTorrentTitle] = useState<string | null>(null);
+  const [fullTorrentTitleKey, setFullTorrentTitleKey] = useState<string | null>(null);
+  const [fullTorrentTitleFading, setFullTorrentTitleFading] = useState(false);
 
   // Metadata is prefetched in small batches so search remains fast while the
   // most likely results are already resolved when the user clicks Add.
@@ -83,6 +85,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const recentSearchRef = useRef<HTMLDivElement | null>(null);
   const searchRequestRef = useRef<AbortController | null>(null);
   const searchGenerationRef = useRef(0);
+  const fullTorrentTitleFadeTimerRef = useRef<number | null>(null);
+  const fullTorrentTitleHideTimerRef = useRef<number | null>(null);
 
   // Poster resolution runs independently of torrent search and ranking.
   // Results are queued in seed order, but only two background resolutions run
@@ -402,14 +406,40 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     };
   }, []);
 
+  const showFullTorrentTitleBubble = (result: TorrentSearchResult) => {
+    if (fullTorrentTitleFadeTimerRef.current !== null) {
+      window.clearTimeout(fullTorrentTitleFadeTimerRef.current);
+    }
+    if (fullTorrentTitleHideTimerRef.current !== null) {
+      window.clearTimeout(fullTorrentTitleHideTimerRef.current);
+    }
+
+    const key = posterKeyFor(result);
+    setFullTorrentTitleKey(key);
+    setFullTorrentTitle(String(result.title || result.mediaTitle || '').trim());
+    setFullTorrentTitleFading(false);
+
+    fullTorrentTitleFadeTimerRef.current = window.setTimeout(() => {
+      setFullTorrentTitleFading(true);
+    }, 1650);
+
+    fullTorrentTitleHideTimerRef.current = window.setTimeout(() => {
+      setFullTorrentTitle(null);
+      setFullTorrentTitleKey(null);
+      setFullTorrentTitleFading(false);
+    }, 2000);
+  };
+
   useEffect(() => {
-    if (!fullTorrentTitle) return;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setFullTorrentTitle(null);
+    return () => {
+      if (fullTorrentTitleFadeTimerRef.current !== null) {
+        window.clearTimeout(fullTorrentTitleFadeTimerRef.current);
+      }
+      if (fullTorrentTitleHideTimerRef.current !== null) {
+        window.clearTimeout(fullTorrentTitleHideTimerRef.current);
+      }
     };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [fullTorrentTitle]);
+  }, []);
 
   useEffect(() => {
     if (!showRecentSearches) return;
@@ -930,10 +960,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           <div className="hidden sm:flex lg:hidden p-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20 shrink-0">
                             <Database className="w-3.5 h-3.5 text-cyan-400" />
                           </div>
-                          <div className="min-w-0 flex-1">
+                          <div className="relative min-w-0 flex-1 z-10">
                             <button
                               type="button"
-                              onClick={() => setFullTorrentTitle(String(result.title || result.mediaTitle || '').trim())}
+                              onClick={() => showFullTorrentTitleBubble(result)}
                               className="block w-full text-left text-[11px] leading-4 sm:text-sm font-semibold text-slate-100 line-clamp-2 hover:text-cyan-300 transition cursor-pointer"
                               title="Click to view full torrent name"
                               aria-label="View full torrent name"
@@ -941,16 +971,28 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               {result.mediaTitle || result.title}
                             </button>
 
-                            <div className="mt-1.5 text-[9px] sm:text-[11px] text-slate-400">
-                              <span className="font-mono text-slate-300">{formatBytes(result.size)}</span>
-                            </div>
+                            {fullTorrentTitleKey === posterKeyFor(result) && fullTorrentTitle && (
+                              <div
+                                role="status"
+                                aria-live="polite"
+                                className={[
+                                  'absolute bottom-full left-1/2 mb-1.5 w-max max-w-[min(280px,80vw)] -translate-x-1/2 rounded-xl border border-cyan-400/25 bg-slate-950/95 px-3 py-2 text-[11px] leading-4 font-medium text-slate-100 shadow-xl transition-all duration-350 ease-out',
+                                  fullTorrentTitleFading
+                                    ? 'translate-y-1 opacity-0'
+                                    : 'translate-y-0 opacity-100'
+                                ].join(' ')}
+                              >
+                                {fullTorrentTitle}
+                                <span className="absolute left-1/2 top-full h-2 w-2 -translate-x-1/2 -translate-y-1 rotate-45 border-r border-b border-cyan-400/25 bg-slate-950/95" />
+                              </div>
+                            )}
                           </div>
                         </div>
-                      </div>
-                    </div>
-                  </div>
+                        <div className="mt-2 flex items-center justify-between gap-2">
+                          <span className="shrink-0 font-mono text-[10px] sm:text-[11px] text-slate-300">
+                            {formatBytes(result.size)}
+                          </span>
 
-                  <div className="flex items-center justify-end gap-2 shrink-0 sm:min-w-[126px] lg:w-full lg:min-w-0 lg:p-3 lg:pt-0 lg:mt-0">
                     {(() => {
                       const source = result.magnetUrl || result.downloadUrl || result.sourceUrl;
                       const torrentKey = result.infoHash || source || result.title;
@@ -1066,7 +1108,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                 setPreparingTorrentKey(current => current === torrentKey ? null : current);
                               }
                             }}
-                            className="w-full sm:w-auto px-3 py-2 rounded-lg sm:rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-60 disabled:cursor-not-allowed text-slate-950 text-xs font-bold transition"
+                            className="shrink-0 px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 disabled:opacity-60 disabled:cursor-not-allowed text-slate-950 text-[11px] font-bold transition"
                           >
                             {isPreparing ? 'Preparing…' : 'Prepare'}
                           </button>
@@ -1083,6 +1125,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                         </div>
                       );
                     })()}
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
