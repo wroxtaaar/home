@@ -3456,6 +3456,30 @@ def _poster_title_matches(wanted: str, candidate: str) -> bool:
         for index in range(len(wanted_tokens) - width + 1)
     )
 
+
+def _poster_title_aliases(title: str, year: str = "") -> list[str]:
+    """Return provider-friendly title aliases for common torrent shorthand."""
+    clean_title = str(title or "").strip()
+    normalized = _poster_normalize_title(clean_title)
+    aliases = [clean_title] if clean_title else []
+
+    # Torrent sources often shorten sequel titles to a franchise number.
+    # Keep this deliberately narrow so numeric titles do not create broad false matches.
+    pirates_sequels = {
+        "1": "Pirates of the Caribbean: The Curse of the Black Pearl",
+        "2": "Pirates of the Caribbean: Dead Man's Chest",
+        "3": "Pirates of the Caribbean: At World's End",
+        "4": "Pirates of the Caribbean: On Stranger Tides",
+        "5": "Pirates of the Caribbean: Dead Men Tell No Tales",
+    }
+    match = re.fullmatch(r"pirates of the caribbean ([1-5])", normalized)
+    if match:
+        alias = pirates_sequels[match.group(1)]
+        if alias not in aliases:
+            aliases.append(alias)
+
+    return aliases
+
 def _poster_title_parts(raw_title: str) -> tuple[str, str]:
     """Extract a clean movie title/year from a torrent release name."""
     value = str(raw_title or "").replace(".", " ").replace("_", " ")
@@ -3493,14 +3517,16 @@ async def _cinemeta_poster_lookup(title: str, year: str = "") -> str | None:
     if not clean_title:
         return None
 
-    wanted = _poster_normalize_title(clean_title)
+    title_aliases = _poster_title_aliases(clean_title, clean_year)
+    wanted_titles = [_poster_normalize_title(value) for value in title_aliases]
     queries = []
-    for query_value in (
-        f"{clean_title} {clean_year}".strip(),
-        clean_title,
-    ):
-        if query_value and query_value not in queries:
-            queries.append(query_value)
+    for alias in title_aliases:
+        for query_value in (
+            f"{alias} {clean_year}".strip(),
+            alias,
+        ):
+            if query_value and query_value not in queries:
+                queries.append(query_value)
 
     try:
         async with httpx.AsyncClient(timeout=4, follow_redirects=True) as client:
@@ -3527,7 +3553,7 @@ async def _cinemeta_poster_lookup(title: str, year: str = "") -> str | None:
                         candidate = _poster_normalize_title(name)
                         poster = str(row.get("poster") or "").strip()
                         imdb_id = str(row.get("id") or "").strip()
-                        if not name or not _poster_title_matches(wanted, candidate):
+                        if not name or not any(_poster_title_matches(wanted, candidate) for wanted in wanted_titles):
                             continue
 
                         candidate_year = str(
@@ -3577,24 +3603,27 @@ async def _poster_lookup_uncached(clean_title: str, clean_year: str, cache_key: 
     poster = None
 
     try:
-        query = quote((clean_title + " " + clean_year).strip(), safe="")
+        title_aliases = _poster_title_aliases(clean_title, clean_year)
+        wanted_titles = [_poster_normalize_title(value) for value in title_aliases]
+        wanted_year = clean_year
+        candidates: list[tuple[int, str]] = []
         async with httpx.AsyncClient(timeout=4, follow_redirects=True) as client:
-            response = await client.get(
-                f"https://v3.sg.media-imdb.com/suggestion/titles/x/{query}.json?includeVideos=0",
-                headers={"Accept": "application/json"},
-            )
-            if response.status_code == 200:
+            for alias in title_aliases:
+                query = quote((alias + " " + clean_year).strip(), safe="")
+                response = await client.get(
+                    f"https://v3.sg.media-imdb.com/suggestion/titles/x/{query}.json?includeVideos=0",
+                    headers={"Accept": "application/json"},
+                )
+                if response.status_code != 200:
+                    continue
                 data = response.json()
-                wanted = _poster_normalize_title(clean_title)
-                wanted_year = clean_year
-                candidates: list[tuple[int, str]] = []
                 for row in data.get("d") or []:
                     if not isinstance(row, dict):
                         continue
                     image = str((row.get("i") or {}).get("imageUrl") or "").strip()
                     candidate = _poster_normalize_title(str(row.get("l") or ""))
                     candidate_year = str(row.get("y") or "")
-                    if not image or not _poster_title_matches(wanted, candidate):
+                    if not image or not any(_poster_title_matches(wanted, candidate) for wanted in wanted_titles):
                         continue
                     if wanted_year and candidate_year and candidate_year != wanted_year:
                         continue
@@ -3605,6 +3634,8 @@ async def _poster_lookup_uncached(clean_title: str, clean_year: str, cache_key: 
                         score += 10
                     score += max(0, 20 - int(row.get("rank") or 20))
                     candidates.append((score, image))
+                if candidates:
+                    candidates.sort(key=lambda pair: pair[0], reverse=True)
                 if candidates:
                     candidates.sort(key=lambda pair: pair[0], reverse=True)
                     poster = candidates[0][1]
@@ -3621,7 +3652,8 @@ async def _poster_lookup_uncached(clean_title: str, clean_year: str, cache_key: 
                 )
                 if response.status_code == 200:
                     data = response.json()
-                    wanted = _poster_normalize_title(clean_title)
+                    title_aliases = _poster_title_aliases(clean_title, clean_year)
+                    wanted_titles = [_poster_normalize_title(value) for value in title_aliases]
                     wanted_year = clean_year
                     candidates: list[tuple[int, str]] = []
                     for row in data.get("results") or []:
@@ -3629,7 +3661,7 @@ async def _poster_lookup_uncached(clean_title: str, clean_year: str, cache_key: 
                             continue
                         candidate = _poster_normalize_title(str(row.get("trackName") or row.get("collectionName") or ""))
                         candidate_year = str(row.get("releaseDate") or "")[:4]
-                        if candidate != wanted:
+                        if not any(_poster_title_matches(wanted, candidate) for wanted in wanted_titles):
                             continue
                         if wanted_year and candidate_year and candidate_year != wanted_year:
                             continue
