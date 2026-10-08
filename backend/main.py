@@ -3415,7 +3415,8 @@ _POSTER_CACHE_SECONDS = 6 * 60 * 60
 _poster_cache: dict[str, tuple[float, str | None]] = {}
 
 def _poster_normalize_title(value: str) -> str:
-    return " ".join(re.findall(r"[a-z0-9]+", str(value or "").lower())).strip()
+    normalized = " ".join(re.findall(r"[a-z0-9]+", str(value or "").lower())).strip()
+    return re.sub(r"^(?:the|a|an)\\s+", "", normalized)
 
 
 def _poster_title_parts(raw_title: str) -> tuple[str, str]:
@@ -3457,7 +3458,8 @@ async def _poster_lookup(title: str, year: str = "") -> str | None:
     cache_key = f"{_poster_normalize_title(clean_title)}|{clean_year}"
     now = time.time()
     cached = _poster_cache.get(cache_key)
-    if cached and now - cached[0] < _POSTER_CACHE_SECONDS:
+    cache_ttl = _POSTER_CACHE_SECONDS if cached and cached[1] else 10 * 60
+    if cached and now - cached[0] < cache_ttl:
         return cached[1]
 
     poster = None
@@ -3472,15 +3474,27 @@ async def _poster_lookup(title: str, year: str = "") -> str | None:
                 data = response.json()
                 wanted = _poster_normalize_title(clean_title)
                 wanted_year = clean_year
+                candidates: list[tuple[int, str]] = []
                 for row in data.get("d") or []:
                     if not isinstance(row, dict):
                         continue
                     image = str((row.get("i") or {}).get("imageUrl") or "").strip()
                     candidate = _poster_normalize_title(str(row.get("l") or ""))
                     candidate_year = str(row.get("y") or "")
-                    if image and candidate == wanted and (not wanted_year or not candidate_year or candidate_year == wanted_year):
-                        poster = image
-                        break
+                    if not image or candidate != wanted:
+                        continue
+                    if wanted_year and candidate_year and candidate_year != wanted_year:
+                        continue
+                    score = 100
+                    if wanted_year and candidate_year == wanted_year:
+                        score += 100
+                    if str(row.get("qid") or "") == "movie":
+                        score += 10
+                    score += max(0, 20 - int(row.get("rank") or 20))
+                    candidates.append((score, image))
+                if candidates:
+                    candidates.sort(key=lambda pair: pair[0], reverse=True)
+                    poster = candidates[0][1]
     except Exception:
         pass
 
@@ -3496,14 +3510,23 @@ async def _poster_lookup(title: str, year: str = "") -> str | None:
                     data = response.json()
                     wanted = _poster_normalize_title(clean_title)
                     wanted_year = clean_year
+                    candidates: list[tuple[int, str]] = []
                     for row in data.get("results") or []:
                         if str(row.get("kind") or "") != "feature-movie" or not row.get("artworkUrl100"):
                             continue
                         candidate = _poster_normalize_title(str(row.get("trackName") or row.get("collectionName") or ""))
                         candidate_year = str(row.get("releaseDate") or "")[:4]
-                        if candidate == wanted and (not wanted_year or not candidate_year or candidate_year == wanted_year):
-                            poster = str(row["artworkUrl100"]).replace("100x100bb", "600x600bb")
-                            break
+                        if candidate != wanted:
+                            continue
+                        if wanted_year and candidate_year and candidate_year != wanted_year:
+                            continue
+                        score = 100
+                        if wanted_year and candidate_year == wanted_year:
+                            score += 100
+                        candidates.append((score, str(row["artworkUrl100"]).replace("100x100bb", "600x600bb")))
+                    if candidates:
+                        candidates.sort(key=lambda pair: pair[0], reverse=True)
+                        poster = candidates[0][1]
         except Exception:
             pass
 
