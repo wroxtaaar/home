@@ -2333,7 +2333,7 @@ async def search_1337x_direct(
                         if kind_hint == "tv" and sub_id not in X1337_TV_SUBCATEGORIES:
                             continue
 
-            size_match = re.match(r"([\d.]+)\s*([KMGT]i?B)", row.get("size", ""), re.I)
+                    size_match = re.match(
                         r"([\d.]+)\s*([KMGT]i?B)",
                         row.get("size", ""),
                         re.IGNORECASE,
