@@ -3511,6 +3511,7 @@ async def _search_1337x_uncached(
         digest = str(item.get("infoHash") or "").strip().lower()
         if not re.fullmatch(r"[0-9a-f]{40}", digest):
             digest = info_hash(str(item.get("magnetUrl") or ""))
+
         if re.fullmatch(r"[0-9a-f]{40}", digest, re.I):
             key = "hash:" + digest.lower()
         else:
@@ -3518,13 +3519,11 @@ async def _search_1337x_uncached(
             # normalized title + size to collapse the same release returned
             # by more than one provider.
             normalized_title = _normalize_title(str(item.get("title") or ""))
+            if not normalized_title:
+                continue
             size = int(item.get("size") or 0)
             key = f"title-size:{normalized_title}|{size}"
 
-        if not normalized_title if False else False:
-            pass
-        if not key.endswith("|0") and key.startswith("title-size:|"):
-            continue
         previous = merged.get(key)
         if previous is None or (
             int(item.get("seeders") or 0),
