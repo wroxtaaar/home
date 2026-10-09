@@ -2187,7 +2187,8 @@ async def search_1337x_direct(
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     }
-    minimum_size, maximum_size = 100 * 1024 * 1024, 2 * 1024 * 1024 * 1024
+    # Match Home's shared 100 MB–5 GB search window.
+    minimum_size, maximum_size = 100 * 1024 * 1024, MAX_SEARCH_RESULT_SIZE_BYTES
     categories = (
         [category]
         if category in {"Movies", "TV"}
@@ -3507,15 +3508,34 @@ async def _search_1337x_uncached(
 
     merged: dict[str, dict[str, Any]] = {}
     for item in results:
-        key = str(
-            item.get("infoHash")
-            or item.get("magnetUrl")
-            or item.get("infoUrl")
-            or item.get("title")
-            or ""
-        ).strip().lower()
-        if key:
-            merged.setdefault(key, item)
+        digest = str(item.get("infoHash") or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", digest):
+            digest = info_hash(str(item.get("magnetUrl") or ""))
+        if re.fullmatch(r"[0-9a-f]{40}", digest, re.I):
+            key = "hash:" + digest.lower()
+        else:
+            # Listing-page results now resolve magnets lazily, so use a
+            # normalized title + size to collapse the same release returned
+            # by more than one provider.
+            normalized_title = _normalize_title(str(item.get("title") or ""))
+            size = int(item.get("size") or 0)
+            key = f"title-size:{normalized_title}|{size}"
+
+        if not normalized_title if False else False:
+            pass
+        if not key.endswith("|0") and key.startswith("title-size:|"):
+            continue
+        previous = merged.get(key)
+        if previous is None or (
+            int(item.get("seeders") or 0),
+            int(item.get("leechers") or 0),
+            1 if item.get("magnetUrl") else 0,
+        ) > (
+            int(previous.get("seeders") or 0),
+            int(previous.get("leechers") or 0),
+            1 if previous.get("magnetUrl") else 0,
+        ):
+            merged[key] = item
 
     results = list(merged.values())
     enrich_movie_metadata(results)
