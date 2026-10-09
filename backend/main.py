@@ -2332,7 +2332,7 @@ async def search_1337x_direct(
                         if kind_hint == "tv" and sub_id not in X1337_TV_SUBCATEGORIES:
                             continue
 
-                    size_match = re.match(
+            size_match = re.match(r"([\d.]+)\s*([KMGT]i?B)", row.get("size", ""), re.I)
                         r"([\d.]+)\s*([KMGT]i?B)",
                         row.get("size", ""),
                         re.IGNORECASE,
@@ -2740,7 +2740,7 @@ async def search_limetorrents(
         }
     ]
     provider_query = re.sub(
-        r"\\s+",
+        r"\s+",
         " ",
         f"{provider_query} {' '.join(language_terms)}".strip(),
     )
@@ -2814,7 +2814,7 @@ async def search_limetorrents(
         # reported seed/peer counts for each title and size.
         unique_rows: dict[tuple[str, str], dict[str, Any]] = {}
         for row in raw_rows:
-            size_match = re.match(r"([\\d.]+)\\s*([KMGT]i?B)", row.get("size", ""), re.I)
+            size_match = re.match(r"([\d.]+)\s*([KMGT]i?B)", row.get("size", ""), re.I)
             if not size_match:
                 continue
             size = int(float(size_match.group(1)) * units[size_match.group(2).upper()])
@@ -4070,7 +4070,7 @@ async def resolve_search_magnet(body: dict[str, Any]):
         raise HTTPException(502, "Could not reach the torrent provider. Please try another result.") from exc
 
     match = re.search(
-        r"magnet:\\?xt=urn:btih:[^\\"'<\\s]+",
+        r"magnet:\?xt=urn:btih:[^\"'<\s]+",
         response.text,
         re.IGNORECASE,
     )
@@ -7151,7 +7151,7 @@ async def submit_feedback(body: FeedbackRequest, request: Request):
     label = {"review": "Review", "suggestion": "Suggestion", "bug": "Bug report"}[feedback_type]
     title_prefix = {"review": "Review", "suggestion": "Suggestion", "bug": "Bug report"}[feedback_type]
     title_text = message.replace("\\n", " ").strip()
-    title_text = re.sub(r"\\s+", " ", title_text)[:70] or "New feedback"
+        r"\s+",
 
     if feedback_type == "review" and rating is not None:
         stars = "⭐" * rating
