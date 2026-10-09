@@ -7170,7 +7170,7 @@ async def submit_feedback(body: FeedbackRequest, request: Request):
     label = {"review": "Review", "suggestion": "Suggestion", "bug": "Bug report"}[feedback_type]
     title_prefix = {"review": "Review", "suggestion": "Suggestion", "bug": "Bug report"}[feedback_type]
     title_text = message.replace("\\n", " ").strip()
-        r"\s+",
+    title_text = re.sub(r"\s+", " ", title_text)[:70] or "New feedback"
 
     if feedback_type == "review" and rating is not None:
         stars = "⭐" * rating
