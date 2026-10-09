@@ -1210,6 +1210,8 @@ export default function App() {
       magnetUrl?: string;
       downloadUrl?: string;
       sourceUrl?: string;
+      infoUrl?: string;
+      indexer?: string;
     },
     metadata?: {
       name: string;
@@ -1266,14 +1268,22 @@ export default function App() {
       throw new Error('Seedr preparation was replaced by a newer selection.');
     }
 
-    const source = String(result.magnetUrl || result.downloadUrl || result.sourceUrl || '').trim();
-    const magnet = source.toLowerCase().startsWith('magnet:?')
-      ? source
-      : result.infoHash
+    let magnet = String(result.magnetUrl || result.downloadUrl || '').trim();
+    if (!magnet.toLowerCase().startsWith('magnet:?')) {
+      magnet = result.infoHash
         ? 'magnet:?xt=urn:btih:' + result.infoHash.trim()
-        : source;
+        : '';
+    }
 
-    if (!magnet) {
+    // Search results now load from listing pages without waiting for every
+    // provider detail page. Resolve the magnet only when the user chooses
+    // Prepare, keeping slow provider pages out of the initial search request.
+    if (!magnet && result.infoUrl) {
+      const resolved = await api.resolveSearchMagnet(result.infoUrl, result.indexer || '');
+      magnet = String(resolved?.magnet || '').trim();
+    }
+
+    if (!magnet.toLowerCase().startsWith('magnet:?')) {
       throw new Error('This search result does not contain a usable magnet link.');
     }
 
