@@ -120,6 +120,21 @@ export const api = {
     return Array.isArray(data) ? data : (Array.isArray(data?.results) ? data.results : []);
   },
 
+  async resolveSearchMagnet(infoUrl: string, indexer = ''): Promise<{ magnet: string; infoHash: string }> {
+    const res = await apiFetch('/api/search/resolve-magnet', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ infoUrl, indexer })
+    });
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch {}
+    if (!res.ok) {
+      throw new Error(data?.detail || data?.error || body || 'Could not resolve the magnet link.');
+    }
+    return data as { magnet: string; infoHash: string };
+  },
+
   async addSearchTorrent(source: string, size: number, infoHash?: string, torrentName?: string): Promise<any> {
     const magnet = source.trim();
     const resolvedMagnet =
