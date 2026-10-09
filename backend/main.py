@@ -2409,44 +2409,25 @@ async def search_1337x_direct(
         candidates = candidates[:min(max(limit, 1), 20)]
 
         async def fetch_detail(row):
-            try:
-                response = await client.get(base_for_row(row) + row["path"])
-                response.raise_for_status()
-            except (httpx.HTTPError, ValueError):
-                return None
-
-            match = re.search(
-                r"""(?:href|data-href)=[\"'](magnet:\?xt=urn:btih:[^\"']+)[\"']""",
-                response.text,
-                re.IGNORECASE,
-            )
-            if match:
-                magnet = unescape(match.group(1))
-            else:
-                match = re.search(
-                    r"magnet:\?xt=urn:btih:[^\"'< >\s]+".replace(" ", ""),
-                    response.text,
-                    re.IGNORECASE,
-                )
-                if not match:
-                    return None
-                magnet = unescape(match.group(0))
-
-            h = info_hash(magnet)
+            # Keep useful listing results even when the provider's detail page
+            # is slow or blocks server-side requests. Magnets are resolved on
+            # demand by /api/search/resolve-magnet when a user clicks Prepare.
+            detail_url = base_for_row(row) + row["path"]
             return {
-                "guid": f"1337x-{h or row['path']}",
+                "guid": "1337x-" + hashlib.sha1(detail_url.encode("utf-8")).hexdigest()[:20],
                 "title": row["title"],
                 "size": int(row["size_bytes"]),
-                "seeders": int(row["seeders"] or 0),
-                "leechers": int(row["leechers"] or 0),
+                "seeders": int(row.get("seeders") or 0),
+                "leechers": int(row.get("leechers") or 0),
                 "indexer": "1337x",
                 "protocol": "torrent",
                 "publishDate": "",
-                "magnetUrl": magnet,
-                "infoHash": h,
-                "downloadUrl": magnet,
-                "infoUrl": base_for_row(row) + row["path"],
-                "sourceUrl": base_for_row(row) + row["path"],
+                "magnetUrl": None,
+                "infoHash": "",
+                "downloadUrl": None,
+                "infoUrl": detail_url,
+                "sourceUrl": detail_url,
+                "descriptorUrl": "",
                 "category": row.get("media_category") or "Video",
             }
 
@@ -2743,7 +2724,7 @@ async def search_limetorrents(
     limit: int = 50,
     pages: int = 2,
 ) -> list[dict[str, Any]]:
-    """Search LimeTorrents directly using its seed-sorted media search."""
+    """Search LimeTorrents concurrently across mirrors; resolve magnets on demand."""
     _title_query, season, episode = _media_search_parts(query)
     provider_query = _media_provider_query(query)
 
@@ -2759,7 +2740,7 @@ async def search_limetorrents(
         }
     ]
     provider_query = re.sub(
-        r"\s+",
+        r"\\s+",
         " ",
         f"{provider_query} {' '.join(language_terms)}".strip(),
     )
@@ -2778,9 +2759,7 @@ async def search_limetorrents(
         follow_redirects=True,
         headers=headers,
     ) as client:
-        pages_html: list[tuple[str, str]] = []
-
-        for host in LIMETORRENTS_HOSTS:
+        async def fetch_host(host: str) -> list[tuple[str, str]]:
             base = f"https://{host}"
             urls = [f"{base}/search/all/{encoded}/seeds/1/"]
             if pages > 1:
@@ -2795,28 +2774,34 @@ async def search_limetorrents(
                     pass
                 return ""
 
-            fetched_pages = await asyncio.gather(
+            bodies = await asyncio.gather(
                 *(fetch_page(url) for url in urls),
                 return_exceptions=False,
             )
-            usable = [(base, text_value) for text_value in fetched_pages if text_value]
-            if usable and any(_limetorrents_rows(text_value, base) for base, text_value in usable):
-                pages_html = usable
-                break
+            return [(base, body) for body in bodies if body]
 
-        if not pages_html:
-            logger.warning("LimeTorrents unavailable for '%s' (hosts=%s)", query, ",".join(LIMETORRENTS_HOSTS))
-            return []
+        # Probe all mirrors together. Previously a dead first mirror could
+        # consume the timeout sequentially before a healthy mirror was tried.
+        mirror_pages = await asyncio.gather(
+            *(fetch_host(host) for host in LIMETORRENTS_HOSTS),
+            return_exceptions=True,
+        )
+        pages_html: list[tuple[str, str]] = []
+        for value in mirror_pages:
+            if isinstance(value, list):
+                pages_html.extend(value)
 
         raw_rows: list[dict[str, str]] = []
         for base, html_text in pages_html:
             raw_rows.extend(_limetorrents_rows(html_text, base))
-        logger.warning(
-            "LimeTorrents parsed '%s': %d rows for provider query '%s'",
-            query,
-            len(raw_rows),
-            provider_query,
-        )
+
+        if not raw_rows:
+            logger.warning(
+                "LimeTorrents unavailable for '%s' (hosts=%s)",
+                query,
+                ",".join(LIMETORRENTS_HOSTS),
+            )
+            return []
 
         units = {
             "KB": 1024, "KIB": 1024,
@@ -2825,21 +2810,25 @@ async def search_limetorrents(
             "TB": 1024**4, "TIB": 1024**4,
         }
 
-        parsed_rows: list[dict[str, Any]] = []
+        # Merge repeated rows from mirror domains, retaining the highest
+        # reported seed/peer counts for each title and size.
+        unique_rows: dict[tuple[str, str], dict[str, Any]] = {}
         for row in raw_rows:
-            size_match = re.match(
-                r"([\d.]+)\s*([KMGT]i?B)",
-                row.get("size", ""),
-                re.I,
-            )
+            size_match = re.match(r"([\\d.]+)\\s*([KMGT]i?B)", row.get("size", ""), re.I)
             if not size_match:
                 continue
-            size = int(
-                float(size_match.group(1))
-                * units[size_match.group(2).upper()]
-            )
-            parsed_rows.append({**row, "size_bytes": size})
+            size = int(float(size_match.group(1)) * units[size_match.group(2).upper()])
+            key = (_normalize_title(str(row.get("title") or "")), str(size))
+            candidate = {**row, "size_bytes": size}
+            previous = unique_rows.get(key)
+            if previous is None or (
+                int(candidate.get("seeders") or 0), int(candidate.get("leechers") or 0)
+            ) > (
+                int(previous.get("seeders") or 0), int(previous.get("leechers") or 0)
+            ):
+                unique_rows[key] = candidate
 
+        parsed_rows = list(unique_rows.values())
         parsed_rows.sort(
             key=lambda row: (
                 int(row.get("seeders") or 0),
@@ -2847,39 +2836,14 @@ async def search_limetorrents(
             ),
             reverse=True,
         )
-        parsed_rows = parsed_rows[:min(max(limit, 1), 12)]
 
-        async def fetch_magnet(row: dict[str, Any]) -> dict[str, Any] | None:
+        results: list[dict[str, Any]] = []
+        for row in parsed_rows[:min(max(limit, 1), 30)]:
             detail_url = str(row.get("detail_url") or "").strip()
             if not detail_url:
-                return None
-
-            try:
-                response = await client.get(
-                    detail_url,
-                    timeout=min(1.5, SEARCH_SOURCE_TIMEOUT_SECONDS),
-                    follow_redirects=True,
-                )
-                if response.status_code >= 400:
-                    return None
-            except httpx.HTTPError:
-                return None
-
-            magnet_match = re.search(
-                r"magnet:\?xt=urn:btih:[^\"'<\s]+",
-                response.text,
-                re.IGNORECASE,
-            )
-            if not magnet_match:
-                return None
-
-            magnet = unescape(magnet_match.group(0))
-            h = info_hash(magnet)
-            if not h:
-                return None
-
-            return {
-                "guid": f"limetorrents-{h}",
+                continue
+            results.append({
+                "guid": "limetorrents-" + hashlib.sha1(detail_url.encode("utf-8")).hexdigest()[:20],
                 "title": str(row.get("title") or ""),
                 "size": int(row.get("size_bytes") or 0),
                 "seeders": int(row.get("seeders") or 0),
@@ -2887,37 +2851,23 @@ async def search_limetorrents(
                 "indexer": "LimeTorrents",
                 "protocol": "torrent",
                 "publishDate": "",
-                "magnetUrl": magnet,
-                "infoHash": h,
-                "downloadUrl": magnet,
+                "magnetUrl": None,
+                "infoHash": "",
+                "downloadUrl": None,
                 "infoUrl": detail_url,
                 "sourceUrl": detail_url,
-                "descriptorUrl": str(row.get("descriptor_url") or ""),
-                "category": (
-                    "TV" if category == "tv" else "Movies"
-                ) if row.get("category") in {"Unknown", "Movies", "TV"} else "Movies",
-            }
+                "descriptorUrl": "",
+                "category": "TV" if category == "tv" else "Movies",
+            })
 
-        fetched = await asyncio.gather(
-            *(fetch_magnet(row) for row in parsed_rows),
-            return_exceptions=True,
-        )
-
-    results = [item for item in fetched if isinstance(item, dict)]
-    if results:
-        preview = ", ".join(
-            f"{item.get('seeders', 0)}:{str(item.get('title') or '')[:55]}"
-            for item in results[:5]
-        )
-        logger.warning(
-            "LimeTorrents returned '%s': %d usable results; top=%s",
-            query,
-            len(results),
-            preview,
-        )
-    else:
-        logger.warning("LimeTorrents returned '%s': 0 usable results", query)
+    logger.warning(
+        "LimeTorrents listing '%s': %d results; top seeders=%s",
+        query,
+        len(results),
+        ",".join(str(item.get("seeders") or 0) for item in results[:5]),
+    )
     return results
+
 
 async def search_knaben(
     query: str,
@@ -3236,7 +3186,7 @@ def _search_quality_filter(item: dict[str, Any], query: str) -> bool:
         return False
 
     normalized = _normalize_title(title)
-    compact = normalized.replace(" ", "")
+    normalized_tokens = set(normalized.split())
     _query_title, season, episode = _media_search_parts(query)
     # Language/codec/year qualifiers are validated separately below. The title
     # matcher should use only the actual media title, otherwise a release using
@@ -3244,14 +3194,11 @@ def _search_quality_filter(item: dict[str, Any], query: str) -> bool:
     # though the provider found it correctly.
     provider_title = _media_provider_query(query)
     target_tokens = _search_tokens(provider_title)
-    compact_target = "".join(target_tokens)
 
-    # Punctuation and spacing are intentionally ignored, so both
-    # "Spiderman" and "Spider Man" match "Spider-Man".
-    if target_tokens and not (
-        all(token in normalized for token in target_tokens)
-        or (compact_target and compact_target in compact)
-    ):
+    # Match whole normalized tokens, not arbitrary substrings. This keeps
+    # "thor" from matching "Thoroughbreds" while allowing punctuation variants
+    # such as "Spider-Man" / "Spider Man" after title normalization.
+    if target_tokens and not all(token in normalized_tokens for token in target_tokens):
         return False
 
     if not _constraint_matches_title(title, query):
@@ -3593,11 +3540,13 @@ async def _search_1337x_uncached(
                 if poster_url:
                     item["posterUrl"] = poster_url
 
+    # Seed count is the user's main comparison metric. Exact/relevant title
+    # matches break ties so high-seeded results rank first without losing
+    # preference for the requested title when swarms are equally strong.
     results.sort(
         key=lambda item: (
-            _title_relevance(str(item.get("title") or ""), query)[0],
-            1 if int(item.get("seeders") or 0) > 0 else 0,
             int(item.get("seeders") or 0),
+            _title_relevance(str(item.get("title") or ""), query)[0],
             int(item.get("leechers") or 0),
             str(item.get("publishDate") or ""),
         ),
@@ -4085,6 +4034,55 @@ async def start_seedr_cleanup_worker():
 @app.get("/health")
 async def health():
     return {"status": "ok", "seedrConfigured": bool(current_seedr_token()), "torrentSearchApi": TORRENT_SEARCH_API_URL}
+
+@app.post("/api/search/resolve-magnet")
+async def resolve_search_magnet(body: dict[str, Any]):
+    """Resolve a provider detail page to a magnet only when the user prepares it."""
+    info_url = str(body.get("infoUrl") or body.get("info_url") or "").strip()
+    if not info_url:
+        raise HTTPException(400, "A provider detail URL is required.")
+
+    parsed = urlsplit(info_url)
+    allowed_hosts = {
+        str(host).lower().removeprefix("www.")
+        for host in (*X1337_HOSTS, *LIMETORRENTS_HOSTS)
+    }
+    hostname = str(parsed.hostname or "").lower().removeprefix("www.")
+    if parsed.scheme != "https" or hostname not in allowed_hosts:
+        raise HTTPException(400, "The provider URL is not allowed.")
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True, headers=headers) as client:
+            response = await client.get(info_url)
+            final_url = urlsplit(str(response.url))
+            final_host = str(final_url.hostname or "").lower().removeprefix("www.")
+            if final_url.scheme != "https" or final_host not in allowed_hosts:
+                raise HTTPException(400, "The provider redirected to an unapproved domain.")
+            response.raise_for_status()
+    except HTTPException:
+        raise
+    except httpx.HTTPError as exc:
+        logger.info("Lazy magnet resolution failed for provider URL %s: %s", info_url, exc)
+        raise HTTPException(502, "Could not reach the torrent provider. Please try another result.") from exc
+
+    match = re.search(
+        r"magnet:\\?xt=urn:btih:[^\\"'<\\s]+",
+        response.text,
+        re.IGNORECASE,
+    )
+    if not match:
+        raise HTTPException(404, "The provider did not expose a magnet link for this result.")
+
+    magnet = unescape(match.group(0))
+    digest = info_hash(magnet)
+    if not digest:
+        raise HTTPException(502, "The provider returned an invalid magnet link.")
+    return {"magnet": magnet, "infoHash": digest}
+
 
 @app.get("/api/search")
 async def api_search(q: str = Query(..., min_length=1), limit: int = Query(50, ge=1, le=50)):
