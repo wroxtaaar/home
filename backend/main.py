@@ -41,6 +41,7 @@ TMDB_API_BASE = "https://api.themoviedb.org/3"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
 TMDB_CATALOGUE_CACHE_SECONDS = max(300, int(os.getenv("TMDB_CATALOGUE_CACHE_SECONDS", str(6 * 60 * 60))))
 TMDB_COMPANY_CACHE_SECONDS = max(3600, int(os.getenv("TMDB_COMPANY_CACHE_SECONDS", str(24 * 60 * 60))))
+TMDB_CATALOGUE_CACHE_FILE = Path(os.getenv("TMDB_CATALOGUE_CACHE_FILE", "/app/data/tmdb_movie_catalogue_cache.json"))
 _tmdb_movie_catalogue_cache: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
 _tmdb_movie_catalogue_inflight: dict[tuple[str, int], asyncio.Task[dict[str, Any]]] = {}
 _tmdb_company_id_cache: dict[str, tuple[float, list[str]]] = {}
@@ -5080,6 +5081,59 @@ async def _extra_catalogue_monthly_scheduler() -> None:
 
 
 
+def _tmdb_cache_disk_key(cache_key: tuple[str, int]) -> str:
+    return cache_key[0] + ":" + str(cache_key[1])
+
+
+def _read_tmdb_persistent_cache(cache_key: tuple[str, int]) -> tuple[float, dict[str, Any]] | None:
+    try:
+        payload = json.loads(TMDB_CATALOGUE_CACHE_FILE.read_text(encoding="utf-8"))
+        row = (payload.get("catalogues") or {}).get(_tmdb_cache_disk_key(cache_key))
+        if not isinstance(row, dict) or not isinstance(row.get("payload"), dict):
+            return None
+        saved_at = float(row.get("savedAt") or 0)
+        if saved_at <= 0:
+            return None
+        return saved_at, row["payload"]
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def _write_tmdb_persistent_cache(cache_key: tuple[str, int], payload: dict[str, Any]) -> None:
+    try:
+        TMDB_CATALOGUE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            disk = json.loads(TMDB_CATALOGUE_CACHE_FILE.read_text(encoding="utf-8"))
+            if not isinstance(disk, dict):
+                disk = {}
+        except (OSError, ValueError, TypeError):
+            disk = {}
+        catalogues = disk.get("catalogues")
+        if not isinstance(catalogues, dict):
+            catalogues = {}
+        catalogues[_tmdb_cache_disk_key(cache_key)] = {
+            "savedAt": time.time(),
+            "payload": payload,
+        }
+        # Keep the file bounded if an unusual client requests many pages.
+        if len(catalogues) > 300:
+            ordered = sorted(
+                catalogues.items(),
+                key=lambda pair: float((pair[1] or {}).get("savedAt") or 0),
+                reverse=True,
+            )
+            catalogues = dict(ordered[:300])
+        disk["catalogues"] = catalogues
+        temp_path = TMDB_CATALOGUE_CACHE_FILE.with_name(
+            TMDB_CATALOGUE_CACHE_FILE.name + "." + uuid.uuid4().hex + ".tmp"
+        )
+        temp_path.write_text(json.dumps(disk, ensure_ascii=False), encoding="utf-8")
+        os.replace(temp_path, TMDB_CATALOGUE_CACHE_FILE)
+    except (OSError, ValueError, TypeError) as exc:
+        # Caching is best-effort; it must never turn a successful API response into a failure.
+        logger.info("Could not write TMDB persistent cache: %s", exc)
+
+
 async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     if not TMDB_READ_ACCESS_TOKEN and not TMDB_API_KEY:
         raise HTTPException(
@@ -5097,37 +5151,66 @@ async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None) -> dic
     else:
         query["api_key"] = TMDB_API_KEY
 
-    try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(12.0, connect=4.0),
-            follow_redirects=True,
-            headers=headers,
-        ) as client:
-            response = await client.get(f"{TMDB_API_BASE}/{path.lstrip('/')}", params=query)
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(20.0, connect=8.0),
+                follow_redirects=True,
+                headers=headers,
+            ) as client:
+                response = await client.get(f"{TMDB_API_BASE}/{path.lstrip('/')}", params=query)
+
             if response.status_code in {401, 403}:
                 raise HTTPException(
                     status_code=503,
                     detail="TMDB rejected the configured credentials. Check TMDB_API_KEY or TMDB_READ_ACCESS_TOKEN.",
                 )
-            if response.status_code == 429:
-                raise HTTPException(
-                    status_code=503,
-                    detail="TMDB rate-limited this request. Please wait briefly and try again.",
-                )
+            if response.status_code == 429 or response.status_code >= 500:
+                if attempt < 2:
+                    logger.warning(
+                        "TMDB temporary HTTP %s for %s (attempt %s/3)",
+                        response.status_code, path, attempt + 1,
+                    )
+                    await asyncio.sleep(0.5 * (2 ** attempt))
+                    continue
+                if response.status_code == 429:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="TMDB rate-limited this request after retries. Please wait briefly and try again.",
+                    )
             response.raise_for_status()
             payload = response.json()
-    except HTTPException:
-        raise
-    except httpx.HTTPStatusError as exc:
-        logger.warning("TMDB returned HTTP %s for %s", exc.response.status_code, path)
-        raise HTTPException(status_code=502, detail=f"TMDB returned HTTP {exc.response.status_code}.") from exc
-    except (httpx.HTTPError, ValueError) as exc:
-        logger.warning("TMDB request failed for %s: %s", path, exc)
-        raise HTTPException(status_code=502, detail="TMDB could not be reached. Try again shortly.") from exc
+            if not isinstance(payload, dict):
+                raise HTTPException(status_code=502, detail="TMDB returned an unexpected response.")
+            return payload
+        except HTTPException:
+            raise
+        except httpx.RequestError as exc:
+            last_error = exc
+            logger.warning(
+                "TMDB network request failed for %s (attempt %s/3): %s: %s",
+                path, attempt + 1, type(exc).__name__, str(exc) or "<no message>",
+            )
+            if attempt < 2:
+                await asyncio.sleep(0.5 * (2 ** attempt))
+                continue
+        except httpx.HTTPStatusError as exc:
+            logger.warning("TMDB returned HTTP %s for %s", exc.response.status_code, path)
+            raise HTTPException(status_code=502, detail=f"TMDB returned HTTP {exc.response.status_code}.") from exc
+        except ValueError as exc:
+            logger.warning("TMDB returned invalid JSON for %s: %s", path, exc)
+            raise HTTPException(status_code=502, detail="TMDB returned an invalid response. Try again shortly.") from exc
 
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=502, detail="TMDB returned an unexpected response.")
-    return payload
+    logger.warning(
+        "TMDB request exhausted retries for %s: %s",
+        path,
+        (type(last_error).__name__ + ": " + str(last_error)) if last_error else "upstream failure",
+    )
+    raise HTTPException(
+        status_code=502,
+        detail="TMDB is temporarily unreachable from the VPS after three attempts. Please try again shortly.",
+    )
 
 
 async def _tmdb_discovered_company_ids(franchise: str) -> list[str]:
@@ -5347,10 +5430,22 @@ async def api_tmdb_movie_catalogue(
 
     cache_key = (catalogue_key, page)
     now = time.monotonic()
-    cached = _tmdb_movie_catalogue_cache.get(cache_key)
     cache_ttl = 30 * 60 if catalogue_key.startswith("trending-") else TMDB_CATALOGUE_CACHE_SECONDS
+    cached = _tmdb_movie_catalogue_cache.get(cache_key)
     if cached and now - cached[0] < cache_ttl:
         return cached[1]
+
+    # A disk cache survives container restarts, unlike the in-memory TTL cache.
+    persistent = _read_tmdb_persistent_cache(cache_key)
+    if persistent:
+        saved_at, persistent_payload = persistent
+        age_seconds = max(0.0, time.time() - saved_at)
+        if age_seconds < cache_ttl:
+            _tmdb_movie_catalogue_cache[cache_key] = (
+                time.monotonic() - age_seconds,
+                persistent_payload,
+            )
+            return persistent_payload
 
     task = _tmdb_movie_catalogue_inflight.get(cache_key)
     if task is None or task.done():
@@ -5359,11 +5454,26 @@ async def api_tmdb_movie_catalogue(
     try:
         payload = await task
         _tmdb_movie_catalogue_cache[cache_key] = (time.monotonic(), payload)
+        _write_tmdb_persistent_cache(cache_key, payload)
         return payload
-    except HTTPException:
+    except HTTPException as exc:
+        # Prefer a stale response over an empty screen when TMDB has an outage.
+        stale_payload = cached[1] if cached else (persistent[1] if persistent else None)
+        if stale_payload:
+            stale_response = dict(stale_payload)
+            stale_response["stale"] = True
+            stale_response["cacheWarning"] = exc.detail
+            logger.warning("Serving stale TMDB catalogue %s page %s after upstream failure", catalogue_key, page)
+            return stale_response
         raise
     except Exception as exc:
         logger.exception("TMDB movie catalogue failed for %s page %s", catalogue_key, page)
+        stale_payload = cached[1] if cached else (persistent[1] if persistent else None)
+        if stale_payload:
+            stale_response = dict(stale_payload)
+            stale_response["stale"] = True
+            stale_response["cacheWarning"] = "TMDB is temporarily unavailable; showing the last cached catalogue."
+            return stale_response
         raise HTTPException(status_code=502, detail="Could not load the movie catalogue from TMDB.") from exc
     finally:
         if task.done() and _tmdb_movie_catalogue_inflight.get(cache_key) is task:
