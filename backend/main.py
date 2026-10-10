@@ -3265,7 +3265,7 @@ def _title_relevance(title: str, query: str) -> tuple[int, int]:
 
     # Indexers often add "The" before a movie title. Do not demote an otherwise
     # direct match just because the article is present.
-    candidate = re.sub(r"^(?:the|a|an)\\s+", "", normalized)
+    candidate = re.sub(r"^(?:the|a|an)\s+", "", normalized)
     if candidate == target:
         return (4, len(target))
     if candidate.startswith(target + " "):
@@ -3292,37 +3292,37 @@ def _release_quality_score(title: str) -> int:
     score = 0
 
     # Resolution is a strong, broadly available signal.
-    if re.search(r"\\b(?:2160p|4k|uhd)\\b", lower):
+    if re.search(r"\b(?:2160p|4k|uhd)\b", lower):
         score += 8
-    elif re.search(r"\\b1080p\\b", lower):
+    elif re.search(r"\b1080p\b", lower):
         score += 6
-    elif re.search(r"\\b720p\\b", lower):
+    elif re.search(r"\b720p\b", lower):
         score += 4
-    elif re.search(r"\\b480p\\b", lower):
+    elif re.search(r"\b480p\b", lower):
         score += 2
 
     # Prefer modern digital/Blu-ray sources over older disc rips.
-    if re.search(r"\\b(?:blu[ .-]?ray|bdrip|brrip|remux)\\b", lower):
+    if re.search(r"\b(?:blu[ .-]?ray|bdrip|brrip|remux)\b", lower):
         score += 4
-    elif re.search(r"\\b(?:web[ .-]?dl|webdl|webrip)\\b", lower):
+    elif re.search(r"\b(?:web[ .-]?dl|webdl|webrip)\b", lower):
         score += 3
-    elif re.search(r"\\bhdtv\\b", lower):
+    elif re.search(r"\bhdtv\b", lower):
         score += 2
-    elif re.search(r"\\b(?:dvdrip|dvd)\\b", lower):
+    elif re.search(r"\b(?:dvdrip|dvd)\b", lower):
         score += 1
 
-    if re.search(r"\\b(?:x265|h265|hevc|av1)\\b", lower):
+    if re.search(r"\b(?:x265|h265|hevc|av1)\b", lower):
         score += 1
-    if re.search(r"\\b(?:x264|h264)\\b", lower):
+    if re.search(r"\b(?:x264|h264)\b", lower):
         score += 1
-    if re.search(r"\\b(?:hdr10?|dolby[ .]?vision|10bit)\\b", lower):
+    if re.search(r"\b(?:hdr10?|dolby[ .]?vision|10bit)\b", lower):
         score += 1
 
     # Strongly demote low-quality theatrical captures and screeners without
     # removing them, so users can still find smaller/older releases if needed.
-    if re.search(r"\\b(?:hdcam|camrip|cam|telesync|telecine|ts|dvdscr|screener)\\b", lower):
+    if re.search(r"\b(?:hdcam|camrip|cam|telesync|telecine|ts|dvdscr|screener)\b", lower):
         score -= 8
-    elif re.search(r"\\br5\\b", lower):
+    elif re.search(r"\br5\b", lower):
         score -= 2
 
     return score
