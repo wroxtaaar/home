@@ -1714,7 +1714,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             <div className="text-[11px] leading-relaxed text-slate-500">
               {releasedOnly ? 'Hides future and unconfirmed release dates.' : 'Includes upcoming releases.'}
               {' '}OTT status, provider names and India digital-release dates are checked in the background.
-              {' '}Availability powered by <a href="https://www.justwatch.com/in" target="_blank" rel="noreferrer" className="text-slate-300 underline underline-offset-2">JustWatch</a> via TMDB and may be incomplete.
+              {' '}Availability is checked with Watchmode when configured, with TMDB/JustWatch as a fallback; listings may be incomplete.
             </div>
           </div>
 
