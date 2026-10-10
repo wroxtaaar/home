@@ -1802,7 +1802,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                         >
                           {group.variants.map((variant, index) => (
                             <option key={torrentResultKey(variant)} value={torrentResultKey(variant)}>
-                              {torrentQualityDetails(variant).label} · {formatBytes(variant.size)}
+                              {torrentQualityDetails(variant).label} · {variant.size || 'Size unknown'}
                             </option>
                           ))}
                         </select>
