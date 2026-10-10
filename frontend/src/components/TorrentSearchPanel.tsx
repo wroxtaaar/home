@@ -231,7 +231,12 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [movieCatalogueSearchText, setMovieCatalogueSearchText] = useState('');
   const [releasedOnly, setReleasedOnly] = useState(true);
   type FranchiseTmdbKey = 'marvel' | 'dc-live-action' | 'dc-animated';
+  type CachedFranchiseKey = 'marvel' | 'dc-live-action';
   const [tmdbFranchiseKey, setTmdbFranchiseKey] = useState<FranchiseTmdbKey>('marvel');
+  const [openCachedLanguageMenu, setOpenCachedLanguageMenu] = useState<CachedFranchiseKey | null>(null);
+  const [isClearingTmdbCache, setIsClearingTmdbCache] = useState(false);
+  const [tmdbCacheMessage, setTmdbCacheMessage] = useState('');
+
   const tmdbFranchiseLabels: Record<FranchiseTmdbKey, string> = {
     marvel: 'Marvel Movies',
     'dc-live-action': 'DC Live-Action',
@@ -243,6 +248,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const ottQueueRef = useRef<string[]>([]);
   const ottQueuedIdsRef = useRef(new Set<string>());
   const ottActiveWorkersRef = useRef(0);
+  const ottLookupGenerationRef = useRef(0);
   const ottQueuePumpRef = useRef<() => void>(() => {});
 
   const setOttState = (movieId: string, state: MovieOttCardState) => {
@@ -258,17 +264,24 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       const movieId = ottQueueRef.current.shift();
       if (!movieId) continue;
       ottActiveWorkersRef.current += 1;
+      const lookupGeneration = ottLookupGenerationRef.current;
       void (async () => {
         try {
           const availability = await api.getMovieOttAvailability(Number(movieId), 'IN');
-          setOttState(movieId, availability);
+          if (lookupGeneration === ottLookupGenerationRef.current) {
+            setOttState(movieId, availability);
+          }
         } catch (error: any) {
-          setOttState(movieId, {
-            status: 'error',
-            message: String(error?.message || 'OTT availability could not be checked.'),
-          });
+          if (lookupGeneration === ottLookupGenerationRef.current) {
+            setOttState(movieId, {
+              status: 'error',
+              message: String(error?.message || 'OTT availability could not be checked.'),
+            });
+          }
         } finally {
-          ottQueuedIdsRef.current.delete(movieId);
+          if (lookupGeneration === ottLookupGenerationRef.current) {
+            ottQueuedIdsRef.current.delete(movieId);
+          }
           ottActiveWorkersRef.current -= 1;
           ottQueuePumpRef.current();
         }
@@ -747,7 +760,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
 
 
-  const runSearch = async (event?: React.FormEvent, searchOverride?: string, searchMode?: 'marvel' | 'dc-live-action' | 'dc-animated' | 'latest-hollywood' | 'latest-bollywood') => {
+  const runSearch = async (event?: React.FormEvent, searchOverride?: string, searchMode?: 'marvel' | 'marvel-hindi' | 'dc-live-action' | 'dc-live-action-hindi' | 'dc-animated' | 'latest-hollywood' | 'latest-bollywood') => {
     event?.preventDefault();
     setMovieTorrentSearchError('');
     movieTorrentSearchControllerRef.current?.abort();
@@ -790,7 +803,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       let data: TorrentSearchResult[];
       if (searchMode) {
         const labels: Record<string, string> = {
-          marvel: 'Marvel', 'dc-live-action': 'DC live-action', 'dc-animated': 'DC animated',
+          marvel: 'Marvel English', 'marvel-hindi': 'Marvel Hindi',
+          'dc-live-action': 'DC Live-Action English', 'dc-live-action-hindi': 'DC Live-Action Hindi',
+          'dc-animated': 'DC animated',
           'latest-hollywood': 'Latest Hollywood', 'latest-bollywood': 'Latest Bollywood'
         };
         let catalogue = searchMode === 'marvel'
@@ -1152,6 +1167,47 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     });
   }, [sortedResults, releaseYearSort]);
 
+  const clearTmdbCacheAndReload = async () => {
+    const currentCatalogue = movieCatalogue;
+    const key = currentCatalogue?.catalogue || tmdbFranchiseKey;
+    const searchText = currentCatalogue ? movieCatalogueSearchText : tmdbFranchiseLabels[tmdbFranchiseKey];
+    const page = currentCatalogue?.page || 1;
+    const onlyReleased = currentCatalogue?.releasedOnly ?? releasedOnly;
+
+    setIsClearingTmdbCache(true);
+    setTmdbCacheMessage('');
+    try {
+      await api.clearTmdbMovieCaches();
+      ottLookupGenerationRef.current += 1;
+      ottQueueRef.current = [];
+      ottQueuedIdsRef.current.clear();
+      ottAvailabilityRef.current = {};
+      setOttAvailability({});
+      setTmdbCacheMessage('TMDB catalogue and OTT caches cleared. Reloading the selected catalogue…');
+      await openMovieCatalogue(key, searchText, page, onlyReleased);
+      setTmdbCacheMessage('TMDB caches cleared and a fresh catalogue request was sent.');
+    } catch (error: any) {
+      setTmdbCacheMessage(String(error?.message || 'Could not clear TMDB caches.'));
+    } finally {
+      setIsClearingTmdbCache(false);
+    }
+  };
+
+  const selectCachedFranchiseLanguage = (franchise: CachedFranchiseKey, language: 'english' | 'hindi') => {
+    setOpenCachedLanguageMenu(null);
+    setResolutionFilter(null);
+    setSizeSort(null);
+    setTimeSort(null);
+    setReleaseYearSort(null);
+    setTmdbFranchiseKey(franchise);
+    const mode = franchise === 'marvel'
+      ? (language === 'hindi' ? 'marvel-hindi' : 'marvel')
+      : (language === 'hindi' ? 'dc-live-action-hindi' : 'dc-live-action');
+    const category = franchise === 'marvel' ? 'Marvel Movies' : 'DC Live-Action Movies';
+    const languageLabel = language === 'hindi' ? 'Hindi' : 'English';
+    void runSearch(undefined, category + ' (' + languageLabel + ')', mode);
+  };
+
   const extractedQuality = (result: TorrentSearchResult) => {
     const details = torrentQualityDetails(result);
     return details.label === 'Other release' ? '' : details.label;
@@ -1282,11 +1338,78 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         </form>
 
         <div className="mt-2 flex flex-wrap gap-2" aria-label="Movie catalogues">
+          <button
+            type="button"
+            onClick={() => {
+              setResolutionFilter(null);
+              setSizeSort(null);
+              setTimeSort(null);
+              setReleaseYearSort(null);
+              void openMovieCatalogue('popular-bollywood', 'Popular Bollywood Movies', 1);
+            }}
+            className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
+          >
+            ⭐ Popular Bollywood
+          </button>
+
           {([
-            ['popular-bollywood', '⭐ Popular Bollywood', 'Popular Bollywood Movies'],
-            ['marvel', '🦸 Marvel Movies · Cached', 'Marvel Movies'],
-            ['dc-live-action', '🦇 DC Live-Action · Cached', 'DC Live-Action Movies'],
-            ['dc-animated', '🎞️ DC Animated · Cached', 'DC Animated Movies'],
+            ['marvel', '🦸 Marvel Movies'],
+            ['dc-live-action', '🦇 DC Live-Action'],
+          ] as const).map(([franchise, label]) => (
+            <div key={franchise} className="relative">
+              <button
+                type="button"
+                aria-expanded={openCachedLanguageMenu === franchise}
+                onClick={() => setOpenCachedLanguageMenu(current => current === franchise ? null : franchise)}
+                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
+              >
+                {label} <span className="ml-1 text-[10px]">▾</span>
+              </button>
+              {openCachedLanguageMenu === franchise && (
+                <div className="absolute left-0 top-full z-40 mt-1 min-w-[150px] overflow-hidden rounded-lg border border-slate-700 bg-slate-950 shadow-xl">
+                  {(['english', 'hindi'] as const).map(language => (
+                    <button
+                      key={language}
+                      type="button"
+                      onClick={() => {
+                        setOpenCachedLanguageMenu(null);
+                        setResolutionFilter(null);
+                        setSizeSort(null);
+                        setTimeSort(null);
+                        setReleaseYearSort(null);
+                        setTmdbFranchiseKey(franchise);
+                        const mode = franchise === 'marvel'
+                          ? (language === 'hindi' ? 'marvel-hindi' : 'marvel')
+                          : (language === 'hindi' ? 'dc-live-action-hindi' : 'dc-live-action');
+                        const category = franchise === 'marvel' ? 'Marvel Movies' : 'DC Live-Action Movies';
+                        const languageLabel = language === 'hindi' ? 'Hindi' : 'English';
+                        void runSearch(undefined, category + ' (' + languageLabel + ')', mode);
+                      }}
+                      className="block w-full px-3 py-2.5 text-left text-xs font-semibold text-slate-200 hover:bg-slate-800 hover:text-cyan-300"
+                    >
+                      {language === 'hindi' ? 'Hindi audio' : 'English audio'}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+
+          <button
+            type="button"
+            onClick={() => {
+              setResolutionFilter(null);
+              setSizeSort(null);
+              setTimeSort(null);
+              setReleaseYearSort(null);
+              void runSearch(undefined, 'DC Animated Movies', 'dc-animated');
+            }}
+            className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
+          >
+            🎞️ DC Animated
+          </button>
+
+          {([
             ['popular-hollywood', '⭐ Popular Hollywood', 'Popular Hollywood Movies'],
             ['trending-hollywood', '🔥 Trending Hollywood', 'Trending Hollywood Movies'],
           ] as const).map(([key, label, searchText]) => (
@@ -1295,12 +1418,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               setSizeSort(null);
               setTimeSort(null);
               setReleaseYearSort(null);
-              if (key === 'marvel' || key === 'dc-live-action' || key === 'dc-animated') {
-                setTmdbFranchiseKey(key);
-                void runSearch(undefined, searchText, key);
-              } else {
-                void openMovieCatalogue(key, searchText, 1);
-              }
+              void openMovieCatalogue(key, searchText, 1);
             }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">{label}</button>
           ))}
         </div>
@@ -1309,7 +1427,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             <div className="text-xs font-semibold text-slate-200">TMDB movie discovery</div>
             <div className="text-[11px] text-slate-500">Load fresh Marvel/DC movie metadata instead of the cached torrent list.</div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <select
               aria-label="Franchise to browse using TMDB"
               value={tmdbFranchiseKey}
@@ -1334,7 +1452,21 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             >
               Browse with TMDB
             </button>
+            <button
+              type="button"
+              disabled={isSearching || isClearingTmdbCache}
+              onClick={() => void clearTmdbCacheAndReload()}
+              className="shrink-0 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-200 hover:bg-amber-500/20 disabled:opacity-50"
+              title="Clears all TMDB movie-catalogue and OTT caches, then refetches the current catalogue."
+            >
+              {isClearingTmdbCache
+                ? <><Loader2 className="mr-1.5 inline h-3.5 w-3.5 animate-spin" />Clearing…</>
+                : 'Clear TMDB cache & reload'}
+            </button>
           </div>
+          {tmdbCacheMessage && (
+            <div className="text-[11px] leading-relaxed text-slate-400">{tmdbCacheMessage}</div>
+          )}
         </div>
       </div>
 
