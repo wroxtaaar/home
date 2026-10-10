@@ -3797,6 +3797,7 @@ def _poster_title_aliases(title: str, year: str = "") -> list[str]:
     known_aliases = {
         "avengers 2": ("Avengers: Age of Ultron", "2015"),
         "marvels the avengers": ("The Avengers", "2012"),
+        "marvel s the avengers": ("The Avengers", "2012"),
     }
     known = known_aliases.get(normalized)
     if known:
@@ -3808,25 +3809,42 @@ def _poster_title_aliases(title: str, year: str = "") -> list[str]:
     return aliases
 
 def _poster_title_parts(raw_title: str) -> tuple[str, str]:
-    """Extract a clean movie title/year from a torrent release name."""
+    """Extract the movie title/year while removing common release-name debris."""
     value = str(raw_title or "").replace(".", " ").replace("_", " ")
     year_match = re.search(r"\b((?:19|20)\d{2})\b", value)
     year = year_match.group(1) if year_match else ""
 
     if year_match:
         value = value[:year_match.start()]
-    else:
+
+    # Clean bracketed tags before splitting on codec/quality markers. Doing
+    # this in the opposite order leaves a dangling "[" in titles such as
+    # "The Avengers 2 [1080p]", which then prevents an exact poster match.
+    value = re.sub(r"\[[^\]]*(?:\]|$)", " ", value)
+    value = re.sub(r"\([^)]*(?:\)|$)", " ", value)
+
+    if not year_match:
         value = re.split(
             r"\b(?:2160p|1440p|1080p|720p|576p|480p|4k|8k|"
             r"web[- ]?dl|web[- ]?rip|webrip|bluray|brrip|hdrip|"
-            r"dvdrip|cam|hdcam|x264|x265|h264|h265|hevc)\b",
+            r"dvdrip|dvd|cam|hdcam|telesync|telecine|scr|r5|r6|"
+            r"x264|x265|h264|h265|hevc|xvid|divx|dts|aac|ac3|ddp|"
+            r"eng|english|nlsub|proper|repack|remux|hdr10|hdr)\b",
             value,
             maxsplit=1,
             flags=re.I,
         )[0]
 
-    value = re.sub(r"[\[\(].*?[\]\)]", " ", value)
-    value = re.sub(r"\s+", " ", value).strip(" -._")
+    # A few common LimeTorrents uploader tags don't have a preceding codec
+    # marker, so remove them if they remain as the final token/group.
+    value = re.sub(
+        r"\s+(?:BlueLady(?:RG)?|Jaybob|HAGGiS|Voltage|DTRG|DOCUMENT|ViSiON|"
+        r"SONiDO|SAiMORNY|LTT)$",
+        "",
+        value,
+        flags=re.I,
+    )
+    value = re.sub(r"\s+", " ", value).strip(" -._[](){}")
     return value, year
 
 
