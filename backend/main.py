@@ -2948,7 +2948,10 @@ async def search_limetorrents(
         len(results),
         ",".join(str(item.get("seeders") or 0) for item in results[:5]),
     )
-    return resasync def search_knaben(
+    return results[:limit]
+
+
+async def search_knaben(
     query: str,
     limit: int = 100,
     provider_query: str | None = None,
@@ -3093,10 +3096,6 @@ async def search_limetorrents(
     )
     logger.info("Knaben v2 search '%s': %d relevant results after title/category filtering", query, len(results))
     return results[:limit]
-
-
-
-it]
 
 
 
