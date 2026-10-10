@@ -763,7 +763,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     const maxSeedrFriendlySize = 5 * 1024 * 1024 * 1024;
     // Exclude theatrical/unfinished releases regardless of provider. Keep the
     // tokens bounded so words such as "timestamp" are not mistaken for TS.
-    const lowQualityRelease = /(?:^|[\\s._()[\\]-])(?:cam(?:rip)?|hdcam|hd[ ._-]?cam|telesync|tele[ ._-]?sync|ts[ ._-]?(?:md|ac3|hd)?|telecine|dvdscr|dvd[ ._-]?scr|screener|workprint)(?:$|[\\s._()[\\]-])/i;
+    const lowQualityRelease = /(?:^|[\s._()[\]-])(?:cam(?:rip)?|hdcam|hd[ ._-]?cam|telesync|tele[ ._-]?sync|ts[ ._-]?(?:md|ac3|hd)?|telecine|dvdscr|dvd[ ._-]?scr|screener|workprint)(?:$|[\s._()[\]-])/i;
     const sorted = results.filter(result => {
       const size = Number(result.size) || 0;
       const seeders = Number(result.seeders);
