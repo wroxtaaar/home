@@ -31,7 +31,9 @@ The exact device-code endpoints used by the implementation are the currently rea
 
 ## Dynamic movie catalogues
 
-Marvel Movies, DC Live-Action and DC Animated shortcuts use the existing hardcoded title lists and persistent server-side torrent caches, so the cached torrent options are shown without requiring TMDB for the initial view. The separate **TMDB movie discovery** control lets visitors select one of those three franchises and browse paginated TMDB movie metadata instead. In TMDB discovery, OTT availability is loaded in the background and torrent-provider searches happen only when a movie's **Prepare** action is selected.
+Marvel Movies and DC Live-Action each have separate persistent English and Hindi torrent caches. Select a franchise shortcut and choose **English audio** or **Hindi audio**; the caches filter releases by language/audio markers so language variants do not get mixed together. DC Animated retains its persistent shared torrent cache. These cached views do not require TMDB for the initial load.
+
+The separate **TMDB movie discovery** control lets visitors select Marvel, DC Live-Action or DC Animated and browse paginated TMDB movie metadata. OTT availability is loaded in the background, and torrent-provider searches happen only when a movie's **Prepare** action is selected. The **Clear TMDB cache & reload** button deletes the server's in-memory and persistent TMDB catalogue, OTT availability and company-discovery caches, then requests the selected catalogue again. The clear-cache endpoint has a short global cooldown to protect the TMDB API quota.
 
 Popular Hollywood, Trending Hollywood and Popular Bollywood browse paginated movie metadata from TMDB. Popular categories sort by TMDB popularity; trending categories use TMDB's weekly trending feed and filter to the selected original language. The Latest Hollywood, Latest Bollywood and Trending Bollywood shortcuts are intentionally omitted from the current UI.
 
