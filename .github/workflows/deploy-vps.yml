@@ -82,7 +82,15 @@ jobs:
           fi
 
           echo "Starting new container..."
-          if ! docker run -d             --name "$CONTAINER"             --restart unless-stopped             --env-file "$APP_DIR/.env.debug"             -p 0.0.0.0:10000:10000             "$IMAGE"; then
+          DATA_DIR="$HOME/home-data"
+          mkdir -p "$DATA_DIR"
+          if ! docker run -d \
+            --name "$CONTAINER" \
+            --restart unless-stopped \
+            --env-file "$APP_DIR/.env.debug" \
+            -v "$DATA_DIR:/app/data" \
+            -p 0.0.0.0:10000:10000 \
+            "$IMAGE"; then
             echo "Failed to start new container."
 
             docker rm -f "$CONTAINER" >/dev/null 2>&1 || true

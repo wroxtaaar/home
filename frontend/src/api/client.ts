@@ -21,6 +21,17 @@ export interface TorrentSearchResult {
   quality?: string;
 }
 
+
+export interface MarvelCatalogueResponse {
+  status: 'idle' | 'building' | 'ready' | 'failed';
+  results: TorrentSearchResult[];
+  completed: number;
+  total: number;
+  resultCount?: number;
+  builtAt?: string;
+  error?: string;
+}
+
 import {
   TorrentItem,
   TorrentFileItem,
@@ -78,6 +89,20 @@ const apiFetch = (input: RequestInfo | URL, init?: RequestInit) => {
 };
 
 export const api = {
+  async getMarvelCatalogue(signal?: AbortSignal): Promise<MarvelCatalogueResponse> {
+    const res = await fetch(API_BASE + '/api/catalogue/marvel', {
+      signal,
+      credentials: 'include',
+    });
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch {}
+    if (!res.ok) {
+      throw new Error(data?.detail || data?.error || body || ('Marvel catalogue failed (HTTP ' + res.status + ')'));
+    }
+    return data as MarvelCatalogueResponse;
+  },
+
   // Torrents (qBittorrent WebAPI)
   async searchTorrents(query: string, limit = 50, signal?: AbortSignal): Promise<TorrentSearchResult[]> {
     const params = new URLSearchParams({

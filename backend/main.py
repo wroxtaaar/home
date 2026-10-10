@@ -4273,6 +4273,338 @@ async def resolve_search_magnet(body: dict[str, Any]):
     return {"magnet": magnet, "infoHash": digest}
 
 
+
+# One-time Marvel catalogue. Results are shared by every visitor to this Home
+# instance and never expire; the deployment mounts /app/data on persistent VPS
+# storage so a container replacement does not force another provider crawl.
+MARVEL_CATALOGUE_VERSION = 1
+MARVEL_CATALOGUE_PATH = Path(os.getenv("MARVEL_CATALOGUE_PATH", "/app/data/marvel_catalogue.json"))
+MARVEL_MOVIE_SEARCHES: tuple[tuple[str, int], ...] = (
+    ("Spider-Man: Brand New Day", 2026),
+    ("The Fantastic Four: First Steps", 2025),
+    ("Thunderbolts", 2025),
+    ("Captain America: Brave New World", 2025),
+    ("Deadpool & Wolverine", 2024),
+    ("Venom: The Last Dance", 2024),
+    ("Kraven the Hunter", 2024),
+    ("Madame Web", 2024),
+    ("The Marvels", 2023),
+    ("Guardians of the Galaxy Vol. 3", 2023),
+    ("Spider-Man: Across the Spider-Verse", 2023),
+    ("Ant-Man and the Wasp: Quantumania", 2023),
+    ("Black Panther: Wakanda Forever", 2022),
+    ("Thor: Love and Thunder", 2022),
+    ("Doctor Strange in the Multiverse of Madness", 2022),
+    ("Morbius", 2022),
+    ("Spider-Man: No Way Home", 2021),
+    ("Venom: Let There Be Carnage", 2021),
+    ("Eternals", 2021),
+    ("Shang-Chi and the Legend of the Ten Rings", 2021),
+    ("Black Widow", 2021),
+    ("The New Mutants", 2020),
+    ("Dark Phoenix", 2019),
+    ("Spider-Man: Far From Home", 2019),
+    ("Avengers: Endgame", 2019),
+    ("Captain Marvel", 2019),
+    ("Spider-Man: Into the Spider-Verse", 2018),
+    ("Venom", 2018),
+    ("Ant-Man and the Wasp", 2018),
+    ("Deadpool 2", 2018),
+    ("Avengers: Infinity War", 2018),
+    ("Black Panther", 2018),
+    ("Thor: Ragnarok", 2017),
+    ("Logan", 2017),
+    ("Spider-Man: Homecoming", 2017),
+    ("Guardians of the Galaxy Vol. 2", 2017),
+    ("Doctor Strange", 2016),
+    ("X-Men: Apocalypse", 2016),
+    ("Deadpool", 2016),
+    ("Captain America: Civil War", 2016),
+    ("Fantastic Four", 2015),
+    ("Ant-Man", 2015),
+    ("Avengers: Age of Ultron", 2015),
+    ("X-Men: Days of Future Past", 2014),
+    ("The Amazing Spider-Man 2", 2014),
+    ("Captain America: The Winter Soldier", 2014),
+    ("Guardians of the Galaxy", 2014),
+    ("Big Hero 6", 2014),
+    ("Avengers Confidential: Black Widow & Punisher", 2014),
+    ("Iron Man: Rise of Technovore", 2013),
+    ("The Wolverine", 2013),
+    ("Iron Man 3", 2013),
+    ("The Amazing Spider-Man", 2012),
+    ("The Avengers", 2012),
+    ("Ghost Rider: Spirit of Vengeance", 2011),
+    ("X-Men: First Class", 2011),
+    ("Captain America: The First Avenger", 2011),
+    ("Thor", 2011),
+    ("Thor: Tales of Asgard", 2011),
+    ("Iron Man 2", 2010),
+    ("Planet Hulk", 2010),
+    ("X-Men Origins: Wolverine", 2009),
+    ("Hulk Vs.", 2009),
+    ("Punisher: War Zone", 2008),
+    ("The Incredible Hulk", 2008),
+    ("Iron Man", 2008),
+    ("Next Avengers: Heroes of Tomorrow", 2008),
+    ("Spider-Man 3", 2007),
+    ("Ghost Rider", 2007),
+    ("Fantastic Four: Rise of the Silver Surfer", 2007),
+    ("X-Men: The Last Stand", 2006),
+    ("Ultimate Avengers 2", 2006),
+    ("Ultimate Avengers", 2006),
+    ("Elektra", 2005),
+    ("Fantastic Four", 2005),
+    ("Man-Thing", 2005),
+    ("Spider-Man 2", 2004),
+    ("The Punisher", 2004),
+    ("Blade: Trinity", 2004),
+    ("X2: X-Men United", 2003),
+    ("Daredevil", 2003),
+    ("Hulk", 2003),
+    ("Spider-Man", 2002),
+    ("Blade II", 2002),
+    ("X-Men", 2000),
+    ("Blade", 1998),
+    ("Nick Fury: Agent of S.H.I.E.L.D.", 1998),
+    ("Generation X", 1996),
+    ("The Trial of the Incredible Hulk", 1989),
+    ("The Punisher", 1989),
+    ("The Incredible Hulk Returns", 1988),
+    ("Howard the Duck", 1986),
+    ("Captain America II: Death Too Soon", 1979),
+    ("Captain America", 1979),
+    ("Dr. Strange", 1978),
+)
+_MARVEL_CATALOGUE_CONCURRENCY = 4
+_marvel_catalogue_task: asyncio.Task | None = None
+_marvel_catalogue_retry_after = 0.0
+_marvel_catalogue_state: dict[str, Any] = {
+    "status": "idle",
+    "completed": 0,
+    "total": len(MARVEL_MOVIE_SEARCHES),
+    "resultCount": 0,
+    "error": "",
+}
+
+
+def _read_marvel_catalogue() -> dict[str, Any] | None:
+    try:
+        payload = json.loads(MARVEL_CATALOGUE_PATH.read_text(encoding="utf-8"))
+        if (
+            isinstance(payload, dict)
+            and payload.get("version") == MARVEL_CATALOGUE_VERSION
+            and isinstance(payload.get("results"), list)
+            and payload["results"]
+        ):
+            return payload
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
+
+
+def _write_marvel_catalogue(payload: dict[str, Any]) -> None:
+    MARVEL_CATALOGUE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            prefix="marvel-catalogue-",
+            suffix=".tmp",
+            dir=str(MARVEL_CATALOGUE_PATH.parent),
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, MARVEL_CATALOGUE_PATH)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            try:
+                temporary_path.unlink()
+            except OSError:
+                pass
+
+
+async def _build_marvel_catalogue() -> None:
+    global _marvel_catalogue_retry_after
+    semaphore = asyncio.Semaphore(_MARVEL_CATALOGUE_CONCURRENCY)
+    rows_by_hash: dict[str, dict[str, Any]] = {}
+
+    async def search_movie(title: str, year: int) -> list[dict[str, Any]]:
+        async with semaphore:
+            try:
+                # Reuse Home's normal multi-provider search (1337x, LimeTorrents,
+                # Knaben and YTS metadata enrichment) instead of building a
+                # separate scraper or presenting unverified placeholder cards.
+                items = await search_1337x(
+                    f"{title} {year}",
+                    limit=50,
+                    allow_series_fallback=False,
+                )
+                accepted: list[dict[str, Any]] = []
+                for original in items:
+                    if not isinstance(original, dict):
+                        continue
+                    item = dict(original)
+                    try:
+                        size = int(float(item.get("size") or 0))
+                        seeders = int(float(item.get("seeders") or 0))
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    # Match the live search cards' useful-size and live-swarm gates.
+                    if size < 100 * 1024 * 1024 or size > MAX_SEARCH_RESULT_SIZE_BYTES or seeders <= 0:
+                        continue
+                    if not any(str(item.get(key) or "").strip() for key in (
+                        "magnetUrl", "downloadUrl", "sourceUrl", "infoUrl", "infoHash"
+                    )):
+                        continue
+                    if not str(item.get("posterUrl") or "").strip():
+                        item["posterUrl"] = _poster_url_for_release(
+                            str(item.get("mediaTitle") or item.get("title") or "")
+                        )
+                    accepted.append(item)
+                return accepted
+            except Exception as exc:
+                logger.info("Marvel catalogue search failed for '%s (%s)': %s", title, year, exc)
+                return []
+            finally:
+                _marvel_catalogue_state["completed"] = int(
+                    _marvel_catalogue_state.get("completed") or 0
+                ) + 1
+
+    try:
+        _marvel_catalogue_state.update({
+            "status": "building",
+            "completed": 0,
+            "total": len(MARVEL_MOVIE_SEARCHES),
+            "resultCount": 0,
+            "error": "",
+        })
+        tasks = [
+            asyncio.create_task(search_movie(title, year))
+            for title, year in MARVEL_MOVIE_SEARCHES
+        ]
+        for task in asyncio.as_completed(tasks):
+            try:
+                items = await task
+            except Exception as exc:
+                logger.info("Marvel catalogue worker failed: %s", exc)
+                items = []
+
+            for item in items:
+                digest = str(item.get("infoHash") or "").strip().lower()
+                if not re.fullmatch(r"[0-9a-f]{40}", digest):
+                    source = str(item.get("magnetUrl") or item.get("downloadUrl") or "")
+                    digest = info_hash(source)
+                if re.fullmatch(r"[0-9a-f]{40}", digest, re.I):
+                    key = "hash:" + digest.lower()
+                else:
+                    normalized = _normalize_title(str(item.get("title") or ""))
+                    if not normalized:
+                        continue
+                    key = f"title-size:{normalized}|{int(item.get('size') or 0)}"
+
+                previous = rows_by_hash.get(key)
+                candidate_score = (
+                    1 if str(item.get("magnetUrl") or "").startswith("magnet:") else 0,
+                    int(item.get("seeders") or 0),
+                    int(item.get("leechers") or 0),
+                )
+                previous_score = (
+                    1 if previous and str(previous.get("magnetUrl") or "").startswith("magnet:") else 0,
+                    int(previous.get("seeders") or 0) if previous else 0,
+                    int(previous.get("leechers") or 0) if previous else 0,
+                )
+                if previous is None or candidate_score > previous_score:
+                    rows_by_hash[key] = item
+            _marvel_catalogue_state["resultCount"] = len(rows_by_hash)
+
+        results = list(rows_by_hash.values())
+        if not results:
+            raise RuntimeError("No usable Marvel torrent results were returned by the configured providers.")
+
+        def catalogue_sort_key(item: dict[str, Any]) -> tuple[int, float, int, str]:
+            source = str(item.get("mediaTitle") or item.get("title") or "")
+            embedded_year = re.search(r"\b((?:19|20)\d{2})\b", source)
+            try:
+                year = int(item.get("year") or (embedded_year.group(1) if embedded_year else 0))
+            except (TypeError, ValueError):
+                year = int(embedded_year.group(1)) if embedded_year else 0
+            try:
+                rating = float(item.get("rating") or 0)
+            except (TypeError, ValueError):
+                rating = 0.0
+            return (year, rating, int(item.get("seeders") or 0), source.lower())
+
+        results.sort(key=catalogue_sort_key, reverse=True)
+        payload = {
+            "version": MARVEL_CATALOGUE_VERSION,
+            "builtAt": datetime.now(timezone.utc).isoformat(),
+            "titlesQueried": len(MARVEL_MOVIE_SEARCHES),
+            "resultCount": len(results),
+            "results": results,
+        }
+        _write_marvel_catalogue(payload)
+        _marvel_catalogue_state.update({
+            "status": "ready",
+            "completed": len(MARVEL_MOVIE_SEARCHES),
+            "total": len(MARVEL_MOVIE_SEARCHES),
+            "resultCount": len(results),
+            "error": "",
+            "builtAt": payload["builtAt"],
+        })
+        logger.info(
+            "Built persistent Marvel catalogue: %d torrent options from %d title searches",
+            len(results),
+            len(MARVEL_MOVIE_SEARCHES),
+        )
+    except Exception as exc:
+        _marvel_catalogue_retry_after = time.time() + 60
+        _marvel_catalogue_state.update({
+            "status": "failed",
+            "error": "The first Marvel catalogue build failed. Please try again in a minute.",
+        })
+        logger.warning("Marvel catalogue build failed: %s", exc)
+
+
+@app.get("/api/catalogue/marvel")
+async def api_marvel_catalogue():
+    # A completed catalogue is served straight from the persistent shared file:
+    # no provider calls and no per-visitor refreshes.
+    cached = _read_marvel_catalogue()
+    if cached:
+        return {
+            "status": "ready",
+            "builtAt": cached.get("builtAt"),
+            "completed": int(cached.get("titlesQueried") or len(MARVEL_MOVIE_SEARCHES)),
+            "total": int(cached.get("titlesQueried") or len(MARVEL_MOVIE_SEARCHES)),
+            "resultCount": int(cached.get("resultCount") or len(cached["results"])),
+            "results": cached["results"],
+        }
+
+    global _marvel_catalogue_task
+    if _marvel_catalogue_task is None or _marvel_catalogue_task.done():
+        if _marvel_catalogue_state.get("status") == "failed" and time.time() < _marvel_catalogue_retry_after:
+            return {**_marvel_catalogue_state, "results": []}
+        _marvel_catalogue_state.update({
+            "status": "building",
+            "completed": 0,
+            "total": len(MARVEL_MOVIE_SEARCHES),
+            "resultCount": 0,
+            "error": "",
+        })
+        _marvel_catalogue_task = asyncio.create_task(_build_marvel_catalogue())
+
+    return {
+        **_marvel_catalogue_state,
+        "total": len(MARVEL_MOVIE_SEARCHES),
+        "results": [],
+    }
+
+
 @app.get("/api/search")
 async def api_search(q: str = Query(..., min_length=1), limit: int = Query(50, ge=1, le=50)):
     return await search_1337x(q, limit)

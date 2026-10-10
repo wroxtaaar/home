@@ -210,6 +210,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [isSearching, setIsSearching] = useState(false);
   const [searched, setSearched] = useState(false);
   const [error, setError] = useState('');
+  const [catalogueBuildProgress, setCatalogueBuildProgress] = useState('');
   // Seed count is the default ranking so the strongest swarms appear first.
   // 720p/1080p are mutually exclusive. Size and Time are independent sort toggles.
   const [resolutionFilter, setResolutionFilter] = useState<'720p' | '1080p' | null>(null);
@@ -648,7 +649,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
 
 
-  const runSearch = async (event?: React.FormEvent, searchOverride?: string) => {
+  const runSearch = async (event?: React.FormEvent, searchOverride?: string, searchMode?: 'marvel') => {
     event?.preventDefault();
 
     const trimmed = (searchOverride ?? query).trim();
@@ -666,6 +667,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
     try {
       setIsSearching(true);
+      setCatalogueBuildProgress('');
       setShowRecentSearches(false);
       setError('');
       setResults([]);
@@ -678,10 +680,32 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       posterBackgroundAttemptsRef.current.clear();
       posterBackgroundGenerationRef.current += 1;
       saveRecentSearch(trimmed);
+      setCatalogueBuildProgress('');
+
+      let data: TorrentSearchResult[];
+      if (searchMode === 'marvel') {
+        let catalogue = await api.getMarvelCatalogue(controller.signal);
+        while (catalogue.status === 'building' || catalogue.status === 'idle') {
+          if (generation !== searchGenerationRef.current) return;
+          setCatalogueBuildProgress(
+            'First-time shared catalogue build: ' +
+            catalogue.completed + ' of ' + catalogue.total +
+            ' movie searches completed. It will be saved for future visitors.'
+          );
+          await new Promise<void>(resolve => window.setTimeout(resolve, 2200));
+          catalogue = await api.getMarvelCatalogue(controller.signal);
+        }
+        if (catalogue.status !== 'ready') {
+          throw new Error(catalogue.error || 'Could not build the Marvel movie catalogue.');
+        }
+        data = catalogue.results;
+        setCatalogueBuildProgress('');
+      } else {
+        data = await api.searchTorrents(trimmed, 50, controller.signal);
+      }
 
       // The backend owns low-result TV/season fallback. Keeping that logic
       // server-side avoids launching duplicate season searches from the browser.
-      const data = await api.searchTorrents(trimmed, 50, controller.signal);
 
       // Never let an older request overwrite a newer search. This matters
       // when a slow 1337x fallback finishes after a later click.
@@ -747,6 +771,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       if (err?.name === 'AbortError') return;
       setResults([]);
       setSearched(true);
+      setCatalogueBuildProgress('');
       setError(err?.message || 'Torrent search failed.');
     } finally {
       if (generation === searchGenerationRef.current) {
@@ -930,7 +955,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         </form>
 
         <div className="mt-2 flex flex-wrap gap-2" aria-label="Popular comic universes">
-          <button type="button" onClick={() => { setQuery('Marvel'); setResolutionFilter(null); setSizeSort(null); setTimeSort(null); void runSearch(undefined, 'Marvel'); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">Marvel</button>
+          <button type="button" onClick={() => { setQuery('Marvel Movies'); setResolutionFilter(null); setSizeSort(null); setTimeSort(null); void runSearch(undefined, 'Marvel', 'marvel'); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">🦸 Marvel Movies</button>
           <button type="button" onClick={() => { setQuery('DC Comics'); setResolutionFilter(null); setSizeSort(null); setTimeSort(null); void runSearch(undefined, 'DC Comics'); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">DC Comics</button>
         </div>
       </div>
@@ -938,8 +963,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       {isSearching && (
         <div className="p-5 sm:p-7 rounded-xl sm:rounded-2xl bg-slate-900 border border-slate-800 flex flex-col items-center justify-center gap-3">
           <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
-          <div className="text-sm font-semibold text-slate-200">Searching torrents...</div>
-          <div className="text-xs text-slate-500 text-center">Checking the fastest media sources and waiting for results.</div>
+          <div className="text-sm font-semibold text-slate-200">{catalogueBuildProgress ? 'Preparing Marvel movie catalogue...' : 'Searching torrents...'}</div>
+          <div className="text-xs text-slate-500 text-center">{catalogueBuildProgress || 'Checking the fastest media sources and waiting for results.'}</div>
         </div>
       )}
 
