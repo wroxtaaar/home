@@ -930,20 +930,68 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     setSelectedQualityByGroup({});
 
     try {
-      const data = await api.searchTorrents(titleQuery, 50, controller.signal);
+      let data = await api.searchTorrents(titleQuery, 50, controller.signal);
       if (generation !== movieTorrentSearchGenerationRef.current) return;
 
-      // Keep the same seed, size and CAM-release safeguards as the ordinary
-      // results page, then reuse the shared title/year/quality grouper.
+      // Prefer active swarms, but don't let missing seeder metadata hide every
+      // release. The regular search can display results from indexers that do
+      // not report seed counts reliably.
       const maxSeedrFriendlySize = 5 * 1024 * 1024 * 1024;
       const lowQualityRelease = /(?:^|[\s._()[\]-])(?:cam(?:rip)?|hdcam|hd[ ._-]?cam|telesync|tele[ ._-]?sync|ts[ ._-]?(?:md|ac3|hd)?|telecine|dvdscr|dvd[ ._-]?scr|screener|workprint)(?:$|[\s._()[\]-])/i;
-      const usable = data.filter(result => {
-        const size = Number(result.size) || 0;
-        const seeders = Number(result.seeders);
-        if (!Number.isFinite(seeders) || seeders <= 0 || size > maxSeedrFriendlySize) return false;
-        return !lowQualityRelease.test(String(result.title || '') + ' ' + String(result.quality || ''));
-      });
-      const groups = groupTorrentResults(usable);
+      const groupUsableResults = (items: TorrentSearchResult[], requireActiveSeeders: boolean) => {
+        const usable = items.filter(result => {
+          const rawSize = Number(result.size);
+          const size = Number.isFinite(rawSize) && rawSize > 0 ? rawSize : 0;
+          const seeders = Number(result.seeders);
+          const hasSource = Boolean(
+            String(result.magnetUrl || '').trim() ||
+            String(result.downloadUrl || '').trim() ||
+            String(result.sourceUrl || '').trim()
+          );
+          if (!hasSource || size > maxSeedrFriendlySize) return false;
+          if (requireActiveSeeders && (!Number.isFinite(seeders) || seeders <= 0)) return false;
+          return !lowQualityRelease.test(String(result.title || '') + ' ' + String(result.quality || ''));
+        });
+        return groupTorrentResults(usable);
+      };
+
+      let groups = groupUsableResults(data, true);
+
+      // Year tags aren't always present in torrent filenames. When the strict
+      // title+year search yields nothing, retry the movie's plain title before
+      // concluding that the provider has no releases.
+      const titleOnlyQuery = String(movie.title || '').trim();
+      if (
+        groups.length === 0 &&
+        titleOnlyQuery &&
+        titleOnlyQuery.toLowerCase() !== titleQuery.trim().toLowerCase()
+      ) {
+        try {
+          const titleOnlyResults = await api.searchTorrents(titleOnlyQuery, 50, controller.signal);
+          if (generation !== movieTorrentSearchGenerationRef.current) return;
+          const seen = new Set<string>();
+          data = [...data, ...titleOnlyResults].filter(result => {
+            const key = String(
+              result.infoHash || result.magnetUrl || result.downloadUrl ||
+              result.sourceUrl || (String(result.title || '') + '|' + String(result.size || ''))
+            ).trim().toLowerCase();
+            if (!key || seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+          groups = groupUsableResults(data, true);
+        } catch (retryError: any) {
+          if (retryError?.name === 'AbortError' || generation !== movieTorrentSearchGenerationRef.current) return;
+          // Keep the first response; the fallback below can still use it.
+        }
+      }
+
+      // Some indexers omit seeder counts. If no actively seeded releases
+      // survived, show linked, non-CAM releases within the size limit rather
+      // than reporting a false "no releases" failure.
+      if (groups.length === 0) {
+        groups = groupUsableResults(data, false);
+      }
 
       if (groups.length === 0) {
         setMovieTorrentSearchError('No usable torrent releases were found for ' + titleQuery + '. Try again later or use a shorter title.');
