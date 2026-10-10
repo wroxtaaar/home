@@ -6003,95 +6003,96 @@ async def seedr_session(request: Request):
 
 
 async def _validate_seedr_pat(token: str) -> None:
-    """Validate a Seedr PAT against supported API variants without long serial waits."""
+    """Validate a Seedr PAT sequentially; avoid bursts of concurrent auth requests."""
     token = normalize_seedr_token(token)
     if not token:
         raise SeedrError("SEEDR_PAT_MISSING", 400, "A Seedr Personal Access Token is required.")
 
     endpoints = (
-        f"{SEEDR_PAT_BASE}/fs/root/contents",
+        f"{SEEDR_PAT_BASE}/user",
         f"{SEEDR_PAT_BASE}/tasks",
-        f"{SEEDR_V2_BASE}/fs/root/contents",
+        f"{SEEDR_PAT_BASE}/fs/root/contents",
         f"{SEEDR_V2_BASE}/tasks",
+        f"{SEEDR_V2_BASE}/fs/root/contents",
     )
-
-    async def probe(client: httpx.AsyncClient, url: str) -> dict[str, Any]:
-        try:
-            response = await client.get(
-                url,
-                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-            )
-        except httpx.HTTPError as exc:
-            logger.info(
-                "Seedr PAT validation transport error: endpoint=%s error=%s",
-                url,
-                type(exc).__name__,
-            )
-            return {"kind": "transport", "endpoint": url}
-
-        if 200 <= response.status_code < 300:
-            return {"kind": "success", "endpoint": url, "status": response.status_code}
-        if response.status_code == 401:
-            return {"kind": "unauthorized", "endpoint": url, "status": 401}
-        if response.status_code in {403, 404, 405}:
-            return {"kind": "unsupported", "endpoint": url, "status": response.status_code}
-
-        try:
-            payload = response.json() if response.content else {}
-            reason = str(
-                payload.get("error_description")
-                or payload.get("reason_phrase")
-                or payload.get("message")
-                or payload.get("error")
-                or ""
-            ).strip() if isinstance(payload, dict) else ""
-        except (ValueError, TypeError):
-            reason = ""
-
-        return {
-            "kind": "provider_error",
-            "endpoint": url,
-            "status": response.status_code,
-            "reason": reason,
-        }
-
+    outcomes: list[str] = []
+    saw_unauthorized = False
     timeout = httpx.Timeout(8.0, connect=3.0)
+
+    # The endpoints have been verified to accept the current PAT when called
+    # individually. Do not fan out concurrently: concurrent probes previously
+    # all failed at the transport layer despite these same endpoints succeeding
+    # when tested one at a time. Stop on the first 2xx response.
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        results = await asyncio.gather(*(probe(client, url) for url in endpoints))
+        for url in endpoints:
+            try:
+                response = await client.get(
+                    url,
+                    headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                )
+            except httpx.HTTPError as exc:
+                logger.info(
+                    "Seedr PAT validation transport error: endpoint=%s error=%s",
+                    url,
+                    type(exc).__name__,
+                )
+                outcomes.append(f"{url}=transport:{type(exc).__name__}")
+                continue
 
-    successful = next((row for row in results if row["kind"] == "success"), None)
-    if successful:
-        logger.info(
-            "Seedr PAT validation succeeded: endpoint=%s status=%s",
-            successful["endpoint"],
-            successful["status"],
-        )
-        return
+            if 200 <= response.status_code < 300:
+                logger.info(
+                    "Seedr PAT validation succeeded: endpoint=%s status=%s",
+                    url,
+                    response.status_code,
+                )
+                return
 
-    provider_error = next((row for row in results if row["kind"] == "provider_error"), None)
-    if provider_error:
-        raise SeedrError(
-            "SEEDR_PAT_REJECTED",
-            502,
-            str(provider_error.get("reason") or
-                f"Seedr PAT validation failed (HTTP {provider_error.get('status')})."),
-        )
+            if response.status_code == 401:
+                saw_unauthorized = True
+                outcomes.append(f"{url}=401")
+                continue
 
-    if any(row["kind"] == "unauthorized" for row in results):
+            if response.status_code in {403, 404, 405}:
+                outcomes.append(f"{url}={response.status_code}")
+                continue
+
+            try:
+                payload = response.json() if response.content else {}
+                reason = str(
+                    payload.get("error_description")
+                    or payload.get("reason_phrase")
+                    or payload.get("message")
+                    or payload.get("error")
+                    or ""
+                ).strip() if isinstance(payload, dict) else ""
+            except (ValueError, TypeError):
+                reason = ""
+
+            # Retry the next known API variant for transient/provider-specific
+            # errors rather than concluding the token is invalid prematurely.
+            outcomes.append(f"{url}=HTTP{response.status_code}")
+            logger.info(
+                "Seedr PAT validation endpoint returned HTTP %s: endpoint=%s reason=%s",
+                response.status_code,
+                url,
+                reason[:160],
+            )
+
+    logger.warning(
+        "Seedr PAT validation found no successful endpoint: %s",
+        ", ".join(outcomes),
+    )
+    if saw_unauthorized and not any("transport:" in row for row in outcomes):
         raise SeedrError(
             "SEEDR_PAT_REJECTED",
             401,
             "Seedr rejected the Personal Access Token. Copy a fresh PAT from Seedr and try again.",
         )
 
-    logger.warning(
-        "Seedr PAT validation could not reach a supported API endpoint: %s",
-        ", ".join(f'{row["endpoint"]}={row.get("status", row["kind"])}' for row in results),
-    )
     raise SeedrError(
         "SEEDR_PAT_VALIDATION_FAILED",
         502,
-        "Could not reach Seedr's account API from this server. Please retry shortly.",
+        "Could not validate the Seedr token using the account API. Please retry shortly.",
     )
 
 
