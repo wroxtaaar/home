@@ -4740,11 +4740,13 @@ _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
         ],
     },
     "latest-hollywood": {
-        "file": "latest_hollywood_catalogue.json", "version": 1, "refresh_days": 30,
+        # Bump the cache schema so old, unfiltered results are discarded and rebuilt.
+        "file": "latest_hollywood_catalogue.json", "version": 2, "refresh_days": 30,
         "minimum_movies": 1, "mode": "latest", "queries": ["2026", "2025"],
     },
     "latest-bollywood": {
-        "file": "latest_bollywood_catalogue.json", "version": 1, "refresh_days": 30,
+        # Bump the cache schema so old, unfiltered results are discarded and rebuilt.
+        "file": "latest_bollywood_catalogue.json", "version": 2, "refresh_days": 30,
         "minimum_movies": 1, "mode": "latest", "queries": ["Hindi 2026", "Hindi 2025", "Bollywood 2026", "Bollywood 2025"],
     },
 }
