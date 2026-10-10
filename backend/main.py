@@ -4544,7 +4544,7 @@ def _extra_result_matches_language(item: dict[str, Any], language: str | None) -
         for field in ("title", "quality", "audio", "language", "languages", "audioLanguage", "releaseName")
     )
     hindi_marker = re.compile(
-        r"\b(?:hindi|hin|dual[\s._-]*audio|multi[\s._-]*audio|hindi[\s._-]*(?:dubbed|audio))\b",
+        r"\b(?:hindi|hin|dual[\s._-]*audio|multi[\s._-]*(?:audio|language)|hindi[\s._-]*(?:dubbed|audio))\b",
         re.I,
     )
     other_language_marker = re.compile(
@@ -4853,37 +4853,12 @@ _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
         ],
     },
     "latest-hollywood": {
-        # Query a broad set of recent theatrical titles, not just the few with current swarm activity.
-        "file": "latest_hollywood_catalogue.json", "version": 6, "refresh_days": 30,
-        "minimum_movies": 1, "mode": "latest",
-        "queries": [
-            "Project Hail Mary 2026", "Disclosure Day 2026", "Mortal Kombat II 2026",
-            "Supergirl 2026", "Spider Man Brand New Day 2026", "The Odyssey 2026",
-            "The Super Mario Galaxy Movie 2026", "Scream 7 2026", "The Devil Wears Prada 2 2026",
-            "Superman 2025", "Fantastic Four First Steps 2025", "F1 2025",
-            "Jurassic World Rebirth 2025", "Sinners 2025", "A Minecraft Movie 2025",
-            "Mission Impossible Final Reckoning 2025", "Thunderbolts 2025",
-            "Captain America Brave New World 2025", "How to Train Your Dragon 2025",
-            "Final Destination Bloodlines 2025", "Predator Badlands 2025",
-            "The Conjuring Last Rites 2025", "Avatar Fire and Ash 2025",
-            "Zootopia 2 2025", "Wicked For Good 2025", "Lilo and Stitch 2025",
-        ],
+        "file": "latest_hollywood_catalogue.json", "version": 7, "refresh_days": 30,
+        "minimum_movies": 1, "mode": "latest", "discovery_pages": 2,
     },
     "latest-bollywood": {
-        # Search a broader set of recent Hindi films and use movie-only torrent providers.
-        "file": "latest_bollywood_catalogue.json", "version": 6, "refresh_days": 30,
-        "minimum_movies": 1, "mode": "latest",
-        "queries": [
-            "Dhurandhar The Revenge 2026", "Border 2 2026", "Drishyam The Conclusion 2026",
-            "Bhooth Bangla 2026", "Dhurandhar 2026", "O Romeo 2026", "Subedaar 2026",
-            "Tera Yaar Hoon Main 2026", "Happy Patel Khatarnak Jasoos 2026",
-            "Ikkis 2026", "Alpha 2026", "Mardaani 3 2026",
-            "Dhurandhar 2025", "Chhaava 2025", "Saiyaara 2025", "Sitaare Zameen Par 2025",
-            "Raid 2 2025", "War 2 2025", "Housefull 5 2025", "Mahavatar Narsimha 2025",
-            "Kesari Chapter 2 2025", "Sikandar 2025", "Bhool Chuk Maaf 2025",
-            "Metro In Dino 2025", "Deva 2025", "Emergency 2025",
-            "De De Pyaar De 2 2025", "Thamma 2025", "Tere Ishk Mein 2025",
-        ],
+        "file": "latest_bollywood_catalogue.json", "version": 7, "refresh_days": 30,
+        "minimum_movies": 1, "mode": "latest", "discovery_pages": 2,
     },
 }
 # Separate persistent caches keep English-original and Hindi/dubbed options
@@ -4891,19 +4866,17 @@ _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
 _EXTRA_CATALOGUES["dc-live-action-hindi"] = {
     **_EXTRA_CATALOGUES["dc-live-action"],
     "file": "dc_live_action_hindi_catalogue.json",
-    "version": 2,
+    "version": 3,
     "language": "hindi",
-    "query_suffix": "Hindi dubbed",
     "titles": list(_EXTRA_CATALOGUES["dc-live-action"]["titles"]),
 }
 _EXTRA_CATALOGUES["marvel-hindi"] = {
     "file": "marvel_hindi_catalogue.json",
-    "version": 1,
+    "version": 2,
     "refresh_days": 36500,
     "minimum_movies": 5,
     "mode": "fixed",
     "language": "hindi",
-    "query_suffix": "Hindi dubbed",
     "titles": list(MARVEL_MOVIE_SEARCHES),
 }
 
@@ -4976,11 +4949,73 @@ def _extra_item_year(item: dict[str, Any], fallback: int = 0) -> int:
     return int(match.group(1)) if match else fallback
 
 
+async def _discover_latest_catalogue_jobs(key: str) -> list[tuple[str, int]]:
+    """Discover recently released movie titles from TMDB instead of a hardcoded query list."""
+    if key not in {"latest-hollywood", "latest-bollywood"}:
+        raise ValueError(f"Unsupported dynamic latest catalogue: {key}")
+
+    config = _EXTRA_CATALOGUES[key]
+    today = datetime.now(timezone.utc).date()
+    first_page = await _tmdb_fetch_movie_catalogue(key, 1, released_only=True)
+    payloads: list[dict[str, Any]] = [first_page]
+    total_pages = max(1, int(first_page.get("totalPages") or 1))
+    pages_to_fetch = min(max(1, int(config.get("discovery_pages") or 2)), total_pages)
+    if pages_to_fetch > 1:
+        page_results = await asyncio.gather(
+            *(
+                _tmdb_fetch_movie_catalogue(key, page, released_only=True)
+                for page in range(2, pages_to_fetch + 1)
+            ),
+            return_exceptions=True,
+        )
+        for page, result in enumerate(page_results, start=2):
+            if isinstance(result, dict):
+                payloads.append(result)
+            else:
+                logger.warning(
+                    "TMDB title discovery for %s page %d failed: %s",
+                    key, page, str(result) or type(result).__name__,
+                )
+
+    jobs: list[tuple[str, int]] = []
+    seen: set[str] = set()
+    current_year = today.year
+    for payload in payloads:
+        for item in payload.get("results") or []:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or item.get("original_title") or "").strip()
+            release_date = str(item.get("releaseDate") or "").strip()
+            if not title or not _tmdb_release_date_is_released(release_date, today.isoformat()):
+                continue
+            try:
+                year = int(item.get("year") or 0)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if year < current_year - 1 or year > current_year:
+                continue
+            identity = _normalize_title(title) + "|" + str(year)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            jobs.append((title, year))
+
+    if not jobs:
+        raise RuntimeError(
+            f"TMDB returned no released {key} titles from the current or previous year; keeping the previous catalogue."
+        )
+    logger.info(
+        "Discovered %d released movie titles for %s from TMDB across %d page(s)",
+        len(jobs), key, len(payloads),
+    )
+    return jobs
+
+
 async def _build_extra_catalogue(key: str) -> None:
     config = _EXTRA_CATALOGUES[key]
     state = _extra_catalogue_states[key]
     fixed_mode = config["mode"] == "fixed"
-    jobs = list(config.get("titles", [])) if fixed_mode else [(query, 0) for query in config["queries"]]
+    jobs = list(config.get("titles", [])) if fixed_mode else []
     semaphore = asyncio.Semaphore(2)
     poster_semaphore = asyncio.Semaphore(2)
     state.update({"status": "building", "completed": 0, "total": len(jobs), "resultCount": 0, "error": ""})
@@ -4995,20 +5030,64 @@ async def _build_extra_catalogue(key: str) -> None:
                 query = query + " " + query_suffix
             try:
                 if fixed_mode:
-                    try:
-                        items = await asyncio.wait_for(
-                            search_1337x(query, limit=50, allow_series_fallback=False),
-                            timeout=18,
-                        )
-                    except Exception as exc:
-                        logger.info("Catalogue %s primary search failed for %s: %s", key, query, exc)
-                        items = []
-                    if len(items) < 2:
+                    if str(config.get("language") or "").strip().lower() == "hindi":
+                        # Search the movie title without appending "Hindi dubbed".
+                        # Exact-word constraints previously hid releases labelled only
+                        # "Hin", "Dual Audio" or "Multi Audio".
                         try:
-                            fallback = await asyncio.wait_for(search_yts_movies(query, limit=20), timeout=9)
-                            items = list(items or []) + list(fallback or [])
+                            items = await asyncio.wait_for(
+                                search_1337x(query, limit=50, allow_series_fallback=False),
+                                timeout=18,
+                            )
                         except Exception as exc:
-                            logger.debug("Catalogue %s YTS fallback failed for %s: %s", key, query, exc)
+                            logger.info("Catalogue %s primary Hindi search failed for %s: %s", key, query, exc)
+                            items = []
+
+                        matched_hindi = [
+                            item for item in items
+                            if isinstance(item, dict)
+                            and _marvel_result_matches_title(item, title, year)
+                            and _extra_result_matches_language(item, "hindi")
+                        ]
+                        if len(matched_hindi) < 3:
+                            targeted_queries = ("Hindi", "dual audio", "multi audio")
+                            targeted_calls = [
+                                asyncio.wait_for(
+                                    search_1337x_direct(
+                                        f"{title} {language_term}",
+                                        limit=50,
+                                        pages=2,
+                                        category="Movies",
+                                        provider_query=f"{title} {language_term}",
+                                    ),
+                                    timeout=18,
+                                )
+                                for language_term in targeted_queries
+                            ]
+                            targeted_results = await asyncio.gather(*targeted_calls, return_exceptions=True)
+                            for result in targeted_results:
+                                if isinstance(result, list):
+                                    items.extend(result)
+                                elif isinstance(result, Exception):
+                                    logger.info(
+                                        "Catalogue %s targeted Hindi search failed for %s: %s",
+                                        key, title, str(result) or type(result).__name__,
+                                    )
+                    else:
+                        try:
+                            items = await asyncio.wait_for(
+                                search_1337x(query, limit=50, allow_series_fallback=False),
+                                timeout=18,
+                            )
+                        except Exception as exc:
+                            logger.info("Catalogue %s primary search failed for %s: %s", key, query, exc)
+                            items = []
+                        if len(items) < 2:
+                            try:
+                                fallback = await asyncio.wait_for(search_yts_movies(query, limit=20), timeout=9)
+                                items = list(items or []) + list(fallback or [])
+                            except Exception as exc:
+                                logger.debug("Catalogue %s YTS fallback failed for %s: %s", key, query, exc)
                 else:
                     # Search each known title directly in movie listings instead of
                     # passing it through the broad result filter (which requires year
@@ -5145,6 +5224,9 @@ async def _build_extra_catalogue(key: str) -> None:
                 state["completed"] = int(state.get("completed") or 0) + 1
 
     try:
+        if not fixed_mode:
+            jobs = await _discover_latest_catalogue_jobs(key)
+            state.update({"status": "building", "completed": 0, "total": len(jobs), "resultCount": 0, "error": ""})
         tasks = [asyncio.create_task(search_job(title, year)) for title, year in jobs]
         for task in asyncio.as_completed(tasks):
             try:
