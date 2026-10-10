@@ -51,7 +51,7 @@ The deployment workflow recreates the container from `.env.debug`, so rerun the 
 
 Movie catalogue cards check India (`IN`) streaming availability in the background. Home distinguishes subscription/free/ad-supported streaming from rental and purchase options, displays the regional digital release date when TMDB has one, and offers a **Streaming now in India** filter. A missing provider listing is shown as unconfirmed rather than proof that a movie is unavailable.
 
-The backend endpoint is `GET /api/movies/ott/{movie_id}?region=IN`. It queries TMDB's movie watch-provider and regional release-date endpoints, deduplicates concurrent lookups, and caches results for 24 hours in `/app/data/tmdb_ott_availability_cache.json` (override with `TMDB_OTT_CACHE_FILE` or `TMDB_OTT_CACHE_SECONDS`). Provider availability is powered by JustWatch; the UI includes the required JustWatch attribution. TMDB attribution remains required as described above.
+The backend endpoint is `GET /api/movies/ott/{movie_id}?region=IN`. When `WATCHMODE_API_KEY` is configured, it first checks Watchmode legal streaming, rental and purchase sources for India using the TMDB movie ID. TMDB/JustWatch is retained as a fallback and supplies regional release-date metadata. Requests are coalesced and cached for 24 hours in `/app/data/tmdb_ott_availability_cache.json` (override with `TMDB_OTT_CACHE_FILE` or `TMDB_OTT_CACHE_SECONDS`). Keep `WATCHMODE_API_KEY` server-side only; never expose it in frontend environment variables or commit it. Provider attribution is returned by the API, while TMDB attribution remains required as described above.
 
 ## Vercel
 
