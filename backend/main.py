@@ -2671,9 +2671,18 @@ def _limetorrents_rows(html_text: str, base_url: str) -> list[dict[str, str]]:
     # rather than tbody children, and may not carry a bgcolor attribute.
     # Avoid relying on either HTML detail.
     for row in soup.select("table.table2 tr"):
-        title_anchor = row.select_one(".tt-name a[href]")
+        # Prefer the visible title link over the empty download-icon link.
+        title_anchor = row.select_one(".tt-name a[href*='-torrent-']")
         if title_anchor is None:
-            title_anchor = row.select_one("a[href*='/torrent/'], a[href*='/download/']")
+            title_anchor = next(
+                (
+                    anchor
+                    for anchor in row.select(".tt-name a[href]")
+                    if anchor.get_text(" ", strip=True)
+                    and str(anchor.get("href") or "").lower().endswith(".html")
+                ),
+                None,
+            )
         if title_anchor is None:
             continue
 
