@@ -4740,28 +4740,36 @@ _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
         ],
     },
     "latest-hollywood": {
-        # Query actual releases so catalogues do not depend on unreliable year-only searches.
-        "file": "latest_hollywood_catalogue.json", "version": 5, "refresh_days": 30,
+        # Query a broad set of recent theatrical titles, not just the few with current swarm activity.
+        "file": "latest_hollywood_catalogue.json", "version": 6, "refresh_days": 30,
         "minimum_movies": 1, "mode": "latest",
         "queries": [
             "Project Hail Mary 2026", "Disclosure Day 2026", "Mortal Kombat II 2026",
-            "Supergirl 2026", "Spider Man Brand New Day 2026", "Animals 2026", "Verity 2026",
+            "Supergirl 2026", "Spider Man Brand New Day 2026", "The Odyssey 2026",
+            "The Super Mario Galaxy Movie 2026", "Scream 7 2026", "The Devil Wears Prada 2 2026",
             "Superman 2025", "Fantastic Four First Steps 2025", "F1 2025",
-            "Jurassic World Rebirth 2025", "Sinners 2025", "Minecraft Movie 2025",
-            "Mission Impossible Final Reckoning 2025",
+            "Jurassic World Rebirth 2025", "Sinners 2025", "A Minecraft Movie 2025",
+            "Mission Impossible Final Reckoning 2025", "Thunderbolts 2025",
+            "Captain America Brave New World 2025", "How to Train Your Dragon 2025",
+            "Final Destination Bloodlines 2025", "Predator Badlands 2025",
+            "The Conjuring Last Rites 2025", "Avatar Fire and Ash 2025",
+            "Zootopia 2 2025", "Wicked For Good 2025", "Lilo and Stitch 2025",
         ],
     },
     "latest-bollywood": {
-        # Query recent Hindi movie titles directly, not broad queries that can return TV series.
-        "file": "latest_bollywood_catalogue.json", "version": 5, "refresh_days": 30,
+        # Search a broader set of recent Hindi films and use movie-only torrent providers.
+        "file": "latest_bollywood_catalogue.json", "version": 6, "refresh_days": 30,
         "minimum_movies": 1, "mode": "latest",
         "queries": [
-            "Dhurandhar The Revenge 2026", "Border 2 2026", "Bhooth Bangla 2026",
-            "Dhamaal 4 2026", "Awarapan 2 2026", "Welcome to the Jungle 2026",
-            "Mardaani 3 2026", "O Romeo 2026",
-            "Chhaava 2025", "Saiyaara 2025", "Dhurandhar 2025",
-            "Sitaare Zameen Par 2025", "Raid 2 2025", "War 2 2025",
-            "Housefull 5 2025", "Mahavatar Narsimha 2025",
+            "Dhurandhar The Revenge 2026", "Border 2 2026", "Drishyam The Conclusion 2026",
+            "Bhooth Bangla 2026", "Dhurandhar 2026", "O Romeo 2026", "Subedaar 2026",
+            "Tera Yaar Hoon Main 2026", "Happy Patel Khatarnak Jasoos 2026",
+            "Ikkis 2026", "Alpha 2026", "Mardaani 3 2026",
+            "Dhurandhar 2025", "Chhaava 2025", "Saiyaara 2025", "Sitaare Zameen Par 2025",
+            "Raid 2 2025", "War 2 2025", "Housefull 5 2025", "Mahavatar Narsimha 2025",
+            "Kesari Chapter 2 2025", "Sikandar 2025", "Bhool Chuk Maaf 2025",
+            "Metro In Dino 2025", "Deva 2025", "Emergency 2025",
+            "De De Pyaar De 2 2025", "Thamma 2025", "Tere Ishk Mein 2025",
         ],
     },
 }
@@ -4865,28 +4873,39 @@ async def _build_extra_catalogue(key: str) -> None:
                         except Exception as exc:
                             logger.debug("Catalogue %s YTS fallback failed for %s: %s", key, query, exc)
                 else:
-                    # Search exact recent movie titles through the shared multi-provider
-                    # pipeline. Year-only searches were either stripped or too broad and
-                    # allowed TV listings to contaminate the catalogue.
-                    try:
-                        items = await asyncio.wait_for(
-                            search_1337x(query, limit=50, allow_series_fallback=False),
-                            timeout=24,
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "Catalogue %s aggregate search failed for %s: %s: %s",
-                            key, query, type(exc).__name__, str(exc) or "<no message>",
-                        )
-                        items = []
-                    if len(items) < 2:
-                        try:
-                            fallback = await asyncio.wait_for(search_yts_movies(query, limit=20), timeout=12)
-                            items = list(items or []) + list(fallback or [])
-                        except Exception as exc:
+                    # Search each known title directly in movie listings instead of
+                    # passing it through the broad result filter (which requires year
+                    # and all title tokens to occur literally in provider filenames).
+                    year_match = re.search(r"\b((?:19|20)\d{2})\b", query)
+                    expected_year = int(year_match.group(1)) if year_match else datetime.now(timezone.utc).year
+                    provider_query = re.sub(r"\b((?:19|20)\d{2})\b", "", query).strip(" .-_")
+                    calls = [
+                        asyncio.wait_for(
+                            search_1337x_direct(
+                                query,
+                                limit=50,
+                                pages=2,
+                                category="Movies",
+                                provider_query=provider_query,
+                            ),
+                            timeout=20,
+                        ),
+                        asyncio.wait_for(
+                            search_limetorrents(query, limit=30, pages=1),
+                            timeout=14,
+                        ),
+                    ]
+                    if key == "latest-hollywood":
+                        calls.append(asyncio.wait_for(search_yts_movies(query, limit=20), timeout=12))
+                    searched = await asyncio.gather(*calls, return_exceptions=True)
+                    items = []
+                    for value in searched:
+                        if isinstance(value, list):
+                            items.extend(value)
+                        elif isinstance(value, Exception):
                             logger.info(
-                                "Catalogue %s YTS fallback failed for %s: %s: %s",
-                                key, query, type(exc).__name__, str(exc) or "<no message>",
+                                "Catalogue %s provider search failed for %s: %s: %s",
+                                key, query, type(value).__name__, str(value) or "<no message>",
                             )
 
                 accepted: list[dict[str, Any]] = []
@@ -4902,14 +4921,27 @@ async def _build_extra_catalogue(key: str) -> None:
                             continue
                         media_title, media_year = title, year
                     else:
-                        normalized = _normalize_title(raw_title)
-                        year_match = re.search(r"\b((?:19|20)\d{2})\b", raw_title)
-                        media_year = _extra_item_year(item)
-                        # Only keep recent movie releases; discard TV seasons and
-                        # unrelated years returned by broad provider queries.
-                        current_year = datetime.now(timezone.utc).year
-                        if not media_year or media_year < current_year - 1 or media_year > current_year:
+                        normalized = _normalize_title(unescape(raw_title))
+                        query_year_match = re.search(r"\b((?:19|20)\d{2})\b", query)
+                        expected_year = int(query_year_match.group(1)) if query_year_match else datetime.now(timezone.utc).year
+                        query_title = re.sub(r"\b((?:19|20)\d{2})\b", "", query).strip(" .-_")
+                        query_tokens = [
+                            token for token in _normalize_title(query_title).split()
+                            if token not in {"the", "a", "an", "of", "and", "for", "to", "movie", "film"}
+                        ]
+                        result_tokens = set(normalized.split())
+                        # Roman-numbered sequels are frequently indexed with Arabic numerals.
+                        matched_tokens = sum(
+                            1 if token in result_tokens or (
+                                token in {"ii", "iii", "iv"} and
+                                ({"ii": "2", "iii": "3", "iv": "4"}[token] in result_tokens)
+                            ) else 0
+                            for token in query_tokens
+                        )
+                        minimum_matches = max(1, len(query_tokens) - 1) if len(query_tokens) > 2 else len(query_tokens)
+                        if query_tokens and matched_tokens < minimum_matches:
                             continue
+
                         category = str(item.get("category") or "").strip().lower()
                         if (
                             category in {"tv", "television", "series", "tv series", "television series"}
@@ -4917,19 +4949,18 @@ async def _build_extra_catalogue(key: str) -> None:
                             or re.search(r"\b(?:S\d{1,2}E\d{1,2}|season\s+\d+|complete\s+series|episode\s+\d+|web[\s.-]?series)\b", raw_title, re.I)
                         ):
                             continue
-                        # Use the matching catalogue query as the canonical movie title.
-                        # Provider filenames contain language/source tags (and sometimes
-                        # HTML entities), which otherwise split one film into many cards.
-                        media_title = re.sub(r"\b(?:19|20)\d{2}\b", "", query).strip(" .-_")
-                        media_title = unescape(media_title)
-                        if not media_title:
-                            media_title = re.sub(
-                                r"\b(?:1080p|720p|2160p|4k|web[- .]?dl|webrip|bluray|brrip|hdtv|x264|x265|hevc|proper|repack)\b.*$",
-                                "",
-                                unescape(raw_title),
-                                flags=re.I,
-                            ).strip(" .-_")
-                        media_title = media_title or unescape(raw_title)
+
+                        current_year = datetime.now(timezone.utc).year
+                        title_years = [int(value) for value in re.findall(r"\b((?:19|20)\d{2})\b", raw_title)]
+                        if title_years:
+                            media_year = title_years[-1]
+                        else:
+                            media_year = _extra_item_year(item, fallback=expected_year)
+                        if media_year < current_year - 1 or media_year > current_year:
+                            continue
+
+                        # The query title is the canonical display/group title for all of its torrent variants.
+                        media_title = unescape(query_title)
                     try:
                         raw_size = item.get("size_bytes") or item.get("sizeBytes") or item.get("size") or 0
                         if isinstance(raw_size, (int, float)):
