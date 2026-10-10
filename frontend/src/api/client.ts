@@ -88,6 +88,7 @@ export interface MovieOttAvailability {
   streamingProviders: MovieOttProvider[];
   rentProviders: MovieOttProvider[];
   buyProviders: MovieOttProvider[];
+  theatricalReleaseDate?: string | null;
   digitalReleaseDate?: string | null;
   providerLink: string;
   checkedAt: string;
