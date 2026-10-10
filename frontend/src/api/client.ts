@@ -79,6 +79,7 @@ export interface MovieOttProvider {
   providerId?: number | string | null;
   name: string;
   logoUrl?: string;
+  webUrl?: string;
 }
 
 export interface MovieOttAvailability {
