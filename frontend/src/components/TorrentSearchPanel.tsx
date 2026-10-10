@@ -157,13 +157,13 @@ function torrentQualityDetails(result: TorrentSearchResult): { key: string; labe
   const resolution = raw.match(/\b(2160p|1440p|1080p|720p|576p|480p|4k|8k)\b/i)?.[1]?.toLowerCase() || '';
   const resolutionLabel = resolution === '4k' ? '2160p (4K)' : resolution.toUpperCase();
   const formats: Array<[RegExp, string, number]> = [
-    [/\b3d\b.*\b(?:bluray|blu[ .-]?ray)\b|\b(?:bluray|blu[ .-]?ray)\b.*\b3d\b/i, '3D BluRay', 900],
-    [/\b(?:web[- .]?dl)\b/i, 'WEB-DL', 800],
-    [/\b(?:web[- .]?rip|webrip)\b/i, 'WEBRip', 750],
-    [/\b(?:blu[ .-]?ray|bluray)\b/i, 'BluRay', 700],
-    [/\b(?:brrip)\b/i, 'BRRip', 650],
-    [/\b(?:hdtv)\b/i, 'HDTV', 600],
-    [/\b(?:hdrip)\b/i, 'HDRip', 550],
+    [/\b3d\b.*\b(?:bluray|blu[ .-]?ray)\b|\b(?:bluray|blu[ .-]?ray)\b.*\b3d\b/i, '3D BluRay', 950],
+    [/\b(?:blu[ .-]?ray|bluray)\b/i, 'BluRay', 900],
+    [/\b(?:web[- .]?dl)\b/i, 'WEB-DL', 850],
+    [/\b(?:web[- .]?rip|webrip)\b/i, 'WEBRip', 800],
+    [/\b(?:brrip)\b/i, 'BRRip', 700],
+    [/\b(?:hdtv)\b/i, 'HDTV', 650],
+    [/\b(?:hdrip)\b/i, 'HDRip', 600],
     [/\b(?:dvdscr|dvd[ .-]?scr)\b/i, 'DVDScr', 500],
     [/\b(?:dvdrip|dvd)\b/i, 'DVDRip', 450],
     [/\b(?:telesync|ts)\b/i, 'Telesync', 400],
@@ -173,14 +173,17 @@ function torrentQualityDetails(result: TorrentSearchResult): { key: string; labe
   ];
   const format = formats.find(([pattern]) => pattern.test(raw));
   const label = [resolutionLabel, format?.[1]].filter(Boolean).join(' ') || (resolutionLabel || 'Other release');
-  const rank = (resolution === '2160p' || resolution === '4k' ? 2160
+  const resolutionRank = resolution === '2160p' || resolution === '4k' ? 2160
     : resolution === '1440p' ? 1440
     : resolution === '1080p' ? 1080
     : resolution === '720p' ? 720
     : resolution === '576p' ? 576
     : resolution === '480p' ? 480
     : resolution === '8k' ? 4320
-    : 0) + (format?.[2] || 0);
+    : 0;
+  // Resolution dominates source format so 1080p is never ranked below 720p
+  // just because the latter carries a BluRay tag.
+  const rank = resolutionRank * 1000 + (format?.[2] || 0);
   return { key: label.toLowerCase().replace(/[^a-z0-9]+/g, '-'), label, rank };
 }
 
@@ -219,9 +222,16 @@ function groupTorrentResults(results: TorrentSearchResult[]): TorrentQualityGrou
         }
       }
 
-      const variants = Array.from(bestByQuality.values()).map(value => value.result);
+      const variants = Array.from(bestByQuality.values())
+        .sort((a, b) => {
+          const qualityDifference = b.quality.rank - a.quality.rank;
+          if (qualityDifference !== 0) return qualityDifference;
+          const seederDifference = (Number(b.result.seeders) || 0) - (Number(a.result.seeders) || 0);
+          if (seederDifference !== 0) return seederDifference;
+          return (Number(b.result.size) || 0) - (Number(a.result.size) || 0);
+        })
+        .map(value => value.result);
       if (!variants.length) continue;
-      // Preserve the current seed/size/time ranking within the quality picker.
       const title = yearEntries[0].identity.title;
       groups.push({
         key: `${normalized}|${year || 'unknown'}`,
