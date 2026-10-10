@@ -214,6 +214,15 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<TorrentSearchResult[]>([]);
   const [selectedQualityByGroup, setSelectedQualityByGroup] = useState<Record<string, string>>({});
+  const [movieTorrentPreviewGroup, setMovieTorrentPreviewGroup] = useState<TorrentQualityGroup | null>(null);
+  const [movieTorrentPickerGroups, setMovieTorrentPickerGroups] = useState<TorrentQualityGroup[] | null>(null);
+  const [movieTorrentSearchLoading, setMovieTorrentSearchLoading] = useState(false);
+  const [movieTorrentSearchTitle, setMovieTorrentSearchTitle] = useState('');
+  const [movieTorrentSearchError, setMovieTorrentSearchError] = useState('');
+  const [selectedMovieTorrentQualityByGroup, setSelectedMovieTorrentQualityByGroup] = useState<Record<string, string>>({});
+  const movieTorrentSearchControllerRef = useRef<AbortController | null>(null);
+  const movieTorrentSearchGenerationRef = useRef(0);
+
   const [isSearching, setIsSearching] = useState(false);
   const [searched, setSearched] = useState(false);
   const [error, setError] = useState('');
@@ -881,6 +890,122 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     }
   };
 
+  const searchMovieTorrents = async (movie: MovieCatalogueItem) => {
+    const titleQuery = movie.title + (movie.year ? ' ' + movie.year : '');
+    movieTorrentSearchControllerRef.current?.abort();
+    const controller = new AbortController();
+    movieTorrentSearchControllerRef.current = controller;
+    const generation = ++movieTorrentSearchGenerationRef.current;
+
+    setMovieTorrentSearchTitle(titleQuery);
+    setMovieTorrentSearchLoading(true);
+    setMovieTorrentSearchError('');
+    setMovieTorrentPreviewGroup(null);
+    setMovieTorrentPickerGroups(null);
+    setSelectedMovieTorrentQualityByGroup({});
+    setResults([]);
+    setSearched(false);
+    setQuery(titleQuery);
+    setSelectedQualityByGroup({});
+
+    try {
+      const data = await api.searchTorrents(titleQuery, 50, controller.signal);
+      if (generation !== movieTorrentSearchGenerationRef.current) return;
+
+      // Keep the same seed, size and CAM-release safeguards as the ordinary
+      // results page, then reuse the shared title/year/quality grouper.
+      const maxSeedrFriendlySize = 5 * 1024 * 1024 * 1024;
+      const lowQualityRelease = /(?:^|[\s._()[\]-])(?:cam(?:rip)?|hdcam|hd[ ._-]?cam|telesync|tele[ ._-]?sync|ts[ ._-]?(?:md|ac3|hd)?|telecine|dvdscr|dvd[ ._-]?scr|screener|workprint)(?:$|[\s._()[\]-])/i;
+      const usable = data.filter(result => {
+        const size = Number(result.size) || 0;
+        const seeders = Number(result.seeders);
+        if (!Number.isFinite(seeders) || seeders <= 0 || size > maxSeedrFriendlySize) return false;
+        return !lowQualityRelease.test(String(result.title || '') + ' ' + String(result.quality || ''));
+      });
+      const groups = groupTorrentResults(usable);
+
+      if (groups.length === 0) {
+        setMovieTorrentSearchError('No usable torrent releases were found for ' + titleQuery + '. Try again later or use a shorter title.');
+        return;
+      }
+
+      startPosterBackgroundSearch(groups.flatMap(group => group.variants));
+      if (groups.length === 1) {
+        // One canonical result stays on the movie browser and uses the exact
+        // same normal result-card renderer, including its quality dropdown.
+        const group = groups[0];
+        setResults(group.variants);
+        setSearched(true);
+        setSelectedQualityByGroup({ [group.key]: torrentResultKey(group.variants[0]) });
+        setMovieTorrentPreviewGroup(group);
+      } else {
+        // Keep the catalogue visible and let the user pick a release from a
+        // compact text/list modal. Choosing a row opens its grouped card below.
+        setMovieTorrentPickerGroups(groups);
+      }
+    } catch (error: any) {
+      if (generation !== movieTorrentSearchGenerationRef.current || error?.name === 'AbortError') return;
+      setMovieTorrentSearchError(String(error?.message || 'Torrent search failed for ' + titleQuery + '.'));
+    } finally {
+      if (generation === movieTorrentSearchGenerationRef.current) {
+        setMovieTorrentSearchLoading(false);
+        if (movieTorrentSearchControllerRef.current === controller) {
+          movieTorrentSearchControllerRef.current = null;
+        }
+      }
+    }
+  };
+
+  const selectMovieTorrentGroup = (group: TorrentQualityGroup) => {
+    setResults(group.variants);
+    setSearched(true);
+    setSelectedQualityByGroup({ [group.key]: torrentResultKey(group.variants[0]) });
+    setMovieTorrentPreviewGroup(group);
+    setMovieTorrentPickerGroups(null);
+    setMovieTorrentSearchError('');
+    startPosterBackgroundSearch(group.variants);
+  };
+
+  const prepareMovieTorrent = async (result: TorrentSearchResult) => {
+    const source = result.magnetUrl || result.downloadUrl || result.sourceUrl;
+    const torrentKey = result.infoHash || source || result.title;
+    if (!source || preparingTorrentKey === torrentKey) return;
+
+    setPrepareError('');
+    setMovieTorrentSearchError('');
+    setPreparingTorrentKey(torrentKey);
+    setPrepareWaitTitle(result.title);
+    setPrepareWaitOpen(false);
+    const longWaitTimer = window.setTimeout(() => setPrepareWaitOpen(true), 30000);
+
+    try {
+      const metadata = metadataCacheRef.current.get(torrentKey);
+      const prepared = await onPrepare(result, metadata);
+      const deletedFolderIds = new Set(
+        (prepared?.deletedFolderIds || []).map(id => String(id).trim()).filter(Boolean)
+      );
+      if (deletedFolderIds.size > 0) {
+        for (const [key, entry] of preparedByKeyRef.current.entries()) {
+          if (entry.files.some(file => deletedFolderIds.has(String(file.folderId)))) {
+            preparedByKeyRef.current.delete(key);
+          }
+        }
+      }
+      if (prepared?.files?.length) {
+        preparedByKeyRef.current.set(torrentKey, { files: prepared.files });
+      }
+      setPrepareWaitOpen(false);
+    } catch (error: any) {
+      const message = String(error?.message || 'Could not prepare this torrent.');
+      if (!message.toLowerCase().includes('cancelled by another selection')) {
+        setPrepareError(message);
+      }
+    } finally {
+      window.clearTimeout(longWaitTimer);
+      setPreparingTorrentKey(current => current === torrentKey ? null : current);
+    }
+  };
+
   const openMovieCatalogue = async (
     key: MovieCatalogueKey,
     searchText: string,
@@ -1150,12 +1275,12 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
         <div className="mt-2 flex flex-wrap gap-2" aria-label="Movie catalogues">
           {([
+            ['popular-bollywood', '⭐ Popular Bollywood', 'Popular Bollywood Movies'],
             ['marvel', '🦸 Marvel Movies · Cached', 'Marvel Movies'],
             ['dc-live-action', '🦇 DC Live-Action · Cached', 'DC Live-Action Movies'],
             ['dc-animated', '🎞️ DC Animated · Cached', 'DC Animated Movies'],
             ['popular-hollywood', '⭐ Popular Hollywood', 'Popular Hollywood Movies'],
             ['trending-hollywood', '🔥 Trending Hollywood', 'Trending Hollywood Movies'],
-            ['popular-bollywood', '⭐ Popular Bollywood', 'Popular Bollywood Movies'],
           ] as const).map(([key, label, searchText]) => (
             <button key={key} type="button" onClick={() => {
               setResolutionFilter(null);
@@ -1322,6 +1447,94 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             </div>
           </div>
 
+          {movieTorrentSearchLoading && (
+            <div className="flex items-center gap-3 rounded-xl border border-cyan-500/30 bg-slate-950 px-3 py-3 text-sm text-slate-200">
+              <Loader2 className="h-5 w-5 shrink-0 animate-spin text-cyan-400" />
+              <div>
+                <div className="font-semibold">Finding torrent releases for {movieTorrentSearchTitle}…</div>
+                <div className="mt-0.5 text-xs text-slate-500">Combining matching qualities in the background. The movie catalogue stays open.</div>
+              </div>
+            </div>
+          )}
+          {movieTorrentSearchError && (
+            <div className="flex items-start justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-3 text-xs text-amber-200">
+              <span>{movieTorrentSearchError}</span>
+              <button type="button" onClick={() => setMovieTorrentSearchError('')} className="shrink-0 text-amber-100 underline">Dismiss</button>
+            </div>
+          )}
+          {movieTorrentPreviewGroup && (() => {
+            const group = movieTorrentPreviewGroup;
+            const selectedKey = selectedMovieTorrentQualityByGroup[group.key] || selectedQualityByGroup[group.key];
+            const result = group.variants.find(variant => torrentResultKey(variant) === selectedKey) || group.variants[0];
+            const torrentKey = result.infoHash || result.magnetUrl || result.downloadUrl || result.sourceUrl || result.title;
+            const isPreparing = preparingTorrentKey === torrentKey;
+            const preparedFiles = preparedForResult(result);
+            const primaryFile = preparedFiles.find(file => /\.(mkv|mp4|m4v|webm|mov|avi|m3u8|ts|mp3|wav|flac|aac|ogg|m4a)$/i.test(file.name)) || preparedFiles[0];
+            return (
+              <div className="overflow-hidden rounded-xl border border-cyan-500/30 bg-slate-950">
+                <div className="flex items-center justify-between gap-2 border-b border-slate-800 px-3 py-2.5">
+                  <div className="min-w-0">
+                    <div className="text-[10px] font-bold uppercase tracking-wide text-cyan-300">Torrent match</div>
+                    <div className="truncate text-xs text-slate-400">{group.title}</div>
+                  </div>
+                  <button type="button" onClick={() => { setMovieTorrentPreviewGroup(null); setResults([]); setSearched(false); }} className="shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white" aria-label="Close torrent result"><X className="h-4 w-4" /></button>
+                </div>
+                <div className="flex flex-col gap-3 p-3 sm:flex-row">
+                  <div className="mx-auto w-24 shrink-0 overflow-hidden rounded-lg border border-slate-800 bg-slate-900 sm:mx-0">
+                    {posterUrlFor(group.posterResult) ? (
+                      <img src={posterUrlFor(group.posterResult)} alt={group.title} loading="lazy" className="aspect-[2/3] h-full w-full object-cover" />
+                    ) : (
+                      <div className="flex aspect-[2/3] items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <h3 className="text-base font-bold text-slate-100">{group.title}</h3>
+                    <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                      <span className="font-semibold text-emerald-400">▲ {Number(result.seeders) || 0} seeders</span>
+                      <span className="font-semibold text-amber-400">▼ {Number(result.leechers) || 0} peers</span>
+                      {group.year && <span className="text-slate-500">{group.year}</span>}
+                    </div>
+                    <select
+                      aria-label={'Choose quality for ' + group.title}
+                      value={torrentResultKey(result)}
+                      onChange={event => setSelectedMovieTorrentQualityByGroup(previous => ({
+                        ...previous, [group.key]: event.target.value
+                      }))}
+                      className="mt-2 w-full rounded-lg border border-slate-800 bg-slate-900 px-2.5 py-2 text-xs font-medium text-slate-200 outline-none focus:border-cyan-500"
+                      title="Choose quality and torrent source"
+                    >
+                      {group.variants.map(variant => {
+                        const quality = torrentQualityDetails(variant);
+                        const provider = String(variant.indexer || '').trim();
+                        return (
+                          <option key={torrentResultKey(variant)} value={torrentResultKey(variant)}>
+                            {quality.label} · {formatBytes(Number(variant.size) || 0)} · ▲{Number(variant.seeders) || 0}{provider ? ' · ' + provider : ''}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-xs text-slate-400">
+                        <span className="font-mono text-slate-200">{formatBytes(Number(result.size) || 0)}</span>
+                        {result.indexer ? ' · ' + result.indexer : ''}
+                        {result.publishDate ? ' · ' + formatPublished(result.publishDate) : ''}
+                      </div>
+                      {preparedFiles.length > 0 && primaryFile ? (
+                        <button type="button" onClick={async () => { setPlayingTorrentKey(torrentKey); try { await onPlaySeedrFile?.(primaryFile); } finally { setPlayingTorrentKey(current => current === torrentKey ? null : current); } }} disabled={playingTorrentKey === torrentKey} className="shrink-0 rounded-lg bg-emerald-400 px-3 py-2 text-xs font-bold text-slate-950 disabled:opacity-60">
+                          {playingTorrentKey === torrentKey ? 'Opening…' : 'Play'}
+                        </button>
+                      ) : (
+                        <button type="button" onClick={() => void prepareMovieTorrent(result)} disabled={(!result.magnetUrl && !result.downloadUrl && !result.sourceUrl) || isPreparing} className="shrink-0 rounded-lg bg-cyan-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-50">
+                          {isPreparing ? 'Preparing…' : 'Prepare'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
             {visibleMovieCatalogueItems.map(movie => (
               <article key={String(movie.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 flex flex-col">
@@ -1426,17 +1639,19 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   )}
                   <button
                     type="button"
-                    disabled={isSearching}
+                    disabled={isSearching || movieTorrentSearchLoading}
                     onClick={() => {
-                      const titleQuery = movie.title + (movie.year ? ' ' + movie.year : '');
-                      setMovieCatalogue(null);
-                      setQuery(titleQuery);
-                      void runSearch(undefined, titleQuery);
+                      setResolutionFilter(null);
+                      setSizeSort(null);
+                      setTimeSort(null);
+                      setReleaseYearSort(null);
+                      void searchMovieTorrents(movie);
                     }}
                     className="mt-auto w-full rounded-lg bg-cyan-500 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-50"
                   >
-                    <Download className="mr-1.5 inline h-3.5 w-3.5" />
-                    Prepare
+                    {movieTorrentSearchLoading && movieTorrentSearchTitle === movie.title + (movie.year ? ' ' + movie.year : '')
+                      ? <><Loader2 className="mr-1.5 inline h-3.5 w-3.5 animate-spin" />Searching…</>
+                      : <><Download className="mr-1.5 inline h-3.5 w-3.5" />Prepare</>}
                   </button>
                 </div>
               </article>
@@ -1487,6 +1702,52 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               This product uses the TMDB API but is not endorsed or certified by TMDB.
             </p>
           </div>
+        </div>
+      )}
+
+      {movieTorrentPickerGroups && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/75 p-3 sm:p-5"
+          onMouseDown={event => { if (event.target === event.currentTarget) setMovieTorrentPickerGroups(null); }}
+        >
+          <section role="dialog" aria-modal="true" aria-labelledby="movie-torrent-picker-title" className="flex max-h-[84vh] w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
+            <header className="flex items-start justify-between gap-3 border-b border-slate-800 px-4 py-3">
+              <div className="min-w-0">
+                <h2 id="movie-torrent-picker-title" className="text-sm font-bold text-slate-100">Choose a torrent release</h2>
+                <p className="mt-1 truncate text-xs text-slate-400">{movieTorrentSearchTitle} · {movieTorrentPickerGroups.length} matching releases</p>
+                <p className="mt-1 text-[10px] text-slate-500">List view · qualities are combined within each release</p>
+              </div>
+              <button type="button" onClick={() => setMovieTorrentPickerGroups(null)} className="shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white" aria-label="Close torrent picker"><X className="h-4 w-4" /></button>
+            </header>
+            <div className="min-h-0 flex-1 divide-y divide-slate-800 overflow-y-auto">
+              {movieTorrentPickerGroups.map(group => {
+                const preferred = group.variants[0];
+                const qualityNames = group.variants.slice(0, 4).map(variant => torrentQualityDetails(variant).label);
+                return (
+                  <div key={group.key} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-900/80">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-semibold leading-snug text-slate-100">{group.title}</div>
+                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px]">
+                        <span className="font-semibold text-emerald-400">▲ {Number(preferred.seeders) || 0} seeders</span>
+                        <span className="font-semibold text-amber-400">▼ {Number(preferred.leechers) || 0} peers</span>
+                        <span className="text-slate-300">{formatBytes(Number(preferred.size) || 0)}</span>
+                        {preferred.indexer && <span className="text-slate-500">{preferred.indexer}</span>}
+                      </div>
+                      <div className="mt-1 text-[10px] text-slate-500">
+                        {group.variants.length} quality option{group.variants.length === 1 ? '' : 's'} · {qualityNames.join(', ')}{group.variants.length > 4 ? ', …' : ''}
+                      </div>
+                    </div>
+                    <button type="button" onClick={() => selectMovieTorrentGroup(group)} className="shrink-0 rounded-lg bg-cyan-500 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400">
+                      Select
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+            <footer className="border-t border-slate-800 px-4 py-2.5 text-[10px] text-slate-500">
+              Select a release to see its full card and quality picker without leaving the movie catalogue.
+            </footer>
+          </section>
         </div>
       )}
 
