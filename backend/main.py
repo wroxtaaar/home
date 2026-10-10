@@ -4996,6 +4996,42 @@ _EXTRA_CATALOGUE_PATHS = {
     key: Path(os.getenv("CATALOGUE_" + key.upper().replace("-", "_") + "_PATH", "/app/data/" + config["file"]))
     for key, config in _EXTRA_CATALOGUES.items()
 }
+
+# Bundled snapshots let ephemeral hosts (such as Render) start with the same
+# catalogues as the VPS. Seed only missing/empty data files; never replace a
+# populated persistent cache with an older image snapshot.
+_CACHE_SEED_DIR = Path(os.getenv("CACHE_SEED_DIR", "/app/cache-seed"))
+_CACHE_SEED_FILES = (
+    "dc_animated_catalogue.json",
+    "dc_live_action_catalogue.json",
+    "latest_bollywood_catalogue.json",
+    "latest_hollywood_catalogue.json",
+    "marvel_catalogue.json",
+    "marvel_hindi_catalogue.json",
+)
+
+
+def _seed_bundled_catalogue_caches() -> None:
+    destinations = {
+        "marvel_catalogue.json": MARVEL_CATALOGUE_PATH,
+        **{config["file"]: _EXTRA_CATALOGUE_PATHS[key] for key, config in _EXTRA_CATALOGUES.items()},
+    }
+    for filename in _CACHE_SEED_FILES:
+        source = _CACHE_SEED_DIR / filename
+        destination = destinations.get(filename)
+        if destination is None or not source.is_file() or source.stat().st_size == 0:
+            continue
+        try:
+            if destination.is_file() and destination.stat().st_size > 0:
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+            logger.info("Seeded catalogue cache %s from bundled snapshot", filename)
+        except OSError as exc:
+            logger.warning("Could not seed catalogue cache %s: %s", filename, exc)
+
+
+app.router.add_event_handler("startup", _seed_bundled_catalogue_caches)
 _extra_catalogue_tasks: dict[str, asyncio.Task | None] = {key: None for key in _EXTRA_CATALOGUES}
 _extra_catalogue_retry_after: dict[str, float] = {}
 _extra_catalogue_states: dict[str, dict[str, Any]] = {
