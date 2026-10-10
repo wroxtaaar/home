@@ -2667,10 +2667,13 @@ def _limetorrents_rows(html_text: str, base_url: str) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     seen: set[str] = set()
 
-    for row in soup.select(".table2 > tbody > tr[bgcolor], #content .table2 > tbody > tr[bgcolor]"):
-        title_anchor = row.select_one("div.tt-name > a[href^='/']")
+    # LimeTorrents result rows may be direct children of table.table2
+    # rather than tbody children, and may not carry a bgcolor attribute.
+    # Avoid relying on either HTML detail.
+    for row in soup.select("table.table2 tr"):
+        title_anchor = row.select_one(".tt-name a[href]")
         if title_anchor is None:
-            title_anchor = row.select_one(".tt-name a[href^='/']")
+            title_anchor = row.select_one("a[href*='/torrent/'], a[href*='/download/']")
         if title_anchor is None:
             continue
 
