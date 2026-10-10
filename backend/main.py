@@ -4684,6 +4684,314 @@ async def _build_marvel_catalogue() -> None:
         logger.warning("Marvel catalogue build failed: %s", exc)
 
 
+
+
+# Additional shared catalogues. Curated DC lists are long-lived; latest-release
+# catalogues are refreshed monthly and keep serving the previous good cache during refresh.
+_EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
+    "dc-live-action": {
+        "file": "dc_live_action_catalogue.json", "version": 1, "refresh_days": 36500,
+        "minimum_movies": 5, "mode": "fixed",
+        "titles": [
+            ("Superman", 2025), ("Supergirl", 2026), ("The Batman Part II", 2027),
+            ("Joker: Folie à Deux", 2024), ("The Batman", 2022), ("The Suicide Squad", 2021),
+            ("Zack Snyder's Justice League", 2021), ("Wonder Woman 1984", 2020),
+            ("Birds of Prey", 2020), ("Joker", 2019), ("Shazam!", 2019),
+            ("Aquaman", 2018), ("Aquaman and the Lost Kingdom", 2023),
+            ("Wonder Woman", 2017), ("Justice League", 2017), ("Man of Steel", 2013),
+            ("Batman v Superman: Dawn of Justice", 2016), ("Suicide Squad", 2016),
+            ("Green Lantern", 2011), ("The Dark Knight Rises", 2012),
+            ("The Dark Knight", 2008), ("Batman Begins", 2005), ("Batman Returns", 1992),
+            ("Batman", 1989), ("Superman Returns", 2006), ("Superman II", 1980),
+            ("Superman", 1978), ("Constantine", 2005), ("Watchmen", 2009),
+            ("V for Vendetta", 2005), ("The League of Extraordinary Gentlemen", 2003),
+            ("Catwoman", 2004), ("The Flash", 2023), ("Black Adam", 2022),
+            ("Blue Beetle", 2023), ("Shazam! Fury of the Gods", 2023),
+        ],
+    },
+    "dc-animated": {
+        "file": "dc_animated_catalogue.json", "version": 1, "refresh_days": 36500,
+        "minimum_movies": 5, "mode": "fixed",
+        "titles": [
+            ("Justice League: Crisis on Infinite Earths Part One", 2024),
+            ("Justice League: Crisis on Infinite Earths Part Two", 2024),
+            ("Justice League: Crisis on Infinite Earths Part Three", 2024),
+            ("Justice League: Warworld", 2023), ("Legion of Super-Heroes", 2023),
+            ("Batman: The Doom That Came to Gotham", 2023), ("Green Lantern: Beware My Power", 2022),
+            ("Battle of the Super Sons", 2022), ("Catwoman: Hunted", 2022),
+            ("Injustice", 2021), ("Batman: The Long Halloween Part Two", 2021),
+            ("Batman: The Long Halloween Part One", 2021), ("Justice Society: World War II", 2021),
+            ("Superman: Man of Tomorrow", 2020), ("Justice League Dark: Apokolips War", 2020),
+            ("Wonder Woman: Bloodlines", 2019), ("Batman: Hush", 2019),
+            ("Reign of the Supermen", 2019), ("The Death of Superman", 2018),
+            ("Suicide Squad: Hell to Pay", 2018), ("Batman: Gotham by Gaslight", 2018),
+            ("Justice League Dark", 2017), ("Teen Titans: The Judas Contract", 2017),
+            ("Batman and Harley Quinn", 2017), ("Justice League vs. Teen Titans", 2016),
+            ("Batman: Bad Blood", 2016), ("Justice League: Gods and Monsters", 2015),
+            ("Batman: The Killing Joke", 2016), ("Justice League: Throne of Atlantis", 2015),
+            ("Batman: Assault on Arkham", 2014), ("Son of Batman", 2014),
+            ("Justice League: The Flashpoint Paradox", 2013), ("Batman: Under the Red Hood", 2010),
+            ("Superman/Batman: Public Enemies", 2009), ("Wonder Woman", 2009),
+            ("Justice League: The New Frontier", 2008), ("Batman: Mask of the Phantasm", 1993),
+            ("Batman Beyond: Return of the Joker", 2000), ("Superman: Doomsday", 2007),
+            ("All-Star Superman", 2011), ("Batman: Year One", 2011),
+            ("Batman: The Dark Knight Returns Part 1", 2012), ("Batman: The Dark Knight Returns Part 2", 2013),
+            ("Justice League: Doom", 2012), ("Superman vs. The Elite", 2012),
+        ],
+    },
+    "latest-hollywood": {
+        "file": "latest_hollywood_catalogue.json", "version": 1, "refresh_days": 30,
+        "minimum_movies": 1, "mode": "latest", "queries": ["2026 Hollywood movies", "2025 Hollywood movies"],
+    },
+    "latest-bollywood": {
+        "file": "latest_bollywood_catalogue.json", "version": 1, "refresh_days": 30,
+        "minimum_movies": 1, "mode": "latest", "queries": ["2026 Bollywood Hindi movies", "2025 Bollywood Hindi movies"],
+    },
+}
+_EXTRA_CATALOGUE_PATHS = {
+    key: Path(os.getenv("CATALOGUE_" + key.upper().replace("-", "_") + "_PATH", "/app/data/" + config["file"]))
+    for key, config in _EXTRA_CATALOGUES.items()
+}
+_extra_catalogue_tasks: dict[str, asyncio.Task | None] = {key: None for key in _EXTRA_CATALOGUES}
+_extra_catalogue_states: dict[str, dict[str, Any]] = {
+    key: {"status": "idle", "completed": 0, "total": len(config.get("titles", config.get("queries", []))),
+          "resultCount": 0, "movieCount": 0, "error": ""}
+    for key, config in _EXTRA_CATALOGUES.items()
+}
+
+
+def _read_extra_catalogue(key: str) -> dict[str, Any] | None:
+    path = _EXTRA_CATALOGUE_PATHS[key]
+    config = _EXTRA_CATALOGUES[key]
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("version") == config["version"] and isinstance(payload.get("results"), list) and payload["results"]:
+            return payload
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return None
+
+
+def _write_extra_catalogue(key: str, payload: dict[str, Any]) -> None:
+    path = _EXTRA_CATALOGUE_PATHS[key]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix=key + "-", suffix=".tmp",
+                                         dir=str(path.parent), delete=False) as handle:
+            temporary = Path(handle.name)
+            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None and temporary.exists():
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+
+
+def _extra_catalogue_is_stale(key: str, payload: dict[str, Any] | None) -> bool:
+    if not payload:
+        return True
+    days = int(_EXTRA_CATALOGUES[key]["refresh_days"])
+    if days >= 36500:
+        return False
+    try:
+        built = datetime.fromisoformat(str(payload.get("builtAt") or "").replace("Z", "+00:00"))
+        if built.tzinfo is None:
+            built = built.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - built).total_seconds() >= days * 86400
+    except (ValueError, TypeError):
+        return True
+
+
+def _extra_item_year(item: dict[str, Any], fallback: int = 0) -> int:
+    try:
+        if item.get("year"):
+            return int(item["year"])
+    except (TypeError, ValueError):
+        pass
+    match = re.search(r"\\b((?:19|20)\\d{2})\\b", str(item.get("title") or ""))
+    return int(match.group(1)) if match else fallback
+
+
+async def _build_extra_catalogue(key: str) -> None:
+    config = _EXTRA_CATALOGUES[key]
+    state = _extra_catalogue_states[key]
+    fixed_mode = config["mode"] == "fixed"
+    jobs = list(config.get("titles", [])) if fixed_mode else [(query, 0) for query in config["queries"]]
+    semaphore = asyncio.Semaphore(3)
+    poster_semaphore = asyncio.Semaphore(2)
+    state.update({"status": "building", "completed": 0, "total": len(jobs), "resultCount": 0, "error": ""})
+    rows: dict[str, dict[str, Any]] = {}
+    found_movies: set[str] = set()
+
+    async def search_job(title: str, year: int) -> list[dict[str, Any]]:
+        async with semaphore:
+            query = f"{title} {year}".strip() if year else title
+            try:
+                try:
+                    items = await asyncio.wait_for(search_1337x(query, limit=50, allow_series_fallback=False), timeout=18)
+                except Exception as exc:
+                    logger.info("Catalogue %s primary search failed for %s: %s", key, query, exc)
+                    items = []
+                if len(items) < 2:
+                    try:
+                        fallback = await asyncio.wait_for(search_yts_movies(query, limit=20), timeout=9)
+                        items = list(items or []) + list(fallback or [])
+                    except Exception as exc:
+                        logger.debug("Catalogue %s YTS fallback failed for %s: %s", key, query, exc)
+
+                accepted: list[dict[str, Any]] = []
+                for original in items or []:
+                    if not isinstance(original, dict):
+                        continue
+                    item = dict(original)
+                    raw_title = str(item.get("title") or "").strip()
+                    if not raw_title:
+                        continue
+                    if fixed_mode:
+                        if not _marvel_result_matches_title(item, title, year):
+                            continue
+                        media_title, media_year = title, year
+                    else:
+                        normalized = _normalize_title(raw_title)
+                        year_match = re.search(r"\\b((?:19|20)\\d{2})\\b", raw_title)
+                        media_year = _extra_item_year(item)
+                        # Only keep recent movie releases; discard TV seasons and
+                        # unrelated years returned by broad provider queries.
+                        if not media_year or media_year < datetime.now(timezone.utc).year - 1 or media_year > datetime.now(timezone.utc).year + 1:
+                            continue
+                        if re.search(r"\\b(?:S\\d{1,2}E\\d{1,2}|season\\s+\\d+|complete\\s+series|episode\\s+\\d+)\\b", raw_title, re.I):
+                            continue
+                        if key == "latest-bollywood" and not re.search(r"\\b(?:hindi|bollywood|hindi-dubbed)\\b", raw_title, re.I):
+                            # YTS and some indexers omit language tokens; don't
+                            # infer Bollywood from a generic Hollywood-style title.
+                            continue
+                        media_title = re.sub(r"\\b(?:1080p|720p|2160p|4k|web[- .]?dl|webrip|bluray|brrip|hdtv|x264|x265|hevc|proper|repack)\\b.*$", "", raw_title, flags=re.I).strip(" .-_")
+                        media_title = media_title or raw_title
+                    try:
+                        size = int(float(item.get("size") or 0))
+                        seeders = int(float(item.get("seeders") or 0))
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if size < 100 * 1024 * 1024 or size > MAX_SEARCH_RESULT_SIZE_BYTES or seeders <= 0:
+                        continue
+                    if not any(str(item.get(field) or "").strip() for field in ("magnetUrl", "downloadUrl", "sourceUrl", "infoUrl", "infoHash")):
+                        continue
+                    item["mediaTitle"] = media_title
+                    item["year"] = media_year or None
+                    if not item.get("posterUrl"):
+                        item["posterUrl"] = _poster_url_for_release(f"{media_title} {media_year or ''}")
+                    accepted.append(item)
+
+                # Resolve one poster per movie group and reuse it across quality variants.
+                grouped: dict[str, list[dict[str, Any]]] = {}
+                for item in accepted:
+                    group_key = _normalize_title(str(item.get("mediaTitle") or item.get("title") or ""))
+                    grouped.setdefault(group_key, []).append(item)
+                for group_key, variants in grouped.items():
+                    if not variants:
+                        continue
+                    poster = str(variants[0].get("posterUrl") or "")
+                    if not poster:
+                        async with poster_semaphore:
+                            try:
+                                poster = await asyncio.wait_for(_poster_lookup(str(variants[0]["mediaTitle"]), str(variants[0].get("year") or "")), timeout=10)
+                            except Exception:
+                                poster = ""
+                    for item in variants:
+                        item["posterUrl"] = poster or _poster_url_for_release(str(item.get("mediaTitle") or item.get("title") or ""))
+                        item["catalogueKey"] = key
+                        item["catalogueTitle"] = str(item.get("mediaTitle") or item.get("title") or "")
+                    found_movies.update(group_key + "|" + str(v.get("year") or "") for v in variants for group_key in [_normalize_title(str(v.get("mediaTitle") or v.get("title") or ""))])
+                return accepted
+            finally:
+                state["completed"] = int(state.get("completed") or 0) + 1
+
+    try:
+        tasks = [asyncio.create_task(search_job(title, year)) for title, year in jobs]
+        for task in asyncio.as_completed(tasks):
+            try:
+                items = await task
+            except Exception as exc:
+                logger.info("Catalogue %s search task failed: %s", key, exc)
+                items = []
+            for item in items:
+                digest = str(item.get("infoHash") or "").strip().lower()
+                if not re.fullmatch(r"[0-9a-f]{40}", digest):
+                    digest = info_hash(str(item.get("magnetUrl") or item.get("downloadUrl") or ""))
+                dedupe = "hash:" + digest if re.fullmatch(r"[0-9a-f]{40}", digest, re.I) else (
+                    "title-size:" + _normalize_title(str(item.get("title") or "")) + "|" + str(item.get("size") or 0)
+                )
+                previous = rows.get(dedupe)
+                if previous is None or (int(item.get("seeders") or 0), int(item.get("leechers") or 0)) > (int(previous.get("seeders") or 0), int(previous.get("leechers") or 0)):
+                    rows[dedupe] = item
+            state["resultCount"] = len(rows)
+            state["movieCount"] = len(found_movies)
+
+        results = list(rows.values())
+        movie_count = len({ _normalize_title(str(item.get("mediaTitle") or item.get("title") or "")) + "|" + str(item.get("year") or "") for item in results })
+        if movie_count < int(config["minimum_movies"]):
+            raise RuntimeError(f"Only {movie_count} titles found; keeping the previous catalogue.")
+        results.sort(key=lambda item: (_extra_item_year(item), float(item.get("rating") or 0), int(item.get("seeders") or 0)), reverse=True)
+        payload = {"version": config["version"], "builtAt": datetime.now(timezone.utc).isoformat(),
+                   "titlesQueried": len(jobs), "movieCount": movie_count, "resultCount": len(results), "results": results}
+        _write_extra_catalogue(key, payload)
+        state.update({"status": "ready", "completed": len(jobs), "total": len(jobs), "movieCount": movie_count,
+                      "resultCount": len(results), "builtAt": payload["builtAt"], "error": ""})
+        logger.info("Built %s catalogue: %d titles / %d torrent options", key, movie_count, len(results))
+    except Exception as exc:
+        state.update({"status": "failed", "error": "Catalogue refresh failed; previous cached results were retained."})
+        logger.warning("Catalogue %s build failed: %s", key, exc)
+
+
+async def _ensure_extra_catalogue_refresh(key: str) -> None:
+    cached = _read_extra_catalogue(key)
+    if _extra_catalogue_is_stale(key, cached):
+        task = _extra_catalogue_tasks.get(key)
+        if task is None or task.done():
+            _extra_catalogue_tasks[key] = asyncio.create_task(_build_extra_catalogue(key))
+
+
+async def _extra_catalogue_monthly_scheduler() -> None:
+    # Check once per day; a stale latest catalogue is refreshed in the background.
+    while True:
+        for key, config in _EXTRA_CATALOGUES.items():
+            if int(config["refresh_days"]) < 36500:
+                await _ensure_extra_catalogue_refresh(key)
+        await asyncio.sleep(24 * 60 * 60)
+
+
+@app.get("/api/catalogue/{catalogue_key}")
+async def api_extra_catalogue(catalogue_key: str):
+    if catalogue_key not in _EXTRA_CATALOGUES:
+        raise HTTPException(404, "Unknown catalogue")
+    cached = _read_extra_catalogue(catalogue_key)
+    await _ensure_extra_catalogue_refresh(catalogue_key)
+    state = _extra_catalogue_states[catalogue_key]
+    # For monthly catalogues, stale-but-useful data is returned immediately while
+    # the refresh runs; first-ever builds report progress for the UI to poll.
+    if cached:
+        return {"status": "ready", "builtAt": cached.get("builtAt"),
+                "completed": int(cached.get("titlesQueried") or 0), "total": int(cached.get("titlesQueried") or 0),
+                "resultCount": int(cached.get("resultCount") or len(cached["results"])),
+                "movieCount": int(cached.get("movieCount") or 0), "refreshing": bool(_extra_catalogue_tasks.get(catalogue_key) and not _extra_catalogue_tasks[catalogue_key].done()),
+                "results": cached["results"]}
+    return {**state, "results": []}
+
+
+async def _warm_extra_catalogues_on_startup() -> None:
+    for key in _EXTRA_CATALOGUES:
+        await _ensure_extra_catalogue_refresh(key)
+    asyncio.create_task(_extra_catalogue_monthly_scheduler())
+
+
+app.router.add_event_handler("startup", _warm_extra_catalogues_on_startup)
+
+
 @app.get("/api/catalogue/marvel")
 async def api_marvel_catalogue():
     # A completed catalogue is served straight from the persistent shared file:

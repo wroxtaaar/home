@@ -90,7 +90,11 @@ const apiFetch = (input: RequestInfo | URL, init?: RequestInit) => {
 
 export const api = {
   async getMarvelCatalogue(signal?: AbortSignal): Promise<MarvelCatalogueResponse> {
-    const res = await fetch(API_BASE + '/api/catalogue/marvel', {
+    return this.getCatalogue('marvel', signal);
+  },
+
+  async getCatalogue(key: string, signal?: AbortSignal): Promise<MarvelCatalogueResponse> {
+    const res = await fetch(API_BASE + '/api/catalogue/' + encodeURIComponent(key), {
       signal,
       credentials: 'include',
     });
@@ -98,7 +102,7 @@ export const api = {
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch {}
     if (!res.ok) {
-      throw new Error(data?.detail || data?.error || body || ('Marvel catalogue failed (HTTP ' + res.status + ')'));
+      throw new Error(data?.detail || data?.error || body || ('Movie catalogue failed (HTTP ' + res.status + ')'));
     }
     return data as MarvelCatalogueResponse;
   },

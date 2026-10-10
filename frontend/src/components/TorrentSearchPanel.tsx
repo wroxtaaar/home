@@ -650,7 +650,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
 
 
-  const runSearch = async (event?: React.FormEvent, searchOverride?: string, searchMode?: 'marvel') => {
+  const runSearch = async (event?: React.FormEvent, searchOverride?: string, searchMode?: 'marvel' | 'dc-live-action' | 'dc-animated' | 'latest-hollywood' | 'latest-bollywood') => {
     event?.preventDefault();
 
     const trimmed = (searchOverride ?? query).trim();
@@ -684,23 +684,31 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       setCatalogueBuildProgress('');
 
       let data: TorrentSearchResult[];
-      if (searchMode === 'marvel') {
-        let catalogue = await api.getMarvelCatalogue(controller.signal);
+      if (searchMode) {
+        const labels: Record<string, string> = {
+          marvel: 'Marvel', 'dc-live-action': 'DC live-action', 'dc-animated': 'DC animated',
+          'latest-hollywood': 'Latest Hollywood', 'latest-bollywood': 'Latest Bollywood'
+        };
+        let catalogue = searchMode === 'marvel'
+          ? await api.getMarvelCatalogue(controller.signal)
+          : await api.getCatalogue(searchMode, controller.signal);
         while (catalogue.status === 'building' || catalogue.status === 'idle') {
           if (generation !== searchGenerationRef.current) return;
           setCatalogueBuildProgress(
-            'First-time shared catalogue build: ' +
+            'Building shared ' + (labels[searchMode] || 'movie') + ' catalogue: ' +
             catalogue.completed + ' of ' + catalogue.total +
-            ' movie searches completed. It will be saved for future visitors.'
+            ' searches completed. Results will be cached for future visitors.'
           );
           await new Promise<void>(resolve => window.setTimeout(resolve, 2200));
-          catalogue = await api.getMarvelCatalogue(controller.signal);
+          catalogue = searchMode === 'marvel'
+            ? await api.getMarvelCatalogue(controller.signal)
+            : await api.getCatalogue(searchMode, controller.signal);
         }
         if (catalogue.status !== 'ready') {
-          throw new Error(catalogue.error || 'Could not build the Marvel movie catalogue.');
+          throw new Error(catalogue.error || ('Could not load the ' + (labels[searchMode] || 'movie') + ' catalogue.'));
         }
         data = catalogue.results;
-        setCatalogueBuildProgress('');
+        setCatalogueBuildProgress(catalogue.refreshing ? 'Showing cached results while the monthly refresh runs in the background.' : '');
       } else {
         data = await api.searchTorrents(trimmed, 50, controller.signal);
       }
@@ -971,8 +979,22 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         </form>
 
         <div className="mt-2 flex flex-wrap gap-2" aria-label="Popular comic universes">
-          <button type="button" onClick={() => { setQuery('Marvel Movies'); setResolutionFilter(null); setSizeSort(null); setTimeSort(null); setReleaseYearSort(null); void runSearch(undefined, 'Marvel', 'marvel'); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">🦸 Marvel Movies</button>
-          <button type="button" onClick={() => { setQuery('DC Comics'); setResolutionFilter(null); setSizeSort(null); setTimeSort(null); setReleaseYearSort(null); void runSearch(undefined, 'DC Comics'); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">DC Comics</button>
+          {([
+            ['marvel', '🦸 Marvel Movies', 'Marvel Movies'],
+            ['dc-live-action', '🦇 DC Live-Action', 'DC Live-Action Movies'],
+            ['dc-animated', '🎞️ DC Animated', 'DC Animated Movies'],
+            ['latest-hollywood', '🎬 Latest Hollywood', 'Latest Hollywood Movies'],
+            ['latest-bollywood', '🎥 Latest Bollywood', 'Latest Bollywood Movies'],
+          ] as const).map(([key, label, searchText]) => (
+            <button key={key} type="button" onClick={() => {
+              setQuery(searchText);
+              setResolutionFilter(null);
+              setSizeSort(null);
+              setTimeSort(null);
+              setReleaseYearSort(null);
+              void runSearch(undefined, searchText, key);
+            }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">{label}</button>
+          ))}
         </div>
       </div>
 
