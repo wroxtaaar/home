@@ -4740,14 +4740,29 @@ _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
         ],
     },
     "latest-hollywood": {
-        # Generic media search strips bare years, so latest catalogues search direct listings.
-        "file": "latest_hollywood_catalogue.json", "version": 3, "refresh_days": 30,
-        "minimum_movies": 1, "mode": "latest", "queries": ["2026", "2025"],
+        # Query actual releases so catalogues do not depend on unreliable year-only searches.
+        "file": "latest_hollywood_catalogue.json", "version": 4, "refresh_days": 30,
+        "minimum_movies": 1, "mode": "latest",
+        "queries": [
+            "Project Hail Mary 2026", "Disclosure Day 2026", "Mortal Kombat II 2026",
+            "Supergirl 2026", "Spider Man Brand New Day 2026", "Animals 2026", "Verity 2026",
+            "Superman 2025", "Fantastic Four First Steps 2025", "F1 2025",
+            "Jurassic World Rebirth 2025", "Sinners 2025", "Minecraft Movie 2025",
+            "Mission Impossible Final Reckoning 2025",
+        ],
     },
     "latest-bollywood": {
-        # Search Hindi/Bollywood provider listings directly rather than title-only generic search.
-        "file": "latest_bollywood_catalogue.json", "version": 3, "refresh_days": 30,
-        "minimum_movies": 1, "mode": "latest", "queries": ["Hindi 2026", "Hindi 2025", "Bollywood 2026", "Bollywood 2025"],
+        # Query recent Hindi movie titles directly, not broad queries that can return TV series.
+        "file": "latest_bollywood_catalogue.json", "version": 4, "refresh_days": 30,
+        "minimum_movies": 1, "mode": "latest",
+        "queries": [
+            "Dhurandhar Revenge 2026", "Border 2 2026", "Bhooth Bangla 2026",
+            "Dhamaal 4 2026", "Awarapan 2 2026", "Welcome to the Jungle 2026",
+            "Mardaani 3 2026", "O Romeo 2026",
+            "Chhaava 2025", "Saiyaara 2025", "Dhurandhar 2025",
+            "Sitaare Zameen Par 2025", "Raid 2 2025", "War 2 2025",
+            "Housefull 5 2025", "Mahavatar Narsimha 2025",
+        ],
     },
 }
 _EXTRA_CATALOGUE_PATHS = {
@@ -4850,37 +4865,29 @@ async def _build_extra_catalogue(key: str) -> None:
                         except Exception as exc:
                             logger.debug("Catalogue %s YTS fallback failed for %s: %s", key, query, exc)
                 else:
-                    # Do not route bare-year/language catalogues through the generic title
-                    # search pipeline: it strips the very tokens needed for discovery.
-                    year_match = re.search(r"\b((?:19|20)\d{2})\b", query)
-                    release_year = year_match.group(1) if year_match else str(datetime.now(timezone.utc).year)
-                    if key == "latest-hollywood":
-                        provider_query = release_year
-                        listing_query = f"movies {release_year}"
-                    else:
-                        language = "Hindi" if re.search(r"\bhindi\b", query, re.I) else "Bollywood"
-                        provider_query = language
-                        listing_query = f"{language} {release_year}"
-
-                    primary_search = asyncio.wait_for(
-                        search_1337x_direct(
-                            listing_query, limit=50, pages=2, provider_query=provider_query,
-                        ),
-                        timeout=18,
-                    )
-                    secondary_search = asyncio.wait_for(
-                        search_limetorrents(listing_query, limit=30, pages=1),
-                        timeout=12,
-                    )
-                    searched = await asyncio.gather(
-                        primary_search, secondary_search, return_exceptions=True,
-                    )
-                    items = []
-                    for value in searched:
-                        if isinstance(value, list):
-                            items.extend(value)
-                        elif isinstance(value, Exception):
-                            logger.info("Catalogue %s provider search failed for %s: %s", key, query, value)
+                    # Search exact recent movie titles through the shared multi-provider
+                    # pipeline. Year-only searches were either stripped or too broad and
+                    # allowed TV listings to contaminate the catalogue.
+                    try:
+                        items = await asyncio.wait_for(
+                            search_1337x(query, limit=50, allow_series_fallback=False),
+                            timeout=24,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Catalogue %s aggregate search failed for %s: %s: %s",
+                            key, query, type(exc).__name__, str(exc) or "<no message>",
+                        )
+                        items = []
+                    if len(items) < 2:
+                        try:
+                            fallback = await asyncio.wait_for(search_yts_movies(query, limit=20), timeout=12)
+                            items = list(items or []) + list(fallback or [])
+                        except Exception as exc:
+                            logger.info(
+                                "Catalogue %s YTS fallback failed for %s: %s: %s",
+                                key, query, type(exc).__name__, str(exc) or "<no message>",
+                            )
 
                 accepted: list[dict[str, Any]] = []
                 for original in items or []:
@@ -4903,14 +4910,15 @@ async def _build_extra_catalogue(key: str) -> None:
                         current_year = datetime.now(timezone.utc).year
                         if not media_year or media_year < current_year - 1 or media_year > current_year:
                             continue
-                        if re.search(r"\b(?:S\d{1,2}E\d{1,2}|season\s+\d+|complete\s+series|episode\s+\d+)\b", raw_title, re.I):
-                            continue
-                        if key == "latest-bollywood" and not re.search(
-                            r"\b(?:hindi|hin|bollywood|hin[- .]?dub(?:bed)?|hindi[- .]?dubbed|dual[ ._-]?audio|multi[ ._-]?audio)\b",
-                            raw_title,
-                            re.I,
+                        category = str(item.get("category") or "").strip().lower()
+                        if (
+                            category in {"tv", "television", "series", "tv series", "television series"}
+                            or "television series" in category
+                            or re.search(r"\b(?:S\d{1,2}E\d{1,2}|season\s+\d+|complete\s+series|episode\s+\d+|web[\s.-]?series)\b", raw_title, re.I)
                         ):
                             continue
+                        # The query itself is a known Hindi-film title; release names
+                        # often omit a language tag, so do not require "Hindi" in the filename.
                         media_title = re.sub(r"\b(?:1080p|720p|2160p|4k|web[- .]?dl|webrip|bluray|brrip|hdtv|x264|x265|hevc|proper|repack)\b.*$", "", raw_title, flags=re.I).strip(" .-_")
                         media_title = media_title or raw_title
                     try:
@@ -4989,8 +4997,12 @@ async def _build_extra_catalogue(key: str) -> None:
                       "resultCount": len(results), "builtAt": payload["builtAt"], "error": ""})
         logger.info("Built %s catalogue: %d titles / %d torrent options", key, movie_count, len(results))
     except Exception as exc:
-        state.update({"status": "failed", "error": "Catalogue refresh failed; previous cached results were retained."})
-        logger.warning("Catalogue %s build failed: %s", key, exc)
+        state.update({
+            "status": "failed",
+            "error": "Catalogue refresh failed; previous cached results were retained.",
+            "debugError": f"{type(exc).__name__}: {str(exc)[:240]}",
+        })
+        logger.exception("Catalogue %s build failed: %s", key, exc)
 
 
 async def _ensure_extra_catalogue_refresh(key: str) -> None:
