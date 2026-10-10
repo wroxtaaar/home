@@ -5855,29 +5855,38 @@ async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None) -> dic
             raise
         except httpx.RequestError as exc:
             last_error = exc
+            is_transient_connection_error = isinstance(
+                exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError)
+            )
             logger.warning(
                 "TMDB network request failed for %s (attempt %s/3): %s: %s",
                 path, attempt + 1, type(exc).__name__, str(exc) or "<no message>",
             )
-            if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError)):
+
+            # A single reset is common with the currently flaky route to TMDB.
+            # Retry before opening the shared cooldown so one bad edge connection
+            # does not suppress an otherwise successful follow-up attempt.
+            if attempt < 2:
+                backoff_seconds = (0.5 * (2 ** attempt)) + (secrets.randbelow(251) / 1000)
+                await asyncio.sleep(backoff_seconds)
+                continue
+
+            if is_transient_connection_error:
                 _tmdb_api_connect_failure_until = max(
                     _tmdb_api_connect_failure_until,
                     time.monotonic() + TMDB_API_CONNECT_FAILURE_COOLDOWN_SECONDS,
                 )
                 logger.warning(
-                    "TMDB API connection failure; opening %ss cooldown to avoid repeated retries",
-                    TMDB_API_CONNECT_FAILURE_COOLDOWN_SECONDS,
+                    "TMDB connection failed after %s attempts; opening %ss cooldown",
+                    attempt + 1, TMDB_API_CONNECT_FAILURE_COOLDOWN_SECONDS,
                 )
                 raise HTTPException(
                     status_code=503,
                     detail=(
-                        "TMDB API connection was reset before an HTTP response. "
-                        "Requests are paused briefly to avoid repeated slow failures; cached catalogues will be used when available."
+                        "TMDB API connections failed after retries. "
+                        "Requests are paused briefly; cached catalogues will be used when available."
                     ),
                 ) from exc
-            if attempt < 2:
-                await asyncio.sleep(0.5 * (2 ** attempt))
-                continue
         except httpx.HTTPStatusError as exc:
             logger.warning("TMDB returned HTTP %s for %s", exc.response.status_code, path)
             raise HTTPException(status_code=502, detail=f"TMDB returned HTTP {exc.response.status_code}.") from exc
