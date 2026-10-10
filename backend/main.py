@@ -4626,7 +4626,7 @@ async def _warm_marvel_catalogue_on_startup() -> None:
         logger.info("Started first-time Marvel catalogue warm-up in the background.")
 
 
-app.add_event_handler("startup", _warm_marvel_catalogue_on_startup)
+app.router.add_event_handler("startup", _warm_marvel_catalogue_on_startup)
 
 
 @app.get("/api/search")
