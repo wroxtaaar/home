@@ -1259,6 +1259,10 @@ export default function App() {
     folderPath: string;
   }>; deletedFolderIds: string[] }> => {
     const prepareGeneration = ++seedrPrepareGenerationRef.current;
+    // Defer replacement until a valid magnet has been resolved and is ready to
+    // submit. This prevents a bad/unresolvable selection from cancelling the
+    // currently working Seedr task.
+    const replacementTaskId = seedrDownloadActive ? seedrNotice?.taskId : null;
 
     if (!seedrConnected) {
       // Preparing a search result requires a personal Seedr connection.
@@ -1267,35 +1271,6 @@ export default function App() {
       setSeedrConnectError('');
       setSeedrOnboardingOpen(true);
       throw new Error('Connect your Seedr account first.'); 
-    }
-
-    if (seedrDownloadActive) {
-      const previousTaskId = seedrNotice?.taskId;
-      if (previousTaskId != null) {
-        try {
-          setIsCancellingSeedr(true);
-          const cancelled = await api.deleteSeedrTask(previousTaskId);
-          if (cancelled?.folderDeleted && cancelled?.folderId) {
-            forgetSeedrFolders([String(cancelled.folderId)]);
-          }
-
-          const waiterKey = String(previousTaskId);
-          const waiter = seedrPrepareWaiters.current[waiterKey];
-          if (waiter) {
-            delete seedrPrepareWaiters.current[waiterKey];
-            waiter.reject(new Error('Seedr preparation was cancelled by another selection.'));
-          }
-
-          setSeedrNotice(null);
-        } catch (error: any) {
-          const message = error?.message || 'Could not cancel the current Seedr preparation.';
-          setSeedrAddBlockedNotice(message);
-          window.setTimeout(() => setSeedrAddBlockedNotice(null), 5000);
-          throw new Error(message);
-        } finally {
-          setIsCancellingSeedr(false);
-        }
-      }
     }
 
     if (prepareGeneration !== seedrPrepareGenerationRef.current) {
@@ -1326,7 +1301,10 @@ export default function App() {
     }
 
     let resolvedMetadata = metadata;
-    if (!resolvedMetadata) {
+    // Seedr can resolve metadata itself. When the search provider already
+    // supplied a title and byte size, do not block Prepare on a separate
+    // libtorrent/DHT metadata lookup that may hang on stale or weak swarms.
+    if (!resolvedMetadata && !(Number(result.size) > 0 && String(result.title || '').trim())) {
       resolvedMetadata = await api.inspectMagnet(
         magnet,
         'Downloads',
@@ -1345,7 +1323,31 @@ export default function App() {
       throw new Error('Seedr preparation was replaced by a newer selection.');
     }
 
-    const prepared = await api.prepareSeedrMagnet(magnet, requiredBytes, torrentName);
+    const prepared = await api.prepareSeedrMagnet(
+      magnet,
+      requiredBytes,
+      torrentName,
+      replacementTaskId == null ? undefined : replacementTaskId
+    );
+
+    // The backend is authoritative for task replacement and also catches a
+    // stale task left behind after a page refresh. Reject the older UI waiter
+    // so its card stops spinning, without treating that cancellation as an
+    // error for the newly selected torrent.
+    const cancelledTaskIds = new Set(
+      (Array.isArray(prepared?.cancelledTasks) ? prepared.cancelledTasks : [])
+        .map((task: any) => String(task?.taskId ?? task?.task_id ?? task?.id ?? '').trim())
+        .filter(Boolean)
+    );
+    for (const cancelledTaskId of cancelledTaskIds) {
+      const waiter = seedrPrepareWaiters.current[cancelledTaskId];
+      if (!waiter) continue;
+      delete seedrPrepareWaiters.current[cancelledTaskId];
+      waiter.reject(new Error('Seedr preparation was cancelled by another selection.'));
+    }
+    if (seedrNotice?.taskId != null && cancelledTaskIds.has(String(seedrNotice.taskId))) {
+      setSeedrNotice(null);
+    }
 
     // Prepare can automatically remove older completed Seedr folders to make
     // room for the new torrent. Remove those folders from every local cache
@@ -1401,7 +1403,6 @@ export default function App() {
     seedrDownloadActive,
     seedrNotice,
     rememberSeedrTorrentName,
-    isCancellingSeedr,
     forgetSeedrFolders
   ]);
 
