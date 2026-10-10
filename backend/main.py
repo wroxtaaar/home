@@ -2955,7 +2955,7 @@ async def search_limetorrents(
 ) -> list[dict[str, Any]]:
     """Search Knaben API v2 using its edge-cached GET interface."""
     title_query, season, episode = _media_search_parts(query)
-    title_query = re.sub(r"\\s+", " ", provider_query or _media_provider_query(query)).strip()
+    title_query = re.sub(r"\s+", " ", provider_query or _media_provider_query(query)).strip()
     if not title_query:
         return []
 
