@@ -4813,7 +4813,7 @@ def _extra_item_year(item: dict[str, Any], fallback: int = 0) -> int:
             return int(item["year"])
     except (TypeError, ValueError):
         pass
-    match = re.search(r"\\b((?:19|20)\\d{2})\\b", str(item.get("title") or ""))
+    match = re.search(r"\b((?:19|20)\d{2})\b", str(item.get("title") or ""))
     return int(match.group(1)) if match else fallback
 
 
@@ -4858,19 +4858,19 @@ async def _build_extra_catalogue(key: str) -> None:
                         media_title, media_year = title, year
                     else:
                         normalized = _normalize_title(raw_title)
-                        year_match = re.search(r"\\b((?:19|20)\\d{2})\\b", raw_title)
+                        year_match = re.search(r"\b((?:19|20)\d{2})\b", raw_title)
                         media_year = _extra_item_year(item)
                         # Only keep recent movie releases; discard TV seasons and
                         # unrelated years returned by broad provider queries.
                         if not media_year or media_year < datetime.now(timezone.utc).year - 1 or media_year > datetime.now(timezone.utc).year + 1:
                             continue
-                        if re.search(r"\\b(?:S\\d{1,2}E\\d{1,2}|season\\s+\\d+|complete\\s+series|episode\\s+\\d+)\\b", raw_title, re.I):
+                        if re.search(r"\b(?:S\d{1,2}E\d{1,2}|season\s+\d+|complete\s+series|episode\s+\d+)\b", raw_title, re.I):
                             continue
-                        if key == "latest-bollywood" and not re.search(r"\\b(?:hindi|bollywood|hindi-dubbed)\\b", raw_title, re.I):
+                        if key == "latest-bollywood" and not re.search(r"\b(?:hindi|bollywood|hindi-dubbed)\b", raw_title, re.I):
                             # YTS and some indexers omit language tokens; don't
                             # infer Bollywood from a generic Hollywood-style title.
                             continue
-                        media_title = re.sub(r"\\b(?:1080p|720p|2160p|4k|web[- .]?dl|webrip|bluray|brrip|hdtv|x264|x265|hevc|proper|repack)\\b.*$", "", raw_title, flags=re.I).strip(" .-_")
+                        media_title = re.sub(r"\b(?:1080p|720p|2160p|4k|web[- .]?dl|webrip|bluray|brrip|hdtv|x264|x265|hevc|proper|repack)\b.*$", "", raw_title, flags=re.I).strip(" .-_")
                         media_title = media_title or raw_title
                     try:
                         size = int(float(item.get("size") or 0))
@@ -4965,7 +4965,7 @@ async def _extra_catalogue_monthly_scheduler() -> None:
         await asyncio.sleep(24 * 60 * 60)
 
 
-@app.get("/api/catalogue/{catalogue_key}")
+@app.get("/api/catalogue/extra/{catalogue_key}")
 async def api_extra_catalogue(catalogue_key: str):
     if catalogue_key not in _EXTRA_CATALOGUES:
         raise HTTPException(404, "Unknown catalogue")

@@ -94,7 +94,7 @@ export const api = {
   },
 
   async getCatalogue(key: string, signal?: AbortSignal): Promise<MarvelCatalogueResponse> {
-    const res = await fetch(API_BASE + '/api/catalogue/' + encodeURIComponent(key), {
+    const res = await fetch(API_BASE + '/api/catalogue/extra/' + encodeURIComponent(key), {
       signal,
       credentials: 'include',
     });
