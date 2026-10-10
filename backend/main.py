@@ -5274,7 +5274,7 @@ async def _tmdb_load_company_ids(franchise: str) -> list[str]:
     return result
 
 
-async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int) -> dict[str, Any]:
+async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_only: bool = True) -> dict[str, Any]:
     today = datetime.now(timezone.utc).date().isoformat()
     params: dict[str, Any] = {
         "include_adult": "false",
@@ -5282,8 +5282,9 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int) -> dict[str
         "language": "en-US",
         "page": page,
         "sort_by": "primary_release_date.desc",
-        "release_date.lte": today,
     }
+    if released_only:
+        params["release_date.lte"] = today
 
     if catalogue_key in {"latest-hollywood", "popular-hollywood"}:
         params["with_original_language"] = "en"
@@ -5331,6 +5332,8 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int) -> dict[str
                 if not isinstance(item, dict):
                     continue
                 if str(item.get("original_language") or "").lower() != wanted_language:
+                    continue
+                if released_only and not _tmdb_release_date_is_released(item.get("release_date"), today):
                     continue
                 item_id = str(item.get("id") or "")
                 if item_id and item_id in seen_ids:
@@ -5385,6 +5388,8 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int) -> dict[str
         if not title:
             continue
         release_date = str(item.get("release_date") or "").strip()
+        if released_only and not _tmdb_release_date_is_released(release_date, today):
+            continue
         year_match = re.match(r"^(\d{4})", release_date)
         poster_path = str(item.get("poster_path") or "").strip()
         backdrop_path = str(item.get("backdrop_path") or "").strip()
@@ -5405,6 +5410,7 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int) -> dict[str
     current_page = max(1, min(500, int(payload.get("page") or page)))
     return {
         "catalogue": catalogue_key,
+        "releasedOnly": released_only,
         "provider": "TMDB",
         "page": current_page,
         "totalPages": total_pages,
@@ -5418,6 +5424,7 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int) -> dict[str
 async def api_tmdb_movie_catalogue(
     catalogue_key: str,
     page: int = Query(1, ge=1, le=500),
+    released_only: bool = Query(True),
 ):
     allowed = {
         "latest-hollywood", "latest-bollywood",
@@ -5428,7 +5435,8 @@ async def api_tmdb_movie_catalogue(
     if catalogue_key not in allowed:
         raise HTTPException(status_code=404, detail="Unknown movie catalogue.")
 
-    cache_key = (catalogue_key, page)
+    # Keep released-only and include-upcoming responses in separate cache slots.
+    cache_key = (catalogue_key + ("|released" if released_only else "|upcoming"), page)
     now = time.monotonic()
     cache_ttl = 30 * 60 if catalogue_key.startswith("trending-") else TMDB_CATALOGUE_CACHE_SECONDS
     cached = _tmdb_movie_catalogue_cache.get(cache_key)
@@ -5449,7 +5457,7 @@ async def api_tmdb_movie_catalogue(
 
     task = _tmdb_movie_catalogue_inflight.get(cache_key)
     if task is None or task.done():
-        task = asyncio.create_task(_tmdb_fetch_movie_catalogue(catalogue_key, page))
+        task = asyncio.create_task(_tmdb_fetch_movie_catalogue(catalogue_key, page, released_only))
         _tmdb_movie_catalogue_inflight[cache_key] = task
     try:
         payload = await task

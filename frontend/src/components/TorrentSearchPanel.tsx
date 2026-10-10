@@ -213,6 +213,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [catalogueBuildProgress, setCatalogueBuildProgress] = useState('');
   const [movieCatalogue, setMovieCatalogue] = useState<MovieCataloguePage | null>(null);
   const [movieCatalogueSearchText, setMovieCatalogueSearchText] = useState('');
+  const [releasedOnly, setReleasedOnly] = useState(true);
   // Seed count is the default ranking so the strongest swarms appear first.
   // 720p/1080p are mutually exclusive. Size and Time are independent sort toggles.
   const [resolutionFilter, setResolutionFilter] = useState<'720p' | '1080p' | null>(null);
@@ -795,7 +796,12 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     }
   };
 
-  const openMovieCatalogue = async (key: MovieCatalogueKey, searchText: string, page = 1) => {
+  const openMovieCatalogue = async (
+    key: MovieCatalogueKey,
+    searchText: string,
+    page = 1,
+    onlyReleased = releasedOnly,
+  ) => {
     const generation = ++searchGenerationRef.current;
     searchRequestRef.current?.abort();
     const controller = new AbortController();
@@ -818,7 +824,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       posterBackgroundAttemptsRef.current.clear();
       posterBackgroundGenerationRef.current += 1;
 
-      const data = await api.getMovieCatalogue(key, page, controller.signal);
+      const data = await api.getMovieCatalogue(key, page, onlyReleased, controller.signal);
       if (generation !== searchGenerationRef.current) return;
       setMovieCatalogue(data);
       setCatalogueBuildProgress('');
@@ -1157,6 +1163,30 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               } · Metadata by {movieCatalogue.provider}
             </div>
             <div className="text-[11px] text-slate-500">Select a movie to search torrent providers</div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/80 px-3 py-2.5">
+            <label className="flex cursor-pointer select-none items-center gap-2 text-xs font-semibold text-slate-200">
+              <input
+                type="checkbox"
+                checked={releasedOnly}
+                onChange={(event) => {
+                  const next = event.target.checked;
+                  setReleasedOnly(next);
+                  void openMovieCatalogue(
+                    movieCatalogue.catalogue,
+                    movieCatalogueSearchText,
+                    movieCatalogue.page,
+                    next,
+                  );
+                }}
+                className="h-4 w-4 accent-cyan-400"
+              />
+              Released movies only
+            </label>
+            <span className="text-[11px] text-slate-500">
+              {releasedOnly ? 'Hides future and unconfirmed release dates' : 'Includes upcoming releases'}
+            </span>
           </div>
 
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">

@@ -62,6 +62,7 @@ export interface MovieCataloguePage {
   page: number;
   totalPages: number;
   totalResults: number;
+  releasedOnly?: boolean;
   results: MovieCatalogueItem[];
   attribution?: string;
 }
@@ -151,8 +152,16 @@ export const api = {
     return data as MarvelCatalogueResponse;
   },
 
-  async getMovieCatalogue(key: MovieCatalogueKey, page = 1, signal?: AbortSignal): Promise<MovieCataloguePage> {
-    const params = new URLSearchParams({ page: String(Math.min(Math.max(page, 1), 500)) });
+  async getMovieCatalogue(
+    key: MovieCatalogueKey,
+    page = 1,
+    releasedOnly = true,
+    signal?: AbortSignal,
+  ): Promise<MovieCataloguePage> {
+    const params = new URLSearchParams({
+      page: String(Math.min(Math.max(page, 1), 500)),
+      released_only: String(releasedOnly),
+    });
     const res = await fetch(API_BASE + '/api/movies/catalogue/' + encodeURIComponent(key) + '?' + params.toString(), {
       signal,
       credentials: 'include',
