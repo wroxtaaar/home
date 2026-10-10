@@ -3772,6 +3772,7 @@ def _poster_prepare_lookup_title(title: str, year: str = "") -> str:
 def _poster_title_aliases(title: str, year: str = "") -> list[str]:
     """Return provider-friendly title aliases for common torrent shorthand."""
     clean_title = str(title or "").strip()
+    clean_year = str(year or "").strip()
     normalized = _poster_normalize_title(clean_title)
     aliases = [clean_title] if clean_title else []
 
