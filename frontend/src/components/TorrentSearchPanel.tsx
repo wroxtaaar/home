@@ -998,8 +998,18 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       // not report seed counts reliably.
       const maxSeedrFriendlySize = 5 * 1024 * 1024 * 1024;
       const lowQualityRelease = /(?:^|[\s._()[\]-])(?:cam(?:rip)?|hdcam|hd[ ._-]?cam|telesync|tele[ ._-]?sync|ts[ ._-]?(?:md|ac3|hd)?|telecine|dvdscr|dvd[ ._-]?scr|screener|workprint)(?:$|[\s._()[\]-])/i;
+      // Indexers often return loose keyword matches. Keep a result only when the
+      // actual release title contains the selected movie title as a phrase, so a
+      // movie called "Only Me" won't show unrelated releases containing "Only"
+      // and "Me" far apart in their titles.
+      const expectedTitle = normalizeGroupTitle(movie.title);
       const groupUsableResults = (items: TorrentSearchResult[], requireActiveSeeders: boolean) => {
         const usable = items.filter(result => {
+          const releaseTitle = normalizeGroupTitle(String(result.title || ''));
+          const mediaTitle = normalizeGroupTitle(String(result.mediaTitle || ''));
+          const titleMatches = Boolean(expectedTitle) &&
+            (releaseTitle.includes(expectedTitle) || mediaTitle === expectedTitle || mediaTitle.includes(expectedTitle));
+          if (!titleMatches) return false;
           const rawSize = Number(result.size);
           const size = Number.isFinite(rawSize) && rawSize > 0 ? rawSize : 0;
           const seeders = Number(result.seeders);
