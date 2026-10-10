@@ -50,6 +50,7 @@ _tmdb_movie_catalogue_cache: dict[tuple[str, int], tuple[float, dict[str, Any]]]
 _tmdb_movie_catalogue_inflight: dict[tuple[str, int], asyncio.Task[dict[str, Any]]] = {}
 _tmdb_company_id_cache: dict[str, tuple[float, list[str]]] = {}
 _tmdb_company_inflight: dict[str, asyncio.Task[list[str]]] = {}
+_tmdb_cache_clear_last_at = 0.0
 
 GITHUB_FEEDBACK_TOKEN = os.getenv("GITHUB_FEEDBACK_TOKEN", "").strip()
 GITHUB_FEEDBACK_REPO = os.getenv("GITHUB_FEEDBACK_REPO", "wroxtaaar/new-test").strip()
@@ -5670,6 +5671,53 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_on
         "totalResults": int(payload.get("total_results") or len(results)),
         "results": results,
         "attribution": "This product uses the TMDB API but is not endorsed or certified by TMDB.",
+    }
+
+
+@app.post("/api/movies/catalogue/cache/clear")
+async def api_clear_tmdb_movie_caches():
+    """Clear all TMDB catalogue, OTT and company-discovery caches for a fresh lookup."""
+    global _tmdb_cache_clear_last_at
+
+    now = time.monotonic()
+    # This endpoint is available to Home visitors, so keep a small global cooldown
+    # to prevent accidental repeated cache flushes from exhausting the TMDB quota.
+    if now - _tmdb_cache_clear_last_at < 15:
+        raise HTTPException(status_code=429, detail="TMDB cache was cleared recently. Wait a few seconds before clearing it again.")
+    _tmdb_cache_clear_last_at = now
+
+    tasks = list(_tmdb_movie_catalogue_inflight.values()) + list(_tmdb_ott_inflight.values()) + list(_tmdb_company_inflight.values())
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    _tmdb_movie_catalogue_cache.clear()
+    _tmdb_movie_catalogue_inflight.clear()
+    _tmdb_ott_cache.clear()
+    _tmdb_ott_inflight.clear()
+    _tmdb_company_id_cache.clear()
+    _tmdb_company_inflight.clear()
+
+    removed_files: list[str] = []
+    for cache_file in (TMDB_CATALOGUE_CACHE_FILE, TMDB_OTT_CACHE_FILE):
+        try:
+            cache_file.unlink(missing_ok=True)
+            removed_files.append(cache_file.name)
+        except OSError as exc:
+            logger.exception("Could not delete TMDB cache file %s", cache_file)
+            raise HTTPException(
+                status_code=500,
+                detail="In-memory TMDB caches were cleared, but a persistent cache file could not be deleted: " + cache_file.name,
+            ) from exc
+
+    logger.info("Cleared all TMDB caches: %s", ", ".join(removed_files))
+    return {
+        "status": "cleared",
+        "cacheTypes": ["movie catalogues", "OTT availability", "company discovery"],
+        "persistentFiles": removed_files,
+        "refetchRequired": True,
     }
 
 
