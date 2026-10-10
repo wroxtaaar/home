@@ -65,6 +65,21 @@ interface TorrentQualityGroup {
   posterResult: TorrentSearchResult;
 }
 
+function torrentGroupReleaseYear(group: TorrentQualityGroup): number {
+  // The year shown on the card is the most trustworthy user-facing sort key.
+  const displayedYear = group.title.match(/\(((?:19|20)\d{2})\)\s*$/)?.[1];
+  if (displayedYear) return Number(displayedYear);
+
+  const groupYear = Number.parseInt(String(group.year || ''), 10);
+  if (groupYear > 0) return groupYear;
+
+  for (const variant of group.variants) {
+    const year = Number.parseInt(String(variant.year || ''), 10);
+    if (year > 0) return year;
+  }
+  return 0;
+}
+
 function torrentResultKey(result: TorrentSearchResult): string {
   return String(result.guid || result.infoHash || result.magnetUrl || result.downloadUrl || result.title);
 }
@@ -83,8 +98,19 @@ function normalizeGroupTitle(value: string): string {
 
 function torrentMediaIdentity(result: TorrentSearchResult): { title: string; normalized: string; year: string } {
   const source = String(result.mediaTitle || result.title || '').trim();
-  const embeddedYear = source.match(/\b((?:19|20)\d{2})\b/);
-  let year = String(result.year || embeddedYear?.[1] || '').trim();
+  const embeddedYears: Array<{ year: string; index: number }> = [];
+  const yearPattern = /\b((?:19|20)\d{2})\b/g;
+  let yearMatch: RegExpExecArray | null;
+  while ((yearMatch = yearPattern.exec(source)) !== null) {
+    embeddedYears.push({ year: yearMatch[1], index: yearMatch.index });
+  }
+  const metadataYear = String(result.year || '').trim();
+  // Titles such as "Wonder Woman 1984" can contain a year-like token that is
+  // not the film's release year. Only remove a token matching release metadata.
+  const embeddedYear = metadataYear
+    ? [...embeddedYears].reverse().find(match => match.year === metadataYear) || null
+    : embeddedYears[embeddedYears.length - 1] || null;
+  let year = metadataYear || embeddedYear?.year || '';
   let title = source.replace(/[._]+/g, ' ');
 
   if (embeddedYear) {
@@ -1209,13 +1235,19 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     // Sort whole movie groups, never individual torrent variants. The year is
     // the movie's release year (catalogue metadata), not the torrent upload date.
     return [...groups].sort((a, b) => {
-      const yearA = Number.parseInt(a.year, 10) || 0;
-      const yearB = Number.parseInt(b.year, 10) || 0;
+      const yearA = torrentGroupReleaseYear(a);
+      const yearB = torrentGroupReleaseYear(b);
       // Keep entries with unknown release years at the bottom in either mode.
-      if (!yearA && !yearB) return 0;
+      if (!yearA && !yearB) {
+        return normalizeGroupTitle(a.title).localeCompare(normalizeGroupTitle(b.title), undefined, { numeric: true });
+      }
       if (!yearA) return 1;
       if (!yearB) return -1;
-      return releaseYearSort === 'newest' ? yearB - yearA : yearA - yearB;
+      if (yearA !== yearB) {
+        return releaseYearSort === 'newest' ? yearB - yearA : yearA - yearB;
+      }
+      // Stable, predictable order for movies released in the same year.
+      return normalizeGroupTitle(a.title).localeCompare(normalizeGroupTitle(b.title), undefined, { numeric: true });
     });
   }, [sortedResults, releaseYearSort]);
 
