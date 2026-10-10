@@ -4885,6 +4885,7 @@ _EXTRA_CATALOGUE_PATHS = {
     for key, config in _EXTRA_CATALOGUES.items()
 }
 _extra_catalogue_tasks: dict[str, asyncio.Task | None] = {key: None for key in _EXTRA_CATALOGUES}
+_extra_catalogue_retry_after: dict[str, float] = {}
 _extra_catalogue_states: dict[str, dict[str, Any]] = {
     key: {"status": "idle", "completed": 0, "total": len(config.get("titles", config.get("queries", []))),
           "resultCount": 0, "movieCount": 0, "error": ""}
@@ -4897,7 +4898,15 @@ def _read_extra_catalogue(key: str) -> dict[str, Any] | None:
     config = _EXTRA_CATALOGUES[key]
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-        if payload.get("version") == config["version"] and isinstance(payload.get("results"), list) and payload["results"]:
+        payload_version = payload.get("version")
+        current_version = int(config["version"])
+        # Keep a prior compatible JSON snapshot visible while a behaviour/version
+        # refresh runs, so a temporary TMDB outage never blanks a working catalogue.
+        is_current_version = payload_version == current_version
+        is_older_compatible_version = (
+            isinstance(payload_version, int) and payload_version < current_version
+        )
+        if (is_current_version or is_older_compatible_version) and isinstance(payload.get("results"), list) and payload["results"]:
             return payload
     except (OSError, ValueError, TypeError, AttributeError):
         pass
@@ -4927,7 +4936,13 @@ def _write_extra_catalogue(key: str, payload: dict[str, Any]) -> None:
 def _extra_catalogue_is_stale(key: str, payload: dict[str, Any] | None) -> bool:
     if not payload:
         return True
-    days = int(_EXTRA_CATALOGUES[key]["refresh_days"])
+    config = _EXTRA_CATALOGUES[key]
+    try:
+        if int(payload.get("version") or 0) != int(config["version"]):
+            return True
+    except (TypeError, ValueError):
+        return True
+    days = int(config["refresh_days"])
     if days >= 36500:
         return False
     try:
@@ -4956,14 +4971,14 @@ async def _discover_latest_catalogue_jobs(key: str) -> list[tuple[str, int]]:
 
     config = _EXTRA_CATALOGUES[key]
     today = datetime.now(timezone.utc).date()
-    first_page = await _tmdb_fetch_movie_catalogue(key, 1, released_only=True)
+    first_page = await api_tmdb_movie_catalogue(key, 1, released_only=True)
     payloads: list[dict[str, Any]] = [first_page]
     total_pages = max(1, int(first_page.get("totalPages") or 1))
     pages_to_fetch = min(max(1, int(config.get("discovery_pages") or 2)), total_pages)
     if pages_to_fetch > 1:
         page_results = await asyncio.gather(
             *(
-                _tmdb_fetch_movie_catalogue(key, page, released_only=True)
+                api_tmdb_movie_catalogue(key, page, released_only=True)
                 for page in range(2, pages_to_fetch + 1)
             ),
             return_exceptions=True,
@@ -5255,10 +5270,12 @@ async def _build_extra_catalogue(key: str) -> None:
         payload = {"version": config["version"], "builtAt": datetime.now(timezone.utc).isoformat(),
                    "titlesQueried": len(jobs), "movieCount": movie_count, "resultCount": len(results), "results": results}
         _write_extra_catalogue(key, payload)
+        _extra_catalogue_retry_after.pop(key, None)
         state.update({"status": "ready", "completed": len(jobs), "total": len(jobs), "movieCount": movie_count,
                       "resultCount": len(results), "builtAt": payload["builtAt"], "error": ""})
         logger.info("Built %s catalogue: %d titles / %d torrent options", key, movie_count, len(results))
     except Exception as exc:
+        _extra_catalogue_retry_after[key] = time.monotonic() + 300
         state.update({
             "status": "failed",
             "error": "Catalogue refresh failed; previous cached results were retained.",
@@ -5270,6 +5287,8 @@ async def _build_extra_catalogue(key: str) -> None:
 async def _ensure_extra_catalogue_refresh(key: str) -> None:
     cached = _read_extra_catalogue(key)
     if _extra_catalogue_is_stale(key, cached):
+        if time.monotonic() < _extra_catalogue_retry_after.get(key, 0.0):
+            return
         task = _extra_catalogue_tasks.get(key)
         if task is None or task.done():
             _extra_catalogue_tasks[key] = asyncio.create_task(_build_extra_catalogue(key))
