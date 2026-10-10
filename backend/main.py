@@ -29,6 +29,23 @@ from pydantic import BaseModel
 
 APP_NAME = "Torrent Studio API"
 logger = logging.getLogger("torrent-studio")
+
+# TMDB provides dynamic, paginated movie discovery. Credentials stay server-side;
+# use a free developer key for non-commercial use or the API Read Access Token.
+TMDB_API_KEY = os.getenv("TMDB_API_KEY", "").strip()
+TMDB_READ_ACCESS_TOKEN = (
+    os.getenv("TMDB_READ_ACCESS_TOKEN", "").strip()
+    or os.getenv("TMDB_BEARER_TOKEN", "").strip()
+)
+TMDB_API_BASE = "https://api.themoviedb.org/3"
+TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
+TMDB_CATALOGUE_CACHE_SECONDS = max(300, int(os.getenv("TMDB_CATALOGUE_CACHE_SECONDS", str(6 * 60 * 60))))
+TMDB_COMPANY_CACHE_SECONDS = max(3600, int(os.getenv("TMDB_COMPANY_CACHE_SECONDS", str(24 * 60 * 60))))
+_tmdb_movie_catalogue_cache: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
+_tmdb_movie_catalogue_inflight: dict[tuple[str, int], asyncio.Task[dict[str, Any]]] = {}
+_tmdb_company_id_cache: dict[str, tuple[float, list[str]]] = {}
+_tmdb_company_inflight: dict[str, asyncio.Task[list[str]]] = {}
+
 GITHUB_FEEDBACK_TOKEN = os.getenv("GITHUB_FEEDBACK_TOKEN", "").strip()
 GITHUB_FEEDBACK_REPO = os.getenv("GITHUB_FEEDBACK_REPO", "wroxtaaar/new-test").strip()
 SEEDR_BASE = "https://www.seedr.cc/api/v0.1/p"
@@ -5060,6 +5077,216 @@ async def _extra_catalogue_monthly_scheduler() -> None:
             if int(config["refresh_days"]) < 36500:
                 await _ensure_extra_catalogue_refresh(key)
         await asyncio.sleep(24 * 60 * 60)
+
+
+
+async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    if not TMDB_READ_ACCESS_TOKEN and not TMDB_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "TMDB API credentials are not configured. Add TMDB_READ_ACCESS_TOKEN "
+                "or TMDB_API_KEY to the server environment to enable paginated movie discovery."
+            ),
+        )
+
+    query = dict(params or {})
+    headers = {"Accept": "application/json"}
+    if TMDB_READ_ACCESS_TOKEN:
+        headers["Authorization"] = "Bearer " + TMDB_READ_ACCESS_TOKEN
+    else:
+        query["api_key"] = TMDB_API_KEY
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(12.0, connect=4.0),
+            follow_redirects=True,
+            headers=headers,
+        ) as client:
+            response = await client.get(f"{TMDB_API_BASE}/{path.lstrip('/')}", params=query)
+            if response.status_code in {401, 403}:
+                raise HTTPException(
+                    status_code=503,
+                    detail="TMDB rejected the configured credentials. Check TMDB_API_KEY or TMDB_READ_ACCESS_TOKEN.",
+                )
+            if response.status_code == 429:
+                raise HTTPException(
+                    status_code=503,
+                    detail="TMDB rate-limited this request. Please wait briefly and try again.",
+                )
+            response.raise_for_status()
+            payload = response.json()
+    except HTTPException:
+        raise
+    except httpx.HTTPStatusError as exc:
+        logger.warning("TMDB returned HTTP %s for %s", exc.response.status_code, path)
+        raise HTTPException(status_code=502, detail=f"TMDB returned HTTP {exc.response.status_code}.") from exc
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("TMDB request failed for %s: %s", path, exc)
+        raise HTTPException(status_code=502, detail="TMDB could not be reached. Try again shortly.") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail="TMDB returned an unexpected response.")
+    return payload
+
+
+async def _tmdb_discovered_company_ids(franchise: str) -> list[str]:
+    normalized = franchise.strip().lower()
+    now = time.monotonic()
+    cached = _tmdb_company_id_cache.get(normalized)
+    if cached and now - cached[0] < TMDB_COMPANY_CACHE_SECONDS:
+        return cached[1]
+
+    task = _tmdb_company_inflight.get(normalized)
+    if task is None or task.done():
+        task = asyncio.create_task(_tmdb_load_company_ids(normalized))
+        _tmdb_company_inflight[normalized] = task
+    try:
+        return await task
+    finally:
+        if task.done() and _tmdb_company_inflight.get(normalized) is task:
+            _tmdb_company_inflight.pop(normalized, None)
+
+
+async def _tmdb_load_company_ids(franchise: str) -> list[str]:
+    if franchise == "marvel":
+        ids = {"420", "19551", "38679", "2301", "13252"}
+        queries = ("Marvel Studios", "Marvel Entertainment", "Marvel Animation", "Marvel Productions")
+    else:
+        ids = {"9993"}
+        queries = ("DC Entertainment", "DC Films", "DC Comics")
+
+    async def search_company(query: str) -> list[str]:
+        try:
+            payload = await _tmdb_get_json("search/company", {"query": query, "page": 1})
+        except HTTPException as exc:
+            logger.info("TMDB company lookup failed for %s: %s", query, exc.detail)
+            return []
+        found: list[str] = []
+        for row in payload.get("results") or []:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name") or "").strip()
+            company_id = row.get("id")
+            if not name or not isinstance(company_id, (int, str)):
+                continue
+            lower_name = name.casefold()
+            if franchise == "marvel" and "marvel" not in lower_name:
+                continue
+            if franchise == "dc" and not (
+                "dc entertainment" in lower_name
+                or "dc films" in lower_name
+                or "dc comics" in lower_name
+                or lower_name.startswith("dc ")
+            ):
+                continue
+            found.append(str(company_id))
+        return found
+
+    discovered = await asyncio.gather(*(search_company(query) for query in queries))
+    for values in discovered:
+        ids.update(values)
+    result = sorted(ids, key=lambda value: (value not in {"420", "9993"}, int(value)))[:20]
+    _tmdb_company_id_cache[franchise] = (time.monotonic(), result)
+    return result
+
+
+async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "include_adult": "false",
+        "include_video": "false",
+        "language": "en-US",
+        "page": page,
+        "sort_by": "primary_release_date.desc",
+        "release_date.lte": datetime.now(timezone.utc).date().isoformat(),
+    }
+
+    if catalogue_key == "latest-hollywood":
+        params["with_original_language"] = "en"
+    elif catalogue_key == "latest-bollywood":
+        params["with_original_language"] = "hi"
+        params["with_origin_country"] = "IN"
+    elif catalogue_key in {"marvel", "dc-live-action", "dc-animated"}:
+        franchise = "marvel" if catalogue_key == "marvel" else "dc"
+        company_ids = await _tmdb_discovered_company_ids(franchise)
+        params["with_companies"] = "|".join(company_ids)
+        if catalogue_key == "dc-animated":
+            params["with_genres"] = "16"
+        elif catalogue_key == "dc-live-action":
+            params["without_genres"] = "16"
+    else:
+        raise HTTPException(status_code=404, detail="Unknown movie catalogue.")
+
+    payload = await _tmdb_get_json("discover/movie", params)
+    raw_results = payload.get("results") or []
+    results: list[dict[str, Any]] = []
+    for item in raw_results:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or item.get("original_title") or "").strip()
+        if not title:
+            continue
+        release_date = str(item.get("release_date") or "").strip()
+        year_match = re.match(r"^(\d{4})", release_date)
+        poster_path = str(item.get("poster_path") or "").strip()
+        backdrop_path = str(item.get("backdrop_path") or "").strip()
+        results.append({
+            "id": item.get("id"),
+            "title": title,
+            "year": int(year_match.group(1)) if year_match else None,
+            "releaseDate": release_date,
+            "overview": str(item.get("overview") or "").strip(),
+            "posterUrl": TMDB_IMAGE_BASE + poster_path if poster_path else "",
+            "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop_path if backdrop_path else "",
+            "rating": float(item.get("vote_average") or 0),
+            "genres": [int(genre) for genre in (item.get("genre_ids") or []) if str(genre).isdigit()],
+            "source": "TMDB",
+        })
+
+    total_pages = max(1, min(500, int(payload.get("total_pages") or 1)))
+    current_page = max(1, min(500, int(payload.get("page") or page)))
+    return {
+        "catalogue": catalogue_key,
+        "provider": "TMDB",
+        "page": current_page,
+        "totalPages": total_pages,
+        "totalResults": int(payload.get("total_results") or len(results)),
+        "results": results,
+        "attribution": "This product uses the TMDB API but is not endorsed or certified by TMDB.",
+    }
+
+
+@app.get("/api/movies/catalogue/{catalogue_key}")
+async def api_tmdb_movie_catalogue(
+    catalogue_key: str,
+    page: int = Query(1, ge=1, le=500),
+):
+    allowed = {"latest-hollywood", "latest-bollywood", "marvel", "dc-live-action", "dc-animated"}
+    if catalogue_key not in allowed:
+        raise HTTPException(status_code=404, detail="Unknown movie catalogue.")
+
+    cache_key = (catalogue_key, page)
+    now = time.monotonic()
+    cached = _tmdb_movie_catalogue_cache.get(cache_key)
+    if cached and now - cached[0] < TMDB_CATALOGUE_CACHE_SECONDS:
+        return cached[1]
+
+    task = _tmdb_movie_catalogue_inflight.get(cache_key)
+    if task is None or task.done():
+        task = asyncio.create_task(_tmdb_fetch_movie_catalogue(catalogue_key, page))
+        _tmdb_movie_catalogue_inflight[cache_key] = task
+    try:
+        payload = await task
+        _tmdb_movie_catalogue_cache[cache_key] = (time.monotonic(), payload)
+        return payload
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("TMDB movie catalogue failed for %s page %s", catalogue_key, page)
+        raise HTTPException(status_code=502, detail="Could not load the movie catalogue from TMDB.") from exc
+    finally:
+        if task.done() and _tmdb_movie_catalogue_inflight.get(cache_key) is task:
+            _tmdb_movie_catalogue_inflight.pop(cache_key, None)
 
 
 @app.get("/api/catalogue/extra/{catalogue_key}")
