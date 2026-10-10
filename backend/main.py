@@ -5192,20 +5192,25 @@ async def _tmdb_load_company_ids(franchise: str) -> list[str]:
 
 
 async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int) -> dict[str, Any]:
+    today = datetime.now(timezone.utc).date().isoformat()
     params: dict[str, Any] = {
         "include_adult": "false",
         "include_video": "false",
         "language": "en-US",
         "page": page,
         "sort_by": "primary_release_date.desc",
-        "release_date.lte": datetime.now(timezone.utc).date().isoformat(),
+        "release_date.lte": today,
     }
 
-    if catalogue_key == "latest-hollywood":
+    if catalogue_key in {"latest-hollywood", "popular-hollywood"}:
         params["with_original_language"] = "en"
-    elif catalogue_key == "latest-bollywood":
+        if catalogue_key == "popular-hollywood":
+            params["sort_by"] = "popularity.desc"
+    elif catalogue_key in {"latest-bollywood", "popular-bollywood"}:
         params["with_original_language"] = "hi"
         params["with_origin_country"] = "IN"
+        if catalogue_key == "popular-bollywood":
+            params["sort_by"] = "popularity.desc"
     elif catalogue_key in {"marvel", "dc-live-action", "dc-animated"}:
         franchise = "marvel" if catalogue_key == "marvel" else "dc"
         company_ids = await _tmdb_discovered_company_ids(franchise)
@@ -5214,6 +5219,76 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int) -> dict[str
             params["with_genres"] = "16"
         elif catalogue_key == "dc-live-action":
             params["without_genres"] = "16"
+    elif catalogue_key in {"trending-hollywood", "trending-bollywood"}:
+        # TMDB's trending endpoint is ranked globally, so collect several upstream
+        # pages and filter by original language here to keep the category useful for
+        # Hollywood and Hindi cinema rather than showing unrelated languages.
+        wanted_language = "en" if catalogue_key == "trending-hollywood" else "hi"
+        source_pages_per_page = 6
+        source_start = (page - 1) * source_pages_per_page + 1
+        source_page_numbers = range(source_start, min(source_start + source_pages_per_page, 501))
+        requests = [
+            _tmdb_get_json("trending/movie/week", {"page": source_page, "language": "en-US"})
+            for source_page in source_page_numbers
+        ]
+        payloads = await asyncio.gather(*requests, return_exceptions=True)
+        successful_payloads = [value for value in payloads if isinstance(value, dict)]
+        if not successful_payloads:
+            failure = next((value for value in payloads if isinstance(value, Exception)), None)
+            if isinstance(failure, HTTPException):
+                raise failure
+            raise HTTPException(status_code=502, detail="TMDB trending feed could not be reached.")
+
+        raw_results = []
+        seen_ids: set[str] = set()
+        total_source_pages = 1
+        for payload in successful_payloads:
+            total_source_pages = max(total_source_pages, int(payload.get("total_pages") or 1))
+            for item in payload.get("results") or []:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("original_language") or "").lower() != wanted_language:
+                    continue
+                item_id = str(item.get("id") or "")
+                if item_id and item_id in seen_ids:
+                    continue
+                if item_id:
+                    seen_ids.add(item_id)
+                raw_results.append(item)
+
+        results: list[dict[str, Any]] = []
+        for item in raw_results:
+            title = str(item.get("title") or item.get("original_title") or "").strip()
+            if not title:
+                continue
+            release_date = str(item.get("release_date") or "").strip()
+            year_match = re.match(r"^(\d{4})", release_date)
+            poster_path = str(item.get("poster_path") or "").strip()
+            backdrop_path = str(item.get("backdrop_path") or "").strip()
+            results.append({
+                "id": item.get("id"),
+                "title": title,
+                "year": int(year_match.group(1)) if year_match else None,
+                "releaseDate": release_date,
+                "overview": str(item.get("overview") or "").strip(),
+                "posterUrl": TMDB_IMAGE_BASE + poster_path if poster_path else "",
+                "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop_path if backdrop_path else "",
+                "rating": float(item.get("vote_average") or 0),
+                "genres": [int(genre) for genre in (item.get("genre_ids") or []) if str(genre).isdigit()],
+                "source": "TMDB",
+            })
+
+        return {
+            "catalogue": catalogue_key,
+            "provider": "TMDB Weekly Trending",
+            "page": page,
+            "totalPages": max(1, min(500, (total_source_pages + source_pages_per_page - 1) // source_pages_per_page)),
+            # Trending does not expose a language-filtered total. This is the count collected
+            # for the requested page, not a claim about every matching title in TMDB.
+            "totalResults": len(results),
+            "results": results,
+            "attribution": "This product uses the TMDB API but is not endorsed or certified by TMDB.",
+        }
     else:
         raise HTTPException(status_code=404, detail="Unknown movie catalogue.")
 
@@ -5261,14 +5336,20 @@ async def api_tmdb_movie_catalogue(
     catalogue_key: str,
     page: int = Query(1, ge=1, le=500),
 ):
-    allowed = {"latest-hollywood", "latest-bollywood", "marvel", "dc-live-action", "dc-animated"}
+    allowed = {
+        "latest-hollywood", "latest-bollywood",
+        "popular-hollywood", "popular-bollywood",
+        "trending-hollywood", "trending-bollywood",
+        "marvel", "dc-live-action", "dc-animated",
+    }
     if catalogue_key not in allowed:
         raise HTTPException(status_code=404, detail="Unknown movie catalogue.")
 
     cache_key = (catalogue_key, page)
     now = time.monotonic()
     cached = _tmdb_movie_catalogue_cache.get(cache_key)
-    if cached and now - cached[0] < TMDB_CATALOGUE_CACHE_SECONDS:
+    cache_ttl = 30 * 60 if catalogue_key.startswith("trending-") else TMDB_CATALOGUE_CACHE_SECONDS
+    if cached and now - cached[0] < cache_ttl:
         return cached[1]
 
     task = _tmdb_movie_catalogue_inflight.get(cache_key)
