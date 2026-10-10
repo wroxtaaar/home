@@ -3619,7 +3619,7 @@ export default function App() {
                     value={seedrPat}
                     onChange={(e) => setSeedrPat(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !seedrPatSubmitting) {
+                      if (e.key === 'Enter' && !seedrPatSubmitting && seedrSessionReady) {
                         void connectSeedrWithPat();
                       }
                     }}
@@ -3637,7 +3637,7 @@ export default function App() {
 
                   <button
                     type="button"
-                    disabled={seedrPatSubmitting || !seedrPat.trim()}
+                    disabled={seedrPatSubmitting || !seedrPat.trim() || !seedrSessionReady}
                     onClick={() => { void connectSeedrWithPat(); }}
                     className="mt-3 w-full rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-bold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
                   >
