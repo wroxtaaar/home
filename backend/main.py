@@ -3712,30 +3712,8 @@ def _poster_normalize_title(value: str) -> str:
 
 
 def _poster_title_matches(wanted: str, candidate: str) -> bool:
-    """Accept exact titles or a complete multi-word title embedded in either side."""
-    if not wanted or not candidate:
-        return False
-    if wanted == candidate:
-        return True
-
-    wanted_tokens = wanted.split()
-    candidate_tokens = candidate.split()
-
-    # Avoid ambiguous one-word substring matches such as "Batman".
-    if len(wanted_tokens) < 2 or len(candidate_tokens) < 2:
-        return False
-
-    def contains(shorter: list[str], longer: list[str]) -> bool:
-        width = len(shorter)
-        return any(
-            longer[index:index + width] == shorter
-            for index in range(len(longer) - width + 1)
-        )
-
-    if len(candidate_tokens) < len(wanted_tokens):
-        return contains(candidate_tokens, wanted_tokens)
-    return contains(wanted_tokens, candidate_tokens)
-
+    """Accept only exact normalized titles to avoid unrelated poster artwork."""
+    return bool(wanted and candidate and wanted == candidate)
 
 def _poster_prepare_lookup_title(title: str, year: str = "") -> str:
     """Strip common release artifacts before querying poster providers."""
@@ -3943,6 +3921,12 @@ async def _poster_lookup_uncached(clean_title: str, clean_year: str, cache_key: 
                     image = str((row.get("i") or {}).get("imageUrl") or "").strip()
                     candidate = _poster_normalize_title(str(row.get("l") or ""))
                     candidate_year = str(row.get("y") or "")
+                    # Ignore episodes, shorts, games, and other unrelated title types.
+                    # Search suggestions can contain similarly named fan clips with
+                    # artwork that is not the poster for the requested movie/series.
+                    media_kind = str(row.get("qid") or "").lower()
+                    if media_kind not in {"movie", "tvseries", "tvminiseries", "tvmovie"}:
+                        continue
                     if not image or not any(_poster_title_matches(wanted, candidate) for wanted in wanted_titles):
                         continue
                     if wanted_year:
