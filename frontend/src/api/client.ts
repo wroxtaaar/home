@@ -664,11 +664,24 @@ export const api = {
     const value = String(pat || '').trim();
     if (!value) throw new Error('Enter your Seedr Personal Access Token.');
 
-    const res = await apiFetch('/api/seedr/connect/pat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pat: value }),
-    });
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 15000);
+    let res: Response;
+    try {
+      res = await apiFetch('/api/seedr/connect/pat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pat: value }),
+        signal: controller.signal,
+      });
+    } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        throw new Error('Seedr connection timed out. The server could not validate the token in time; please retry.');
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
     const body = await res.text();
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch {}
