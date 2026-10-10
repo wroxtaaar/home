@@ -827,27 +827,33 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       if (err?.name === 'AbortError') return;
 
       const message = String(err?.message || 'Movie catalogue failed.');
-      if (message.includes('TMDB API credentials are not configured')) {
-        // Existing five shortcuts have a legacy torrent-cache fallback. New
-        // popular/trending categories require TMDB metadata and must explain setup.
-        if (
-          key === 'marvel' ||
-          key === 'dc-live-action' ||
-          key === 'dc-animated' ||
-          key === 'latest-hollywood' ||
-          key === 'latest-bollywood'
-        ) {
-          setMovieCatalogue(null);
-          await runSearch(undefined, searchText, key);
-          setError(
-            'Showing existing cached torrent results. Add TMDB_READ_ACCESS_TOKEN or TMDB_API_KEY on the server to enable the full movie catalogue.'
-          );
-        } else {
-          setMovieCatalogue(null);
-          setError(
-            'Add TMDB_READ_ACCESS_TOKEN or TMDB_API_KEY to the server environment to enable this movie catalogue.'
-          );
-        }
+      const legacyFallbackKey: Record<MovieCatalogueKey, 'marvel' | 'dc-live-action' | 'dc-animated' | 'latest-hollywood' | 'latest-bollywood'> = {
+        marvel: 'marvel',
+        'dc-live-action': 'dc-live-action',
+        'dc-animated': 'dc-animated',
+        'latest-hollywood': 'latest-hollywood',
+        'latest-bollywood': 'latest-bollywood',
+        'popular-hollywood': 'latest-hollywood',
+        'trending-hollywood': 'latest-hollywood',
+        'popular-bollywood': 'latest-bollywood',
+        'trending-bollywood': 'latest-bollywood',
+      };
+      const fallbackKey = legacyFallbackKey[key];
+      if (fallbackKey) {
+        setMovieCatalogue(null);
+        await runSearch(undefined, searchText, fallbackKey);
+        const categoryFallback = fallbackKey === 'latest-hollywood' && key !== 'latest-hollywood'
+          ? 'Latest Hollywood'
+          : fallbackKey === 'latest-bollywood' && key !== 'latest-bollywood'
+            ? 'Latest Bollywood'
+            : searchText.replace(/Movies?$/i, '').trim();
+        const reason = message.includes('TMDB API credentials are not configured')
+          ? 'TMDB credentials are not configured.'
+          : message;
+        setError(
+          reason + ' Falling back to the existing ' + categoryFallback +
+          ' torrent catalogue where cached results are available. Popular and Trending shortcuts use Latest results during the outage.'
+        );
       } else {
         setMovieCatalogue(null);
         setError(message);
@@ -1076,7 +1082,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       {isSearching && (
         <div className="p-5 sm:p-7 rounded-xl sm:rounded-2xl bg-slate-900 border border-slate-800 flex flex-col items-center justify-center gap-3">
           <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
-          <div className="text-sm font-semibold text-slate-200">{catalogueBuildProgress ? 'Preparing Marvel movie catalogue...' : 'Searching torrents...'}</div>
+          <div className="text-sm font-semibold text-slate-200">{catalogueBuildProgress ? 'Loading movie catalogue...' : 'Searching torrents...'}</div>
           <div className="text-xs text-slate-500 text-center">{catalogueBuildProgress || 'Checking the fastest media sources and waiting for results.'}</div>
         </div>
       )}
