@@ -38,6 +38,8 @@ TMDB_READ_ACCESS_TOKEN = (
     or os.getenv("TMDB_BEARER_TOKEN", "").strip()
 )
 TMDB_API_BASE = "https://api.themoviedb.org/3"
+WATCHMODE_API_KEY = os.getenv("WATCHMODE_API_KEY", "").strip()
+WATCHMODE_API_BASE = "https://api.watchmode.com/v1"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
 # If TMDB API connections are reset before TLS completes, pause new API attempts
 # briefly so catalogue requests fail fast and can fall back to persistent caches.
@@ -5621,14 +5623,98 @@ def _tmdb_watch_provider_rows(payload: Any) -> list[dict[str, Any]]:
     return rows
 
 
+async def _watchmode_movie_sources(movie_id: int, region: str) -> list[dict[str, Any]]:
+    """Look up legal streaming/rent/buy options by the matching TMDB movie ID."""
+    if not WATCHMODE_API_KEY:
+        return []
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(10.0, connect=4.0),
+            follow_redirects=True,
+            headers={"Accept": "application/json", "X-API-Key": WATCHMODE_API_KEY},
+        ) as client:
+            response = await client.get(
+                f"{WATCHMODE_API_BASE}/title/movie-{movie_id}/sources/",
+                params={"regions": region},
+            )
+        if response.status_code in {401, 403}:
+            logger.warning("Watchmode rejected WATCHMODE_API_KEY (HTTP %s)", response.status_code)
+            return []
+        if response.status_code == 429 or response.status_code >= 500:
+            logger.info("Watchmode temporarily unavailable (HTTP %s)", response.status_code)
+            return []
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, list):
+            return []
+        return [item for item in payload if isinstance(item, dict)]
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.info("Watchmode source lookup failed for TMDB movie %s in %s: %s", movie_id, region, exc)
+        return []
+
+
+def _watchmode_provider_rows(rows: list[dict[str, Any]], accepted_types: set[str]) -> list[dict[str, Any]]:
+    providers: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in rows:
+        name = str(item.get("name") or item.get("source_name") or "").strip()
+        kind = str(item.get("type") or item.get("source_type") or "").strip().lower()
+        if not name or kind not in accepted_types:
+            continue
+        provider_id = item.get("source_id", item.get("id"))
+        identity = str(provider_id if provider_id is not None else name.casefold())
+        if identity in seen:
+            continue
+        seen.add(identity)
+        logo = str(item.get("logo_url") or item.get("logo") or "").strip()
+        providers.append({
+            "providerId": provider_id,
+            "name": name,
+            "logoUrl": logo,
+        })
+    return providers
+
+
 async def _tmdb_fetch_movie_ott_availability(movie_id: int, region: str) -> dict[str, Any]:
-    # Provider availability and regional release dates are separate TMDB resources.
-    # Failure to fetch release dates should not discard a successful provider result.
-    provider_result, release_result = await asyncio.gather(
-        _tmdb_get_json(f"movie/{movie_id}/watch/providers"),
+    # Prefer Watchmode for legal platform availability when configured. Keep TMDB
+    # as a fallback and as the source of regional release-date metadata.
+    watchmode_rows, release_result = await asyncio.gather(
+        _watchmode_movie_sources(movie_id, region),
         _tmdb_get_json(f"movie/{movie_id}/release_dates"),
         return_exceptions=True,
     )
+    if isinstance(watchmode_rows, Exception):
+        watchmode_rows = []
+    if isinstance(release_result, Exception):
+        logger.info("Could not load digital release dates for TMDB movie %s: %s", movie_id, release_result)
+        release_payload: dict[str, Any] = {}
+    else:
+        release_payload = release_result if isinstance(release_result, dict) else {}
+
+    # TMDB/JustWatch fallback remains available if Watchmode is not configured,
+    # is temporarily unreachable, or has no provider records for this title.
+    tmdb_provider_result: dict[str, Any] = {}
+    if not watchmode_rows:
+        try:
+            result = await _tmdb_get_json(f"movie/{movie_id}/watch/providers")
+            if isinstance(result, dict):
+                tmdb_provider_result = result
+        except Exception as exc:
+            logger.info("TMDB provider fallback failed for movie %s: %s", movie_id, exc)
+
+    watchmode_streaming = _watchmode_provider_rows(watchmode_rows, {"sub", "free", "ads", "tve", "subscription"})
+    watchmode_rent = _watchmode_provider_rows(watchmode_rows, {"rent", "rental"})
+    watchmode_buy = _watchmode_provider_rows(watchmode_rows, {"buy", "purchase"})
+    all_regions = (tmdb_provider_result.get("results") or {}) if isinstance(tmdb_provider_result, dict) else {}
+    region_payload = all_regions.get(region) or {}
+    streaming = watchmode_streaming or (
+        _tmdb_watch_provider_rows(region_payload.get("flatrate"))
+        + _tmdb_watch_provider_rows(region_payload.get("free"))
+        + _tmdb_watch_provider_rows(region_payload.get("ads"))
+    )
+    rent = watchmode_rent or _tmdb_watch_provider_rows(region_payload.get("rent"))
+    buy = watchmode_buy or _tmdb_watch_provider_rows(region_payload.get("buy"))
+    availability_source = "Watchmode" if watchmode_streaming or watchmode_rent or watchmode_buy else "TMDB"
     if isinstance(provider_result, Exception):
         if isinstance(provider_result, HTTPException):
             raise provider_result
@@ -5718,8 +5804,8 @@ async def _tmdb_fetch_movie_ott_availability(movie_id: int, region: str) -> dict
         "digitalReleaseDate": digital_release_date,
         "providerLink": provider_link,
         "checkedAt": datetime.now(timezone.utc).isoformat(),
-        "source": "TMDB",
-        "providerAttribution": "Streaming availability data powered by JustWatch.",
+        "source": availability_source,
+        "providerAttribution": "Streaming availability data powered by Watchmode." if availability_source == "Watchmode" else "Streaming availability data powered by JustWatch via TMDB.",
         "attribution": "This product uses the TMDB API but is not endorsed or certified by TMDB.",
     }
 
