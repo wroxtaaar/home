@@ -1083,7 +1083,12 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                 }
                                 setPrepareWaitOpen(false);
                               } catch (error: any) {
-                                setPrepareError(String(error?.message || 'Could not prepare this torrent.'));
+                                const message = String(error?.message || 'Could not prepare this torrent.');
+                                // Replacing an in-progress Seedr torrent intentionally rejects
+                                // the previous waiter; don't show that as a failure for the new pick.
+                                if (!message.toLowerCase().includes('cancelled by another selection')) {
+                                  setPrepareError(message);
+                                }
                               } finally {
                                 window.clearTimeout(longWaitTimer);
                                 setPreparingTorrentKey(current => current === torrentKey ? null : current);

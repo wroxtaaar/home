@@ -4806,9 +4806,25 @@ async def seedr_add(request: Request):
         folder,
     )
 
-    deleted_folders: list[dict[str, Any]] = []
+    # Search Prepare behaves as a single active Seedr slot. Cancel any
+    # unfinished task still present in Seedr before measuring quota or adding
+    # the new magnet. This also covers stale/missing browser notices after a
+    # refresh or when the task was created from another tab.
+    cancelled_tasks: list[dict[str, Any]] = []
+    if bool(payload.get("replace_active")):
+        cancelled_tasks = await _cancel_active_seedr_tasks_for_replacement()
+
+    deleted_folders: list[dict[str, Any]] = [
+        {
+            "folderId": str(item.get("folderId") or ""),
+            "name": str(item.get("name") or "Cancelled Seedr task"),
+            "size": max(0, int(item.get("size") or 0)),
+        }
+        for item in cancelled_tasks
+        if item.get("folderDeleted") and str(item.get("folderId") or "").strip()
+    ]
     if auto_cleanup and required_bytes > 0:
-        deleted_folders = await _prepare_seedr_space(required_bytes)
+        deleted_folders.extend(await _prepare_seedr_space(required_bytes))
 
     try:
         task = unwrap_seedr_task(await add_task(raw_magnet, folder))
@@ -4855,6 +4871,7 @@ async def seedr_add(request: Request):
         "torrent_name": task_name,
         "folder_id": task_folder_id,
         "deleted_folders": deleted_folders,
+        "cancelled_tasks": cancelled_tasks,
     }
 
 def _seedr_file_folder_id(files: list[dict[str, Any]]) -> str:
@@ -6569,20 +6586,157 @@ async def seedr_file_subtitle(
         },
     )
 
+async def _cancel_seedr_task_and_partial_folder(
+    tid: str,
+    task: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Stop an unfinished Seedr task and remove its partial folder, never a completed download."""
+    global _seedr_metadata_cache
+
+    task_id_value = str(tid or "").strip()
+    if not task_id_value:
+        raise HTTPException(400, "A Seedr task id is required")
+
+    task_found = isinstance(task, dict) and bool(task)
+    task_value = task if isinstance(task, dict) else {}
+    if not task_found:
+        try:
+            raw = seedr_data(await seedr_request(f"/tasks/{quote(task_id_value, safe='')}"))
+            task_value = unwrap_seedr_task(raw)
+            task_found = bool(task_value)
+        except (HTTPException, SeedrError) as exc:
+            if getattr(exc, "status_code", 0) != 404:
+                raise
+            task_value = {}
+
+    complete = task_complete(task_value) if task_found else False
+    active = task_found and not complete
+    task_name = seedr_task_name(task_value) or f"Torrent {task_id_value}"
+    folder_id = seedr_task_folder_id(task_value) if task_found else ""
+    task_files: list[dict[str, Any]] = []
+
+    # Some Seedr API variants expose the created folder only in task contents.
+    if active and not folder_id:
+        try:
+            task_files = await task_contents(task_id_value)
+            folder_id = (
+                _seedr_effective_task_folder_id(task_value, task_files)
+                or _seedr_file_folder_id(task_files)
+            )
+        except (HTTPException, SeedrError):
+            task_files = []
+
+    folder_size = 0
+    for file in task_files:
+        if not isinstance(file, dict):
+            continue
+        try:
+            folder_size += max(0, int(float(file.get("size") or 0)))
+        except (TypeError, ValueError):
+            continue
+    task_deleted = False
+    if task_found:
+        try:
+            await seedr_request(f"/tasks/{quote(task_id_value, safe='')}", "DELETE")
+            task_deleted = True
+        except (HTTPException, SeedrError) as exc:
+            status_code = getattr(exc, "status_code", 0)
+            if status_code == 405:
+                try:
+                    await seedr_request(f"/tasks/{quote(task_id_value, safe='')}/delete", "POST")
+                    task_deleted = True
+                except (HTTPException, SeedrError) as fallback_exc:
+                    if getattr(fallback_exc, "status_code", 0) != 404:
+                        raise
+            elif status_code != 404:
+                raise
+
+    folder_deleted = False
+    if active and folder_id and folder_id != "0":
+        try:
+            await seedr_request(f"/fs/folder/{quote(folder_id, safe='')}", "DELETE")
+            folder_deleted = True
+        except (HTTPException, SeedrError) as exc:
+            if getattr(exc, "status_code", 0) == 404:
+                # Task cleanup may already have removed this transient folder.
+                folder_deleted = True
+            else:
+                logger.warning(
+                    "Seedr replacement cancelled task=%s but could not remove partial folder=%s: %s",
+                    task_id_value,
+                    folder_id,
+                    getattr(exc, "detail", str(exc)),
+                )
+                raise SeedrError(
+                    "SEEDR_PARTIAL_FOLDER_CLEANUP_FAILED",
+                    502,
+                    "Seedr stopped the previous torrent, but its partial files could not be removed. Please retry before starting another torrent.",
+                ) from exc
+
+    _seedr_cleanup_jobs.pop(task_id_value, None)
+    _seedr_torrent_names_by_task.pop(task_id_value, None)
+    if folder_id:
+        _seedr_torrent_names.pop(folder_id, None)
+        _seedr_folder_cache.pop(folder_id, None)
+    _save_seedr_cleanup_jobs()
+    _seedr_metadata_cache = None
+    _seedr_folder_cache.clear()
+
+    return {
+        "taskId": task_id_value,
+        "name": task_name,
+        "found": task_found,
+        "active": active,
+        "completed": complete,
+        "taskDeleted": task_deleted,
+        "folderId": folder_id,
+        "folderDeleted": folder_deleted,
+        "size": folder_size,
+    }
+
+
+async def _cancel_active_seedr_tasks_for_replacement() -> list[dict[str, Any]]:
+    """Cancel all unfinished Seedr tasks before a newly selected torrent is added."""
+    try:
+        payload = seedr_data(await seedr_request("/tasks"))
+    except (HTTPException, SeedrError) as exc:
+        logger.warning("Could not list Seedr tasks before replacement: %s", getattr(exc, "detail", str(exc)))
+        raise SeedrError(
+            "SEEDR_TASK_LIST_FAILED",
+            503,
+            "Could not check the current Seedr download before replacing it. Please retry.",
+        ) from exc
+
+    cancelled: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for raw_task in arr(payload, ("tasks", "torrents", "items")):
+        task = unwrap_seedr_task(seedr_data(raw_task))
+        if not task or task_complete(task):
+            continue
+        task_id_value = task_id(task)
+        if not task_id_value or task_id_value in seen_ids:
+            continue
+        seen_ids.add(task_id_value)
+        result = await _cancel_seedr_task_and_partial_folder(task_id_value, task)
+        if result.get("active"):
+            cancelled.append(result)
+
+    if cancelled:
+        logger.info(
+            "Seedr replacement cancelled %s unfinished task(s): %s",
+            len(cancelled),
+            ",".join(str(item.get("taskId") or "") for item in cancelled),
+        )
+    else:
+        logger.info("Seedr replacement found no unfinished Seedr tasks")
+    return cancelled
+
+
 @app.delete("/api/seedr/tasks/{tid}")
 async def seedr_task_delete(tid: str):
     if not current_seedr_token():
         raise HTTPException(503, "Seedr is not configured")
-    global _seedr_metadata_cache
-    try:
-        result = await seedr_request(f"/tasks/{quote(tid)}", "DELETE")
-    except HTTPException as exc:
-        if exc.status_code != 405:
-            raise
-        result = await seedr_request(f"/tasks/{quote(tid)}/delete", "POST")
-    _seedr_metadata_cache = None
-    _seedr_folder_cache.clear()
-    return result
+    return await _cancel_seedr_task_and_partial_folder(tid)
 
 @app.delete("/api/seedr/files/{file_id}")
 async def seedr_file_delete(file_id: str):

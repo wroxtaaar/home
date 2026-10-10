@@ -366,6 +366,7 @@ export const api = {
         magnet: value,
         required_bytes: Math.max(0, Number(requiredBytes) || 0),
         auto_cleanup: true,
+        replace_active: true,
         torrent_name: torrentName || undefined,
       })
     });
@@ -773,14 +774,15 @@ export const api = {
     if (!res.ok) throw new Error(data?.error || body || 'Failed to delete Seedr folder');
   },
 
-  async deleteSeedrTask(taskId: number | string): Promise<void> {
+  async deleteSeedrTask(taskId: number | string): Promise<any> {
     const res = await apiFetch('/api/seedr/tasks/' + encodeURIComponent(String(taskId)), { method: 'DELETE' });
     const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch {}
     if (!res.ok) {
-      let data: any = null;
-      try { data = body ? JSON.parse(body) : null; } catch {}
-      throw new Error(data?.error || body || 'Failed to delete Seedr task');
+      throw new Error(data?.error || data?.detail || body || 'Failed to delete Seedr task');
     }
+    return data || {};
   },
 
   async deleteSeedrFile(fileId: string): Promise<void> {

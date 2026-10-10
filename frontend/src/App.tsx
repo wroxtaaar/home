@@ -481,6 +481,37 @@ export default function App() {
     });
   }, []);
 
+  const forgetSeedrFolders = useCallback((folderIds: Array<string | number>) => {
+    const removedIds = new Set(
+      folderIds.map(id => String(id || '').trim()).filter(Boolean)
+    );
+    if (removedIds.size === 0) return;
+
+    setSeedrDeletedFolderIds(prev => Array.from(new Set([...prev, ...removedIds])));
+    setSeedrFolderContentsCache(prev =>
+      Object.fromEntries(
+        Object.entries(prev).filter(([folderId]) => !removedIds.has(String(folderId)))
+      )
+    );
+    setSeedrLibraryFolders(prev =>
+      prev.filter(folder => !removedIds.has(String(folder.folderId || folder.id || '')))
+    );
+    setSeedrFiles(prev =>
+      prev.filter(file => !removedIds.has(String(file.folderId || '')))
+    );
+    setSeedrTorrentNames(prev => {
+      const next = { ...prev };
+      for (const id of removedIds) delete next[id];
+      try {
+        window.localStorage.setItem(seedrTorrentNamesKey, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+    setSelectedSeedrFolderId(prev => (
+      prev && removedIds.has(String(prev)) ? null : prev
+    ));
+  }, []);
+
   const toSeedrStorageFile = useCallback((file: {
     id: string;
     streamId?: string;
@@ -1243,7 +1274,10 @@ export default function App() {
       if (previousTaskId != null) {
         try {
           setIsCancellingSeedr(true);
-          await api.deleteSeedrTask(previousTaskId);
+          const cancelled = await api.deleteSeedrTask(previousTaskId);
+          if (cancelled?.folderDeleted && cancelled?.folderId) {
+            forgetSeedrFolders([String(cancelled.folderId)]);
+          }
 
           const waiterKey = String(previousTaskId);
           const waiter = seedrPrepareWaiters.current[waiterKey];
@@ -1324,24 +1358,7 @@ export default function App() {
     ));
 
     if (deletedFolderIds.length > 0) {
-      const deletedSet = new Set(deletedFolderIds);
-      setSeedrDeletedFolderIds(prev => Array.from(new Set([...prev, ...deletedFolderIds])));
-
-      setSeedrFolderContentsCache(prev =>
-        Object.fromEntries(
-          Object.entries(prev).filter(([folderId]) => !deletedSet.has(String(folderId)))
-        )
-      );
-      setSeedrLibraryFolders(prev =>
-        prev.filter(folder => !deletedSet.has(String(folder.folderId || folder.id || '')))
-      );
-      setSeedrFiles(prev =>
-        prev.filter(file => !deletedSet.has(String(file.folderId || '')))
-      );
-
-      if (selectedSeedrFolderId && deletedSet.has(String(selectedSeedrFolderId))) {
-        setSelectedSeedrFolderId(null);
-      }
+      forgetSeedrFolders(deletedFolderIds);
     }
 
     const taskId = prepared?.seedrTaskId;
@@ -1384,7 +1401,8 @@ export default function App() {
     seedrDownloadActive,
     seedrNotice,
     rememberSeedrTorrentName,
-    isCancellingSeedr
+    isCancellingSeedr,
+    forgetSeedrFolders
   ]);
 
   const handleSearchAdd = async (
@@ -2059,7 +2077,10 @@ export default function App() {
     const currentNotice = seedrNotice;
     try {
       setIsCancellingSeedr(true);
-      await api.deleteSeedrTask(taskId);
+      const cancelled = await api.deleteSeedrTask(taskId);
+      if (cancelled?.folderDeleted && cancelled?.folderId) {
+        forgetSeedrFolders([String(cancelled.folderId)]);
+      }
       const waiterKey = String(taskId);
       const waiter = seedrPrepareWaiters.current[waiterKey];
       if (waiter) {
