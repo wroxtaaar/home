@@ -4741,11 +4741,11 @@ _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
     },
     "latest-hollywood": {
         "file": "latest_hollywood_catalogue.json", "version": 1, "refresh_days": 30,
-        "minimum_movies": 1, "mode": "latest", "queries": ["2026 Hollywood movies", "2025 Hollywood movies"],
+        "minimum_movies": 1, "mode": "latest", "queries": ["2026", "2025"],
     },
     "latest-bollywood": {
         "file": "latest_bollywood_catalogue.json", "version": 1, "refresh_days": 30,
-        "minimum_movies": 1, "mode": "latest", "queries": ["2026 Bollywood Hindi movies", "2025 Bollywood Hindi movies"],
+        "minimum_movies": 1, "mode": "latest", "queries": ["Hindi 2026", "Hindi 2025", "Bollywood 2026", "Bollywood 2025"],
     },
 }
 _EXTRA_CATALOGUE_PATHS = {
@@ -4866,15 +4866,17 @@ async def _build_extra_catalogue(key: str) -> None:
                             continue
                         if re.search(r"\b(?:S\d{1,2}E\d{1,2}|season\s+\d+|complete\s+series|episode\s+\d+)\b", raw_title, re.I):
                             continue
-                        if key == "latest-bollywood" and not re.search(r"\b(?:hindi|bollywood|hindi-dubbed)\b", raw_title, re.I):
-                            # YTS and some indexers omit language tokens; don't
-                            # infer Bollywood from a generic Hollywood-style title.
+                        if key == "latest-bollywood" and not re.search(r"\b(?:hindi|bollywood|hin-dub|hindi-dubbed)\b", raw_title, re.I):
                             continue
                         media_title = re.sub(r"\b(?:1080p|720p|2160p|4k|web[- .]?dl|webrip|bluray|brrip|hdtv|x264|x265|hevc|proper|repack)\b.*$", "", raw_title, flags=re.I).strip(" .-_")
                         media_title = media_title or raw_title
                     try:
-                        size = int(float(item.get("size") or 0))
-                        seeders = int(float(item.get("seeders") or 0))
+                        raw_size = item.get("size_bytes") or item.get("sizeBytes") or item.get("size") or 0
+                        if isinstance(raw_size, (int, float)):
+                            size = int(raw_size)
+                        else:
+                            size = parse_size(str(raw_size))
+                        seeders = int(float(str(item.get("seeders") or 0).replace(",", "")))
                     except (TypeError, ValueError, OverflowError):
                         continue
                     if size < 100 * 1024 * 1024 or size > MAX_SEARCH_RESULT_SIZE_BYTES or seeders <= 0:
