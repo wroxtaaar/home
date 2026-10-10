@@ -5261,21 +5261,30 @@ async def _tmdb_fetch_movie_ott_availability(movie_id: int, region: str) -> dict
     buy = merge_providers([buy])
 
     digital_dates: list[str] = []
+    theatrical_dates: list[str] = []
     for region_release in release_payload.get("results") or []:
         if not isinstance(region_release, dict) or str(region_release.get("iso_3166_1") or "").upper() != region:
             continue
         for release in region_release.get("release_dates") or []:
-            if not isinstance(release, dict) or str(release.get("type") or "") != "4":
+            if not isinstance(release, dict):
+                continue
+            release_type = str(release.get("type") or "")
+            if release_type not in {"2", "3", "4"}:
                 continue
             day = str(release.get("release_date") or "").strip()[:10]
             if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
                 try:
                     datetime.strptime(day, "%Y-%m-%d")
-                    digital_dates.append(day)
+                    if release_type == "4":
+                        digital_dates.append(day)
+                    else:
+                        # Types 2 and 3 are limited and wide theatrical releases.
+                        theatrical_dates.append(day)
                 except ValueError:
                     continue
 
     digital_release_date = min(digital_dates) if digital_dates else None
+    theatrical_release_date = min(theatrical_dates) if theatrical_dates else None
     today = datetime.now(timezone.utc).date().isoformat()
     if streaming:
         status = "streaming"
@@ -5300,6 +5309,7 @@ async def _tmdb_fetch_movie_ott_availability(movie_id: int, region: str) -> dict
         "streamingProviders": streaming,
         "rentProviders": rent,
         "buyProviders": buy,
+        "theatricalReleaseDate": theatrical_release_date,
         "digitalReleaseDate": digital_release_date,
         "providerLink": provider_link,
         "checkedAt": datetime.now(timezone.utc).isoformat(),
@@ -5703,7 +5713,13 @@ async def api_tmdb_movie_ott_availability(
             _tmdb_ott_cache[cache_key] = (time.monotonic() - age_seconds, persistent_payload)
             return persistent_payload
 
-    stale_payload = cached[1] if cached else (persistent[1] if persistent else None)
+    # Only use recent stale results during an outage; never retain old availability indefinitely.
+    max_stale_seconds = 14 * 24 * 60 * 60
+    stale_payload = None
+    if cached and now - cached[0] <= max_stale_seconds:
+        stale_payload = cached[1]
+    elif persistent and time.time() - persistent[0] <= max_stale_seconds:
+        stale_payload = persistent[1]
     task = _tmdb_ott_inflight.get(cache_key)
     if task is None or task.done():
         task = asyncio.create_task(_tmdb_fetch_movie_ott_availability(movie_id, region))
