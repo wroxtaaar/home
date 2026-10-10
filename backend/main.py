@@ -3949,6 +3949,8 @@ def _poster_title_aliases(title: str, year: str = "") -> list[str]:
         "avengers 2": ("Avengers: Age of Ultron", "2015"),
         "marvels the avengers": ("The Avengers", "2012"),
         "marvel s the avengers": ("The Avengers", "2012"),
+        "superman the movie": ("Superman", "1978"),
+        "superman movie": ("Superman", "1978"),
     }
     known = known_aliases.get(normalized)
     if known:
@@ -4018,6 +4020,24 @@ def _poster_url_for_release(raw_title: str) -> str:
     if not title:
         return ""
     return f"/api/poster?{urlencode({'title': title, 'year': year})}"
+
+
+def _canonical_catalogue_poster_url(item: dict[str, Any]) -> str:
+    """Build a poster URL from canonical catalogue metadata, not a torrent filename."""
+    title = str(
+        item.get("marvelCatalogueTitle")
+        or item.get("catalogueTitle")
+        or item.get("mediaTitle")
+        or item.get("title")
+        or ""
+    ).strip()
+    if not title:
+        return ""
+    year = str(item.get("year") or "").strip()
+    params = {"title": title}
+    if year:
+        params["year"] = year
+    return "/api/poster?" + urlencode(params)
 
 
 async def _cinemeta_poster_lookup(title: str, year: str = "") -> str | None:
@@ -4118,9 +4138,79 @@ async def _cinemeta_poster_lookup(title: str, year: str = "") -> str | None:
     return None
 
 
+async def _tmdb_poster_lookup(title: str, year: str = "") -> str | None:
+    """Resolve a movie poster from TMDB using an exact title and release-year match."""
+    if not TMDB_READ_ACCESS_TOKEN and not TMDB_API_KEY:
+        return None
+
+    clean_title = str(title or "").strip()
+    clean_year = str(year or "").strip()
+    if not clean_title:
+        return None
+
+    aliases = _poster_title_aliases(clean_title, clean_year)
+    wanted_titles = {_poster_normalize_title(alias) for alias in aliases if alias}
+    headers = {"Accept": "application/json"}
+    params_base: dict[str, Any] = {
+        "include_adult": "false",
+        "language": "en-US",
+        "page": 1,
+    }
+    if TMDB_READ_ACCESS_TOKEN:
+        headers["Authorization"] = "Bearer " + TMDB_READ_ACCESS_TOKEN
+    else:
+        params_base["api_key"] = TMDB_API_KEY
+    if clean_year.isdigit() and len(clean_year) == 4:
+        params_base["year"] = clean_year
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(4.5, connect=2.5), follow_redirects=True) as client:
+            for alias in aliases[:4]:
+                try:
+                    response = await client.get(
+                        f"{TMDB_API_BASE}/search/movie",
+                        params={**params_base, "query": alias},
+                        headers=headers,
+                    )
+                    if response.status_code != 200:
+                        continue
+                    data = response.json()
+                except (httpx.HTTPError, ValueError):
+                    continue
+
+                candidates: list[tuple[float, str]] = []
+                for row in data.get("results") or []:
+                    if not isinstance(row, dict):
+                        continue
+                    name = str(row.get("title") or row.get("original_title") or "").strip()
+                    normalized = _poster_normalize_title(name)
+                    release_date = str(row.get("release_date") or "").strip()
+                    candidate_year = release_date[:4] if re.match(r"^\d{4}-\d{2}-\d{2}$", release_date) else ""
+                    poster_path = str(row.get("poster_path") or "").strip()
+                    if not name or not poster_path or normalized not in wanted_titles:
+                        continue
+                    if clean_year and candidate_year != clean_year:
+                        continue
+                    score = 100.0
+                    if clean_year and candidate_year == clean_year:
+                        score += 100
+                    score += float(row.get("vote_average") or 0)
+                    score += min(float(row.get("vote_count") or 0), 10000) / 1000
+                    candidates.append((score, poster_path))
+
+                if candidates:
+                    candidates.sort(key=lambda item: item[0], reverse=True)
+                    return TMDB_IMAGE_BASE + candidates[0][1]
+    except Exception as exc:
+        logger.debug("TMDB poster lookup failed for '%s (%s)': %s", clean_title, clean_year, exc)
+    return None
+
+
 async def _poster_lookup_uncached(clean_title: str, clean_year: str, cache_key: str) -> str | None:
     now = time.time()
-    poster = None
+    # Prefer TMDB's year-filtered movie results to prevent a similarly named
+    # title from supplying the wrong artwork. Other sources remain fallbacks.
+    poster = await _tmdb_poster_lookup(clean_title, clean_year)
 
     try:
         title_aliases = _poster_title_aliases(clean_title, clean_year)
@@ -4485,6 +4575,11 @@ def _read_marvel_catalogue() -> dict[str, Any] | None:
             and isinstance(payload.get("results"), list)
             and payload["results"]
         ):
+            for item in payload["results"]:
+                if isinstance(item, dict):
+                    canonical_poster = _canonical_catalogue_poster_url(item)
+                    if canonical_poster:
+                        item["posterUrl"] = canonical_poster
             return payload
     except (OSError, ValueError, TypeError):
         pass
@@ -4956,6 +5051,11 @@ def _read_extra_catalogue(key: str) -> dict[str, Any] | None:
                             for item in retained_results
                         }),
                     }
+            for item in payload["results"]:
+                if isinstance(item, dict):
+                    canonical_poster = _canonical_catalogue_poster_url(item)
+                    if canonical_poster:
+                        item["posterUrl"] = canonical_poster
             return payload
     except (OSError, ValueError, TypeError, AttributeError):
         pass
