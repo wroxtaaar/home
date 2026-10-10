@@ -749,6 +749,11 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
   const runSearch = async (event?: React.FormEvent, searchOverride?: string, searchMode?: 'marvel' | 'dc-live-action' | 'dc-animated' | 'latest-hollywood' | 'latest-bollywood') => {
     event?.preventDefault();
+    movieTorrentSearchControllerRef.current?.abort();
+    movieTorrentSearchGenerationRef.current += 1;
+    setMovieTorrentSearchLoading(false);
+    setMovieTorrentPickerGroups(null);
+    setMovieTorrentPreviewGroup(null);
 
     const trimmed = (searchOverride ?? query).trim();
     if (trimmed.length < 2) {
@@ -934,9 +939,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         // One canonical result stays on the movie browser and uses the exact
         // same normal result-card renderer, including its quality dropdown.
         const group = groups[0];
-        setResults(group.variants);
-        setSearched(true);
-        setSelectedQualityByGroup({ [group.key]: torrentResultKey(group.variants[0]) });
+        setSelectedMovieTorrentQualityByGroup({ [group.key]: torrentResultKey(group.variants[0]) });
         setMovieTorrentPreviewGroup(group);
       } else {
         // Keep the catalogue visible and let the user pick a release from a
@@ -957,9 +960,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   };
 
   const selectMovieTorrentGroup = (group: TorrentQualityGroup) => {
-    setResults(group.variants);
-    setSearched(true);
-    setSelectedQualityByGroup({ [group.key]: torrentResultKey(group.variants[0]) });
+    setSelectedMovieTorrentQualityByGroup({ [group.key]: torrentResultKey(group.variants[0]) });
     setMovieTorrentPreviewGroup(group);
     setMovieTorrentPickerGroups(null);
     setMovieTorrentSearchError('');
@@ -1012,6 +1013,11 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     page = 1,
     onlyReleased = releasedOnly,
   ) => {
+    movieTorrentSearchControllerRef.current?.abort();
+    movieTorrentSearchGenerationRef.current += 1;
+    setMovieTorrentSearchLoading(false);
+    setMovieTorrentPickerGroups(null);
+    setMovieTorrentPreviewGroup(null);
     const generation = ++searchGenerationRef.current;
     searchRequestRef.current?.abort();
     const controller = new AbortController();
