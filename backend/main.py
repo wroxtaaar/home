@@ -6626,7 +6626,14 @@ async def _cancel_seedr_task_and_partial_folder(
         except (HTTPException, SeedrError):
             task_files = []
 
-    folder_size = sum(max(0, int(float(file.get("size") or 0))) for file in task_files if isinstance(file, dict))
+    folder_size = 0
+    for file in task_files:
+        if not isinstance(file, dict):
+            continue
+        try:
+            folder_size += max(0, int(float(file.get("size") or 0)))
+        except (TypeError, ValueError):
+            continue
     task_deleted = False
     if task_found:
         try:
