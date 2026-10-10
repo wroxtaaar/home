@@ -4299,7 +4299,7 @@ async def resolve_search_magnet(body: dict[str, Any]):
 # One-time Marvel catalogue. Results are shared by every visitor to this Home
 # instance and never expire; the deployment mounts /app/data on persistent VPS
 # storage so a container replacement does not force another provider crawl.
-MARVEL_CATALOGUE_VERSION = 2
+MARVEL_CATALOGUE_VERSION = 3
 MARVEL_CATALOGUE_PATH = Path(os.getenv("MARVEL_CATALOGUE_PATH", "/app/data/marvel_catalogue.json"))
 MARVEL_MOVIE_SEARCHES: tuple[tuple[str, int], ...] = (
     ("Spider-Man: Brand New Day", 2026),
@@ -4481,6 +4481,30 @@ def _marvel_result_matches_title(item: dict[str, Any], title: str, year: int) ->
     return True
 
 
+def _extra_result_matches_language(item: dict[str, Any], language: str | None) -> bool:
+    """Separate English-original and Hindi/dubbed torrent releases for shared caches."""
+    normalized_language = str(language or "").strip().lower()
+    if normalized_language not in {"english", "hindi"}:
+        return True
+
+    release_text = " ".join(
+        str(item.get(field) or "")
+        for field in ("title", "quality", "audio", "language", "languages", "audioLanguage", "releaseName")
+    )
+    hindi_marker = re.compile(
+        r"\b(?:hindi|hin|dual[\s._-]*audio|multi[\s._-]*audio|hindi[\s._-]*(?:dubbed|audio))\b",
+        re.I,
+    )
+    other_language_marker = re.compile(
+        r"\b(?:hindi|hin|tamil|telugu|malayalam|kannada|bengali|marathi|punjabi|gujarati|urdu|"
+        r"dual[\s._-]*audio|multi[\s._-]*audio|multi[\s._-]*language|dubbed)\b",
+        re.I,
+    )
+    if normalized_language == "hindi":
+        return bool(hindi_marker.search(release_text))
+    return not bool(other_language_marker.search(release_text))
+
+
 async def _build_marvel_catalogue() -> None:
     global _marvel_catalogue_retry_after
     semaphore = asyncio.Semaphore(_MARVEL_CATALOGUE_CONCURRENCY)
@@ -4522,7 +4546,11 @@ async def _build_marvel_catalogue() -> None:
                     if not isinstance(items, list):
                         return accepted
                     for original in items:
-                        if not isinstance(original, dict) or not _marvel_result_matches_title(original, title, year):
+                        if (
+                            not isinstance(original, dict)
+                            or not _marvel_result_matches_title(original, title, year)
+                            or not _extra_result_matches_language(original, "english")
+                        ):
                             continue
                         item = dict(original)
                         try:
@@ -4712,8 +4740,8 @@ async def _build_marvel_catalogue() -> None:
 # catalogues are refreshed monthly and keep serving the previous good cache during refresh.
 _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
     "dc-live-action": {
-        "file": "dc_live_action_catalogue.json", "version": 1, "refresh_days": 36500,
-        "minimum_movies": 5, "mode": "fixed",
+        "file": "dc_live_action_catalogue.json", "version": 2, "refresh_days": 36500,
+        "minimum_movies": 5, "mode": "fixed", "language": "english",
         "titles": [
             ("Superman", 2025), ("Supergirl", 2026), ("The Batman Part II", 2027),
             ("Joker: Folie à Deux", 2024), ("The Batman", 2022), ("The Suicide Squad", 2021),
@@ -4795,6 +4823,27 @@ _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
         ],
     },
 }
+# Separate persistent caches keep English-original and Hindi/dubbed options
+# independent so neither language can pollute the other catalogue.
+_EXTRA_CATALOGUES["dc-live-action-hindi"] = {
+    **_EXTRA_CATALOGUES["dc-live-action"],
+    "file": "dc_live_action_hindi_catalogue.json",
+    "version": 1,
+    "language": "hindi",
+    "query_suffix": "Hindi dubbed",
+    "titles": list(_EXTRA_CATALOGUES["dc-live-action"]["titles"]),
+}
+_EXTRA_CATALOGUES["marvel-hindi"] = {
+    "file": "marvel_hindi_catalogue.json",
+    "version": 1,
+    "refresh_days": 36500,
+    "minimum_movies": 5,
+    "mode": "fixed",
+    "language": "hindi",
+    "query_suffix": "Hindi dubbed",
+    "titles": list(MARVEL_MOVIE_SEARCHES),
+}
+
 _EXTRA_CATALOGUE_PATHS = {
     key: Path(os.getenv("CATALOGUE_" + key.upper().replace("-", "_") + "_PATH", "/app/data/" + config["file"]))
     for key, config in _EXTRA_CATALOGUES.items()
@@ -4878,6 +4927,9 @@ async def _build_extra_catalogue(key: str) -> None:
     async def search_job(title: str, year: int) -> list[dict[str, Any]]:
         async with semaphore:
             query = f"{title} {year}".strip() if year else title
+            query_suffix = str(config.get("query_suffix") or "").strip()
+            if query_suffix:
+                query = query + " " + query_suffix
             try:
                 if fixed_mode:
                     try:
@@ -4939,7 +4991,10 @@ async def _build_extra_catalogue(key: str) -> None:
                     if not raw_title:
                         continue
                     if fixed_mode:
-                        if not _marvel_result_matches_title(item, title, year):
+                        if (
+                            not _marvel_result_matches_title(item, title, year)
+                            or not _extra_result_matches_language(item, config.get("language"))
+                        ):
                             continue
                         media_title, media_year = title, year
                     else:
