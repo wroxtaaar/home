@@ -221,6 +221,13 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [movieCatalogue, setMovieCatalogue] = useState<MovieCataloguePage | null>(null);
   const [movieCatalogueSearchText, setMovieCatalogueSearchText] = useState('');
   const [releasedOnly, setReleasedOnly] = useState(true);
+  type FranchiseTmdbKey = 'marvel' | 'dc-live-action' | 'dc-animated';
+  const [tmdbFranchiseKey, setTmdbFranchiseKey] = useState<FranchiseTmdbKey>('marvel');
+  const tmdbFranchiseLabels: Record<FranchiseTmdbKey, string> = {
+    marvel: 'Marvel Movies',
+    'dc-live-action': 'DC Live-Action',
+    'dc-animated': 'DC Animated',
+  };
   const [streamingOnly, setStreamingOnly] = useState(false);
   const [ottAvailability, setOttAvailability] = useState<Record<string, MovieOttCardState>>({});
   const ottAvailabilityRef = useRef<Record<string, MovieOttCardState>>({});
@@ -1143,24 +1150,58 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
         <div className="mt-2 flex flex-wrap gap-2" aria-label="Movie catalogues">
           {([
-            ['marvel', '🦸 Marvel Movies', 'Marvel Movies'],
-            ['dc-live-action', '🦇 DC Live-Action', 'DC Live-Action Movies'],
-            ['dc-animated', '🎞️ DC Animated', 'DC Animated Movies'],
-            ['latest-hollywood', '🎬 Latest Hollywood', 'Latest Hollywood Movies'],
+            ['marvel', '🦸 Marvel Movies · Cached', 'Marvel Movies'],
+            ['dc-live-action', '🦇 DC Live-Action · Cached', 'DC Live-Action Movies'],
+            ['dc-animated', '🎞️ DC Animated · Cached', 'DC Animated Movies'],
             ['popular-hollywood', '⭐ Popular Hollywood', 'Popular Hollywood Movies'],
             ['trending-hollywood', '🔥 Trending Hollywood', 'Trending Hollywood Movies'],
-            ['latest-bollywood', '🎥 Latest Bollywood', 'Latest Bollywood Movies'],
             ['popular-bollywood', '⭐ Popular Bollywood', 'Popular Bollywood Movies'],
-            ['trending-bollywood', '🔥 Trending Bollywood', 'Trending Bollywood Movies'],
           ] as const).map(([key, label, searchText]) => (
             <button key={key} type="button" onClick={() => {
               setResolutionFilter(null);
               setSizeSort(null);
               setTimeSort(null);
               setReleaseYearSort(null);
-              void openMovieCatalogue(key, searchText, 1);
+              if (key === 'marvel' || key === 'dc-live-action' || key === 'dc-animated') {
+                setTmdbFranchiseKey(key);
+                void runSearch(undefined, searchText, key);
+              } else {
+                void openMovieCatalogue(key, searchText, 1);
+              }
             }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">{label}</button>
           ))}
+        </div>
+        <div className="mt-2 flex flex-col gap-2 rounded-lg border border-slate-800 bg-slate-950/70 p-2.5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <div className="text-xs font-semibold text-slate-200">TMDB movie discovery</div>
+            <div className="text-[11px] text-slate-500">Load fresh Marvel/DC movie metadata instead of the cached torrent list.</div>
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              aria-label="Franchise to browse using TMDB"
+              value={tmdbFranchiseKey}
+              onChange={(event) => setTmdbFranchiseKey(event.target.value as FranchiseTmdbKey)}
+              className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-2 py-2 text-xs text-slate-200 sm:flex-none"
+            >
+              <option value="marvel">Marvel Movies</option>
+              <option value="dc-live-action">DC Live-Action</option>
+              <option value="dc-animated">DC Animated</option>
+            </select>
+            <button
+              type="button"
+              disabled={isSearching}
+              onClick={() => {
+                setResolutionFilter(null);
+                setSizeSort(null);
+                setTimeSort(null);
+                setReleaseYearSort(null);
+                void openMovieCatalogue(tmdbFranchiseKey, tmdbFranchiseLabels[tmdbFranchiseKey], 1);
+              }}
+              className="shrink-0 rounded-lg bg-cyan-500 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-50"
+            >
+              Browse with TMDB
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1394,8 +1435,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     }}
                     className="mt-auto w-full rounded-lg bg-cyan-500 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-50"
                   >
-                    <Search className="mr-1.5 inline h-3.5 w-3.5" />
-                    Find torrents
+                    <Download className="mr-1.5 inline h-3.5 w-3.5" />
+                    Prepare
                   </button>
                 </div>
               </article>
