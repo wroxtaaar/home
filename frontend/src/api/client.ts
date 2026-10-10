@@ -90,7 +90,17 @@ const apiFetch = (input: RequestInfo | URL, init?: RequestInit) => {
 
 export const api = {
   async getMarvelCatalogue(signal?: AbortSignal): Promise<MarvelCatalogueResponse> {
-    return this.getCatalogue('marvel', signal);
+    const res = await fetch(API_BASE + '/api/catalogue/marvel', {
+      signal,
+      credentials: 'include',
+    });
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch {}
+    if (!res.ok) {
+      throw new Error(data?.detail || data?.error || body || ('Marvel catalogue failed (HTTP ' + res.status + ')'));
+    }
+    return data as MarvelCatalogueResponse;
   },
 
   async getCatalogue(key: string, signal?: AbortSignal): Promise<MarvelCatalogueResponse> {
