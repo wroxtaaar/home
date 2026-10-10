@@ -67,6 +67,37 @@ export interface MovieCataloguePage {
   attribution?: string;
 }
 
+
+export type MovieOttStatus =
+  | 'streaming'
+  | 'rent_buy'
+  | 'digital_scheduled'
+  | 'digital_release_known'
+  | 'not_confirmed';
+
+export interface MovieOttProvider {
+  providerId?: number | string | null;
+  name: string;
+  logoUrl?: string;
+}
+
+export interface MovieOttAvailability {
+  movieId: number;
+  region: string;
+  status: MovieOttStatus;
+  streamingProviders: MovieOttProvider[];
+  rentProviders: MovieOttProvider[];
+  buyProviders: MovieOttProvider[];
+  digitalReleaseDate?: string | null;
+  providerLink: string;
+  checkedAt: string;
+  source: string;
+  providerAttribution: string;
+  attribution: string;
+  stale?: boolean;
+  cacheWarning?: string;
+}
+
 import {
   TorrentItem,
   TorrentFileItem,
@@ -173,6 +204,25 @@ export const api = {
       throw new Error(data?.detail || data?.error || body || ('Movie catalogue failed (HTTP ' + res.status + ')'));
     }
     return data as MovieCataloguePage;
+  },
+
+  async getMovieOttAvailability(
+    movieId: number,
+    region = 'IN',
+    signal?: AbortSignal,
+  ): Promise<MovieOttAvailability> {
+    const params = new URLSearchParams({ region: region.toUpperCase() });
+    const res = await fetch(
+      API_BASE + '/api/movies/ott/' + encodeURIComponent(String(movieId)) + '?' + params.toString(),
+      { signal, credentials: 'include' },
+    );
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch {}
+    if (!res.ok) {
+      throw new Error(data?.detail || data?.error || body || ('OTT availability failed (HTTP ' + res.status + ')'));
+    }
+    return data as MovieOttAvailability;
   },
 
   // Torrents (qBittorrent WebAPI)
