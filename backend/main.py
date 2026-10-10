@@ -4741,11 +4741,22 @@ async def _build_marvel_catalogue() -> None:
 # catalogues are refreshed monthly and keep serving the previous good cache during refresh.
 _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
     "dc-live-action": {
-        "file": "dc_live_action_catalogue.json", "version": 2, "refresh_days": 36500,
+        "file": "dc_live_action_catalogue.json", "version": 3, "refresh_days": 36500,
         "minimum_movies": 5, "mode": "fixed", "language": "english",
         "titles": [
             ("Superman", 2025), ("Supergirl", 2026), ("The Batman Part II", 2027),
             ("Joker: Folie à Deux", 2024), ("The Batman", 2022), ("The Suicide Squad", 2021),
+            ("Batman: The Brave and the Bold", 2028), ("Clayface", 2026),
+            ("Superman: Legacy", 2025), ("The Batman - Part II", 2027),
+            ("Batman Forever", 1995), ("Batman & Robin", 1997), ("Batman: Mask of the Phantasm", 1993),
+            ("Superman III", 1983), ("Superman IV: The Quest for Peace", 1987),
+            ("Superman: The Movie", 1978), ("Steel", 1997), ("Road to Perdition", 2002),
+            ("A History of Violence", 2005), ("The Losers", 2010), ("RED", 2010),
+            ("RED 2", 2013), ("The Kitchen", 2019), ("The Old Guard", 2020),
+            ("The Old Guard 2", 2025), ("Stardust", 2007), ("The Crow", 1994),
+            ("The Crow", 2024), ("Spawn", 1997), ("Jonah Hex", 2010),
+            ("Superman II: The Richard Donner Cut", 2006), ("Watchmen: Chapter I", 2024),
+            ("Watchmen: Chapter II", 2024), ("The Spirit", 2008), ("Swamp Thing", 1982),
             ("Zack Snyder's Justice League", 2021), ("Wonder Woman 1984", 2020),
             ("Birds of Prey", 2020), ("Joker", 2019), ("Shazam!", 2019),
             ("Aquaman", 2018), ("Aquaman and the Lost Kingdom", 2023),
@@ -4829,7 +4840,7 @@ _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
 _EXTRA_CATALOGUES["dc-live-action-hindi"] = {
     **_EXTRA_CATALOGUES["dc-live-action"],
     "file": "dc_live_action_hindi_catalogue.json",
-    "version": 1,
+    "version": 2,
     "language": "hindi",
     "query_suffix": "Hindi dubbed",
     "titles": list(_EXTRA_CATALOGUES["dc-live-action"]["titles"]),
