@@ -4136,7 +4136,7 @@ async def resolve_search_magnet(body: dict[str, Any]):
 
     if not magnet:
         match = re.search(
-            r"magnet:\\?xt=urn:btih:[^\\"'<\\s]+",
+            r"magnet:\?xt=urn:btih:[^\"<\s]+",
             response.text,
             re.IGNORECASE,
         )
