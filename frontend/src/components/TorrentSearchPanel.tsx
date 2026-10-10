@@ -898,7 +898,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                 }
                               }}
                             />
-                            <div data-poster-placeholder="true" className="hidden absolute inset-0 items-center justify-center bg-slate-950 text-slate-700">
+                            <div data-poster-placeholder="true" className="hidden absolute inset-0 flex items-center justify-center bg-slate-950 text-slate-500">
                               <Film className="w-7 h-7" />
                             </div>
                           </>
