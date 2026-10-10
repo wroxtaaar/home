@@ -1346,6 +1346,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           <span className={'inline-flex rounded-md border px-1.5 py-1 text-[10px] font-semibold ' + badgeClass}>
                             {label}
                           </span>
+                          {ott.theatricalReleaseDate && (
+                            <p className="text-[10px] text-slate-400">India theatrical release: {formatPublished(ott.theatricalReleaseDate)}</p>
+                          )}
                           {ott.digitalReleaseDate && (
                             <p className="text-[10px] text-slate-400">Digital release: {formatPublished(ott.digitalReleaseDate)}</p>
                           )}
