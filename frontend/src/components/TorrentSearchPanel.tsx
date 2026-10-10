@@ -1780,6 +1780,46 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       ? <><Loader2 className="mr-1.5 inline h-3.5 w-3.5 animate-spin" />Searching…</>
                       : <><Download className="mr-1.5 inline h-3.5 w-3.5" />Prepare</>}
                   </button>
+                  {movieTorrentPreviewGroup && (
+                    movieTorrentPreviewGroup.title.toLowerCase() === movie.title.toLowerCase()
+                    || movieTorrentPreviewGroup.variants.some(variant =>
+                      String(variant.title || '').toLowerCase().includes(movie.title.toLowerCase())
+                    )
+                  ) && (() => {
+                    const group = movieTorrentPreviewGroup;
+                    const selectedKey = selectedMovieTorrentQualityByGroup[group.key] || torrentResultKey(group.variants[0]);
+                    const selectedResult = group.variants.find(variant => torrentResultKey(variant) === selectedKey) || group.variants[0];
+                    const selectedTorrentKey = selectedResult.infoHash || selectedResult.magnetUrl || selectedResult.downloadUrl || selectedResult.sourceUrl || selectedResult.title;
+                    const preparing = preparingTorrentKey === selectedTorrentKey;
+                    return (
+                      <div className="mt-1 rounded-lg border border-cyan-500/30 bg-slate-950 p-2">
+                        <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-cyan-300">Torrent found</div>
+                        <select
+                          aria-label={'Select quality for ' + movie.title}
+                          value={selectedKey}
+                          onChange={event => setSelectedMovieTorrentQualityByGroup(current => ({ ...current, [group.key]: event.target.value }))}
+                          className="w-full min-w-0 rounded-md border border-slate-700 bg-slate-900 px-2 py-2 text-[11px] text-slate-200"
+                        >
+                          {group.variants.map((variant, index) => (
+                            <option key={torrentResultKey(variant)} value={torrentResultKey(variant)}>
+                              {torrentQualityDetails(variant).label} · {formatBytes(variant.size)}
+                            </option>
+                          ))}
+                        </select>
+                        <div className="mt-1 flex items-center justify-between gap-1 text-[10px] text-slate-400">
+                          <span>▲ {selectedResult.seeders} seeders · ▼ {selectedResult.peers} peers</span>
+                          <button
+                            type="button"
+                            disabled={preparing}
+                            onClick={() => void prepareMovieTorrent(selectedResult)}
+                            className="shrink-0 rounded-md bg-cyan-500 px-2.5 py-1.5 font-bold text-slate-950 disabled:opacity-50"
+                          >
+                            {preparing ? 'Preparing…' : 'Prepare'}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               </article>
             ))}
