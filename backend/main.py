@@ -97,6 +97,11 @@ SEARCH_CACHE_SECONDS = float(os.getenv("SEARCH_CACHE_SECONDS", "60"))
 SEARCH_CACHE_STALE_SECONDS = float(os.getenv("SEARCH_CACHE_STALE_SECONDS", "600"))
 SEARCH_CACHE_MAX_ENTRIES = int(os.getenv("SEARCH_CACHE_MAX_ENTRIES", "75"))
 SEARCH_CACHE_MIN_RESULTS = int(os.getenv("SEARCH_CACHE_MIN_RESULTS", "8"))
+# Catalogue warm-ups query many titles at once. Keep outbound provider requests bounded.
+_X1337_REQUEST_SEMAPHORE = asyncio.Semaphore(2)
+_LIMETORRENTS_REQUEST_SEMAPHORE = asyncio.Semaphore(2)
+_KNABEN_REQUEST_SEMAPHORE = asyncio.Semaphore(1)
+_YTS_REQUEST_SEMAPHORE = asyncio.Semaphore(2)
 # Home intentionally uses the wider 100 MB–5 GB search window.
 # new-test remains the separate 100 MB–2 GB variant.
 MAX_SEARCH_RESULT_SIZE_BYTES = 5 * 1024 * 1024 * 1024
@@ -2253,7 +2258,8 @@ async def search_1337x_direct(
             path = f"/category-search/{encoded}/{category_name}/1/"
             for host in X1337_HOSTS:
                 try:
-                    response = await client.get(f"https://{host}{path}")
+                    async with _X1337_REQUEST_SEMAPHORE:
+                        response = await client.get(f"https://{host}{path}")
                     if response.status_code < 400 and _x1337_rows(response.text):
                         return f"https://{host}", response.text
                 except httpx.HTTPError:
@@ -2278,7 +2284,8 @@ async def search_1337x_direct(
 
             async def fetch_generic(url: str) -> str:
                 try:
-                    response = await client.get(url)
+                    async with _X1337_REQUEST_SEMAPHORE:
+                        response = await client.get(url)
                     if response.status_code < 400 and _x1337_rows(response.text):
                         return response.text
                 except httpx.HTTPError:
@@ -2320,7 +2327,8 @@ async def search_1337x_direct(
                 if kind == "normal":
                     return value
                 try:
-                    response = await client.get(value)
+                    async with _X1337_REQUEST_SEMAPHORE:
+                        response = await client.get(value)
                     if response.status_code < 400 and _x1337_rows(response.text):
                         return response.text
                 except httpx.HTTPError:
@@ -2504,11 +2512,12 @@ async def search_yts_movies(query: str, limit: int = 50) -> list[dict[str, Any]]
     async with httpx.AsyncClient(timeout=12, follow_redirects=True) as client:
         for host in YTS_API_HOSTS:
             try:
-                response = await client.get(
-                    f"https://{host}/api/v2/list_movies.json",
-                    params={"query_term": movie_query, "limit": "50"},
-                    headers={"Accept": "application/json"},
-                )
+                async with _YTS_REQUEST_SEMAPHORE:
+                    response = await client.get(
+                        f"https://{host}/api/v2/list_movies.json",
+                        params={"query_term": movie_query, "limit": "50"},
+                        headers={"Accept": "application/json"},
+                    )
                 response.raise_for_status()
                 parsed = response.json()
                 if isinstance(parsed, dict):
@@ -2849,7 +2858,8 @@ async def search_limetorrents(
 
             async def fetch_page(url: str) -> str:
                 try:
-                    response = await client.get(url)
+                    async with _LIMETORRENTS_REQUEST_SEMAPHORE:
+                        response = await client.get(url)
                     if response.status_code < 400 and response.text:
                         return response.text
                 except httpx.HTTPError:
@@ -2986,13 +2996,14 @@ async def search_knaben(
     try:
         # v2 is edge-cached, but give it a little more than the old 2.25s v1
         # budget: the latter was consistently timing out in Home's live logs.
-        timeout = httpx.Timeout(max(5.0, SEARCH_SOURCE_TIMEOUT_SECONDS), connect=3.0)
+        timeout = httpx.Timeout(max(7.0, SEARCH_SOURCE_TIMEOUT_SECONDS), connect=6.0)
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            response = await client.get(
-                endpoint,
-                params=params,
-                headers={"Accept": "application/json", "User-Agent": "HomeMovieSearch/1.0"},
-            )
+            async with _KNABEN_REQUEST_SEMAPHORE:
+                response = await client.get(
+                    endpoint,
+                    params=params,
+                    headers={"Accept": "application/json", "User-Agent": "HomeMovieSearch/1.0"},
+                )
             response.raise_for_status()
             payload = response.json()
             raw_hits = payload if isinstance(payload, list) else (
@@ -3499,10 +3510,10 @@ async def _search_1337x_uncached(
                     category="TV" if kind == "tv" else None,
                     provider_query=provider_query,
                 ),
-                timeout=max(4.5, SEARCH_TOTAL_TIMEOUT_SECONDS + 1.0),
+                timeout=max(8.0, SEARCH_TOTAL_TIMEOUT_SECONDS + 4.0),
             )
         except Exception as exc:
-            logger.info("1337x search failed for '%s' using '%s': %s", query, provider_query, exc)
+            logger.warning("1337x search failed for '%s' using '%s': %s: %r", query, provider_query, type(exc).__name__, str(exc))
             return []
 
     async def run_lime(provider_query: str):
@@ -3533,10 +3544,9 @@ async def _search_1337x_uncached(
 
     async def run_knaben(provider_query: str):
         try:
-            return await search_knaben(
-                query,
-                50,
-                provider_query=provider_query,
+            return await asyncio.wait_for(
+                search_knaben(query, 50, provider_query=provider_query),
+                timeout=8.0,
             )
         except Exception as exc:
             logger.info("Knaben search failed for '%s' using '%s': %s", query, provider_query, exc)
@@ -3565,9 +3575,9 @@ async def _search_1337x_uncached(
         try:
             yts_primary = await yts_task
         except Exception as exc:
-            logger.info("YTS primary search failed for '%s': %s", query, exc)
+            logger.warning("YTS primary search failed for '%s': %s: %r", query, type(exc).__name__, str(exc))
 
-    logger.info(
+    logger.warning(
         "Raw search source counts for '%s': 1337x=%d, LimeTorrents=%d, Knaben=%d, YTS=%d",
         query,
         len(primary_1337x),
@@ -4440,7 +4450,7 @@ MARVEL_MOVIE_SEARCHES: tuple[tuple[str, int], ...] = (
     ("Captain America", 1979),
     ("Dr. Strange", 1978),
 )
-_MARVEL_CATALOGUE_CONCURRENCY = 4
+_MARVEL_CATALOGUE_CONCURRENCY = 2
 _marvel_catalogue_task: asyncio.Task | None = None
 _marvel_catalogue_retry_after = 0.0
 _marvel_catalogue_state: dict[str, Any] = {
@@ -4971,7 +4981,7 @@ async def _build_extra_catalogue(key: str) -> None:
     state = _extra_catalogue_states[key]
     fixed_mode = config["mode"] == "fixed"
     jobs = list(config.get("titles", [])) if fixed_mode else [(query, 0) for query in config["queries"]]
-    semaphore = asyncio.Semaphore(3)
+    semaphore = asyncio.Semaphore(2)
     poster_semaphore = asyncio.Semaphore(2)
     state.update({"status": "building", "completed": 0, "total": len(jobs), "resultCount": 0, "error": ""})
     rows: dict[str, dict[str, Any]] = {}
