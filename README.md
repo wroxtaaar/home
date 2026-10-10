@@ -31,7 +31,7 @@ The exact device-code endpoints used by the implementation are the currently rea
 
 ## Dynamic movie catalogues
 
-The Marvel, DC, Latest Hollywood and Latest Bollywood buttons can browse paginated movie metadata from TMDB, then search the existing torrent providers only when a user selects a movie. This avoids building a torrent search for every title at startup.
+The Marvel, DC, Latest Hollywood, Latest Bollywood, Popular Hollywood, Popular Bollywood, Trending Hollywood and Trending Bollywood buttons browse paginated movie metadata from TMDB, then search existing torrent providers only when a user selects a movie. Latest categories sort by release date; popular categories sort by TMDB popularity; trending categories use TMDB's weekly trending feed and filter to the selected original language. This avoids building torrent results for every title at startup.
 
 For non-commercial use, request a free TMDB API credential in your TMDB account under **Settings → API**. Add either variable to the private `.env.debug` file on the VPS (never commit credentials):
 

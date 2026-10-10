@@ -32,7 +32,16 @@ export interface MarvelCatalogueResponse {
   error?: string;
 }
 
-export type MovieCatalogueKey = 'marvel' | 'dc-live-action' | 'dc-animated' | 'latest-hollywood' | 'latest-bollywood';
+export type MovieCatalogueKey =
+  | 'marvel'
+  | 'dc-live-action'
+  | 'dc-animated'
+  | 'latest-hollywood'
+  | 'latest-bollywood'
+  | 'popular-hollywood'
+  | 'popular-bollywood'
+  | 'trending-hollywood'
+  | 'trending-bollywood';
 
 export interface MovieCatalogueItem {
   id: number | string;

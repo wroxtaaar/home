@@ -828,14 +828,26 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
       const message = String(err?.message || 'Movie catalogue failed.');
       if (message.includes('TMDB API credentials are not configured')) {
-        // Keep the current torrent-card workflow usable until the owner adds the
-        // free TMDB key. Once configured, these buttons open the complete paginated
-        // metadata catalogue instead of the small legacy torrent cache.
-        setMovieCatalogue(null);
-        await runSearch(undefined, searchText, key);
-        setError(
-          'Showing the existing cached torrent results. To enable paginated movie discovery, add TMDB_READ_ACCESS_TOKEN or TMDB_API_KEY to the server environment.'
-        );
+        // Existing five shortcuts have a legacy torrent-cache fallback. New
+        // popular/trending categories require TMDB metadata and must explain setup.
+        if (
+          key === 'marvel' ||
+          key === 'dc-live-action' ||
+          key === 'dc-animated' ||
+          key === 'latest-hollywood' ||
+          key === 'latest-bollywood'
+        ) {
+          setMovieCatalogue(null);
+          await runSearch(undefined, searchText, key);
+          setError(
+            'Showing existing cached torrent results. Add TMDB_READ_ACCESS_TOKEN or TMDB_API_KEY on the server to enable the full movie catalogue.'
+          );
+        } else {
+          setMovieCatalogue(null);
+          setError(
+            'Add TMDB_READ_ACCESS_TOKEN or TMDB_API_KEY to the server environment to enable this movie catalogue.'
+          );
+        }
       } else {
         setMovieCatalogue(null);
         setError(message);
@@ -1038,13 +1050,17 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           </button>
         </form>
 
-        <div className="mt-2 flex flex-wrap gap-2" aria-label="Popular comic universes">
+        <div className="mt-2 flex flex-wrap gap-2" aria-label="Movie catalogues">
           {([
             ['marvel', '🦸 Marvel Movies', 'Marvel Movies'],
             ['dc-live-action', '🦇 DC Live-Action', 'DC Live-Action Movies'],
             ['dc-animated', '🎞️ DC Animated', 'DC Animated Movies'],
             ['latest-hollywood', '🎬 Latest Hollywood', 'Latest Hollywood Movies'],
+            ['popular-hollywood', '⭐ Popular Hollywood', 'Popular Hollywood Movies'],
+            ['trending-hollywood', '🔥 Trending Hollywood', 'Trending Hollywood Movies'],
             ['latest-bollywood', '🎥 Latest Bollywood', 'Latest Bollywood Movies'],
+            ['popular-bollywood', '⭐ Popular Bollywood', 'Popular Bollywood Movies'],
+            ['trending-bollywood', '🔥 Trending Bollywood', 'Trending Bollywood Movies'],
           ] as const).map(([key, label, searchText]) => (
             <button key={key} type="button" onClick={() => {
               setResolutionFilter(null);
@@ -1129,7 +1145,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2 px-1">
             <div className="text-xs text-slate-400">
-              {movieCatalogue.totalResults.toLocaleString()} movies · Page {movieCatalogue.page} of {movieCatalogue.totalPages.toLocaleString()} · Metadata by {movieCatalogue.provider}
+              {movieCatalogue.catalogue.startsWith('trending-')
+                ? movieCatalogue.results.length + ' trending titles on this page · Page ' + movieCatalogue.page + ' of ' + movieCatalogue.totalPages
+                : movieCatalogue.totalResults.toLocaleString() + ' movies · Page ' + movieCatalogue.page + ' of ' + movieCatalogue.totalPages.toLocaleString()
+              } · Metadata by {movieCatalogue.provider}
             </div>
             <div className="text-[11px] text-slate-500">Select a movie to search torrent providers</div>
           </div>
