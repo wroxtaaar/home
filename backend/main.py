@@ -39,6 +39,10 @@ TMDB_READ_ACCESS_TOKEN = (
 )
 TMDB_API_BASE = "https://api.themoviedb.org/3"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
+# If TMDB API connections are reset before TLS completes, pause new API attempts
+# briefly so catalogue requests fail fast and can fall back to persistent caches.
+TMDB_API_CONNECT_FAILURE_COOLDOWN_SECONDS = max(15, int(os.getenv("TMDB_API_CONNECT_FAILURE_COOLDOWN_SECONDS", "60")))
+_tmdb_api_connect_failure_until = 0.0
 TMDB_CATALOGUE_CACHE_SECONDS = max(300, int(os.getenv("TMDB_CATALOGUE_CACHE_SECONDS", str(6 * 60 * 60))))
 TMDB_COMPANY_CACHE_SECONDS = max(3600, int(os.getenv("TMDB_COMPANY_CACHE_SECONDS", str(24 * 60 * 60))))
 TMDB_CATALOGUE_CACHE_FILE = Path(os.getenv("TMDB_CATALOGUE_CACHE_FILE", "/app/data/tmdb_movie_catalogue_cache.json"))
@@ -1111,7 +1115,7 @@ async def legacy_seedr_request(
         "access_token": access_token,
         "func": str(func),
     }
-    async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(35.0, connect=8.0), follow_redirects=True) as client:
         response = await client.request(
             method,
             url,
@@ -1204,7 +1208,7 @@ async def legacy_seedr_list_contents(folder_id: str = "0") -> Any:
         "content_type": "folder",
         "content_id": str(folder_id),
     }
-    async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(35.0, connect=8.0), follow_redirects=True) as client:
         response = await client.post(
             url,
             params=params,
@@ -1259,7 +1263,7 @@ async def seedr_root_request() -> Any:
     headers = {"Accept": "application/json"}
     params = {"access_token": seedr_access_token()}
 
-    async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(35.0, connect=8.0), follow_redirects=True) as client:
         response = await client.get(url, headers=headers, params=params)
 
     raw = response.text
@@ -1368,7 +1372,7 @@ async def seedr_request(path: str, method: str = "GET", body: Any = None, form: 
     else:
         headers_base = {}
 
-    async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(35.0, connect=8.0), follow_redirects=True) as client:
         tried_tokens: list[str] = []
         # Never fall back from one browser session to another Seedr credential.
         candidates = [token]
@@ -5387,6 +5391,8 @@ async def _tmdb_fetch_movie_ott_availability(movie_id: int, region: str) -> dict
 
 
 async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    global _tmdb_api_connect_failure_until
+
     if not TMDB_READ_ACCESS_TOKEN and not TMDB_API_KEY:
         raise HTTPException(
             status_code=503,
@@ -5394,6 +5400,14 @@ async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None) -> dic
                 "TMDB API credentials are not configured. Add TMDB_READ_ACCESS_TOKEN "
                 "or TMDB_API_KEY to the server environment to enable paginated movie discovery."
             ),
+        )
+
+    cooldown_remaining = _tmdb_api_connect_failure_until - time.monotonic()
+    if cooldown_remaining > 0:
+        retry_in = max(1, int(cooldown_remaining + 0.999))
+        raise HTTPException(
+            status_code=503,
+            detail=f"TMDB API connections are temporarily failing from this VPS; skipping retries for about {retry_in}s.",
         )
 
     query = dict(params or {})
@@ -5407,7 +5421,7 @@ async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None) -> dic
     for attempt in range(3):
         try:
             async with httpx.AsyncClient(
-                timeout=httpx.Timeout(20.0, connect=8.0),
+                timeout=httpx.Timeout(12.0, connect=4.0),
                 follow_redirects=True,
                 headers=headers,
             ) as client:
@@ -5444,6 +5458,22 @@ async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None) -> dic
                 "TMDB network request failed for %s (attempt %s/3): %s: %s",
                 path, attempt + 1, type(exc).__name__, str(exc) or "<no message>",
             )
+            if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError)):
+                _tmdb_api_connect_failure_until = max(
+                    _tmdb_api_connect_failure_until,
+                    time.monotonic() + TMDB_API_CONNECT_FAILURE_COOLDOWN_SECONDS,
+                )
+                logger.warning(
+                    "TMDB API connection failure; opening %ss cooldown to avoid repeated retries",
+                    TMDB_API_CONNECT_FAILURE_COOLDOWN_SECONDS,
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "TMDB API connection was reset before an HTTP response. "
+                        "Requests are paused briefly to avoid repeated slow failures; cached catalogues will be used when available."
+                    ),
+                ) from exc
             if attempt < 2:
                 await asyncio.sleep(0.5 * (2 ** attempt))
                 continue
@@ -7499,7 +7529,7 @@ async def seedr_v2_request(path: str) -> Any:
     if not bearer:
         raise HTTPException(503, "Seedr access token is empty")
     url = SEEDR_V2_BASE.rstrip("/") + "/" + str(path).lstrip("/")
-    async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(35.0, connect=8.0), follow_redirects=True) as client:
         response = await client.get(
             url,
             headers={"Authorization": f"Bearer {bearer}", "Accept": "application/json"},
