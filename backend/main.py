@@ -5194,12 +5194,13 @@ async def _ensure_extra_catalogue_refresh(key: str) -> None:
 
 
 async def _extra_catalogue_monthly_scheduler() -> None:
-    # Check once per day; a stale latest catalogue is refreshed in the background.
+    # Do not launch bulk provider traffic during startup. Catalogue endpoints
+    # refresh the requested cache on demand; this is only the daily backstop.
     while True:
+        await asyncio.sleep(24 * 60 * 60)
         for key, config in _EXTRA_CATALOGUES.items():
             if int(config["refresh_days"]) < 36500:
                 await _ensure_extra_catalogue_refresh(key)
-        await asyncio.sleep(24 * 60 * 60)
 
 
 
@@ -5959,8 +5960,8 @@ async def api_extra_catalogue(catalogue_key: str):
 
 
 async def _warm_extra_catalogues_on_startup() -> None:
-    for key in _EXTRA_CATALOGUES:
-        await _ensure_extra_catalogue_refresh(key)
+    # Catalogue builds are deliberately lazy. The old startup warm-up launched
+    # all stale/missing catalogues together and flooded every upstream provider.
     asyncio.create_task(_extra_catalogue_monthly_scheduler())
 
 
@@ -6005,23 +6006,11 @@ async def api_marvel_catalogue():
 
 
 async def _warm_marvel_catalogue_on_startup() -> None:
-    """Start the one-time build during deployment, not only after a user clicks."""
-    global _marvel_catalogue_task
+    """Keep startup quiet; the Marvel catalogue builds when first requested."""
     if _read_marvel_catalogue():
-        logger.info("Persistent Marvel catalogue is already cached; startup warm-up skipped.")
-        return
-    if _marvel_catalogue_task is None or _marvel_catalogue_task.done():
-        if _marvel_catalogue_state.get("status") == "failed" and time.time() < _marvel_catalogue_retry_after:
-            return
-        _marvel_catalogue_state.update({
-            "status": "building",
-            "completed": 0,
-            "total": len(MARVEL_MOVIE_SEARCHES),
-            "resultCount": 0,
-            "error": "",
-        })
-        _marvel_catalogue_task = asyncio.create_task(_build_marvel_catalogue())
-        logger.info("Started first-time Marvel catalogue warm-up in the background.")
+        logger.info("Persistent Marvel catalogue is available; startup warm-up skipped.")
+    else:
+        logger.info("Marvel catalogue build deferred until the catalogue is requested.")
 
 
 app.router.add_event_handler("startup", _warm_marvel_catalogue_on_startup)
