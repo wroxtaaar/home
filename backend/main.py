@@ -5998,15 +5998,17 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_on
     elif catalogue_key in {"latest-bollywood", "popular-bollywood"}:
         params["with_original_language"] = "hi"
         params["with_origin_country"] = "IN"
-        if catalogue_key == "popular-bollywood":
-            # Prefer established, full-length Hindi films rather than obscure
-            # entries, shorts, or poorly documented TMDB records. These filters
-            # are applied by TMDB before pagination, so weak results do not
-            # crowd out better-known titles on each page.
-            params["sort_by"] = "popularity.desc"
+        if catalogue_key == "latest-bollywood":
+            # Keep the latest catalogue focused on established Hindi feature
+            # films, not obscure/poorly documented entries or short videos.
+            # TMDB applies these before pagination, improving the usefulness of
+            # each page while retaining newest-release ordering.
             params["vote_count.gte"] = 75
             params["vote_average.gte"] = 5.5
             params["with_runtime.gte"] = 70
+        elif catalogue_key == "popular-bollywood":
+            # Preserve the existing popularity-ranked catalogue unchanged.
+            params["sort_by"] = "popularity.desc"
     elif catalogue_key in {"marvel", "dc-live-action", "dc-animated"}:
         franchise = "marvel" if catalogue_key == "marvel" else "dc"
         company_ids = await _tmdb_discovered_company_ids(franchise)
