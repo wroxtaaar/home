@@ -32,6 +32,31 @@ export interface MarvelCatalogueResponse {
   error?: string;
 }
 
+export type MovieCatalogueKey = 'marvel' | 'dc-live-action' | 'dc-animated' | 'latest-hollywood' | 'latest-bollywood';
+
+export interface MovieCatalogueItem {
+  id: number | string;
+  title: string;
+  year?: number | null;
+  releaseDate?: string;
+  overview?: string;
+  posterUrl?: string;
+  backdropUrl?: string;
+  rating?: number;
+  genres?: number[];
+  source?: string;
+}
+
+export interface MovieCataloguePage {
+  catalogue: MovieCatalogueKey;
+  provider: string;
+  page: number;
+  totalPages: number;
+  totalResults: number;
+  results: MovieCatalogueItem[];
+  attribution?: string;
+}
+
 import {
   TorrentItem,
   TorrentFileItem,
@@ -115,6 +140,21 @@ export const api = {
       throw new Error(data?.detail || data?.error || body || ('Movie catalogue failed (HTTP ' + res.status + ')'));
     }
     return data as MarvelCatalogueResponse;
+  },
+
+  async getMovieCatalogue(key: MovieCatalogueKey, page = 1, signal?: AbortSignal): Promise<MovieCataloguePage> {
+    const params = new URLSearchParams({ page: String(Math.min(Math.max(page, 1), 500)) });
+    const res = await fetch(API_BASE + '/api/movies/catalogue/' + encodeURIComponent(key) + '?' + params.toString(), {
+      signal,
+      credentials: 'include',
+    });
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch {}
+    if (!res.ok) {
+      throw new Error(data?.detail || data?.error || body || ('Movie catalogue failed (HTTP ' + res.status + ')'));
+    }
+    return data as MovieCataloguePage;
   },
 
   // Torrents (qBittorrent WebAPI)

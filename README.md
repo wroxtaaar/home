@@ -29,6 +29,19 @@ Seedr's current settings page exposes **Add Device Code** under **Extensions, AP
 
 The exact device-code endpoints used by the implementation are the currently reachable Seedr device-code endpoints; the live code endpoint returns a device code, user code, verification URL, expiry, and polling interval. citeturn594779view0
 
+## Dynamic movie catalogues
+
+The Marvel, DC, Latest Hollywood and Latest Bollywood buttons can browse paginated movie metadata from TMDB, then search the existing torrent providers only when a user selects a movie. This avoids building a torrent search for every title at startup.
+
+For non-commercial use, request a free TMDB API credential in your TMDB account under **Settings → API**. Add either variable to the private `.env.debug` file on the VPS (never commit credentials):
+
+```dotenv
+TMDB_READ_ACCESS_TOKEN=<your TMDB API Read Access Token>
+# Or use the v3 API key instead:
+# TMDB_API_KEY=<your TMDB API key>
+```
+
+The deployment workflow recreates the container from `.env.debug`, so rerun the Home VPS deployment after saving the variable. TMDB requires its logo and attribution notice in the app; the movie-browser UI includes both. Its free developer access is for non-commercial use—commercial use needs a separate TMDB agreement.
 ## Vercel
 
 Set the project Root Directory to `frontend`.

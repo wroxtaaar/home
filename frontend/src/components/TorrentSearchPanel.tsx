@@ -14,7 +14,7 @@ import {
   SlidersHorizontal,
   Film
 } from 'lucide-react';
-import { api, API_BASE, TorrentSearchResult } from '../api/client.ts';
+import { api, API_BASE, MovieCatalogueKey, MovieCataloguePage, TorrentSearchResult } from '../api/client.ts';
 import { formatBytes } from '../utils/formatters.ts';
 
 type SeedrSearchFile = {
@@ -211,6 +211,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [searched, setSearched] = useState(false);
   const [error, setError] = useState('');
   const [catalogueBuildProgress, setCatalogueBuildProgress] = useState('');
+  const [movieCatalogue, setMovieCatalogue] = useState<MovieCataloguePage | null>(null);
+  const [movieCatalogueSearchText, setMovieCatalogueSearchText] = useState('');
   // Seed count is the default ranking so the strongest swarms appear first.
   // 720p/1080p are mutually exclusive. Size and Time are independent sort toggles.
   const [resolutionFilter, setResolutionFilter] = useState<'720p' | '1080p' | null>(null);
@@ -669,6 +671,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     try {
       setIsSearching(true);
       setCatalogueBuildProgress('');
+      setMovieCatalogue(null);
       setShowRecentSearches(false);
       setError('');
       setResults([]);
@@ -792,6 +795,62 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     }
   };
 
+  const openMovieCatalogue = async (key: MovieCatalogueKey, searchText: string, page = 1) => {
+    const generation = ++searchGenerationRef.current;
+    searchRequestRef.current?.abort();
+    const controller = new AbortController();
+    searchRequestRef.current = controller;
+
+    try {
+      setIsSearching(true);
+      setCatalogueBuildProgress('Loading the ' + searchText.replace(/Movies?$/i, '').trim() + ' movie catalogue…');
+      setMovieCatalogueSearchText(searchText);
+      setShowRecentSearches(false);
+      setQuery(searchText);
+      setError('');
+      setResults([]);
+      setSelectedQualityByGroup({});
+      setSearched(false);
+      setPosterOverrides({});
+      posterLoadedRef.current.clear();
+      posterBackgroundQueueRef.current = [];
+      posterBackgroundQueuedRef.current.clear();
+      posterBackgroundAttemptsRef.current.clear();
+      posterBackgroundGenerationRef.current += 1;
+
+      const data = await api.getMovieCatalogue(key, page, controller.signal);
+      if (generation !== searchGenerationRef.current) return;
+      setMovieCatalogue(data);
+      setCatalogueBuildProgress('');
+    } catch (err: any) {
+      if (generation !== searchGenerationRef.current) return;
+      if (err?.name === 'AbortError') return;
+
+      const message = String(err?.message || 'Movie catalogue failed.');
+      if (message.includes('TMDB API credentials are not configured')) {
+        // Keep the current torrent-card workflow usable until the owner adds the
+        // free TMDB key. Once configured, these buttons open the complete paginated
+        // metadata catalogue instead of the small legacy torrent cache.
+        setMovieCatalogue(null);
+        await runSearch(undefined, searchText, key);
+        setError(
+          'Showing the existing cached torrent results. To enable paginated movie discovery, add TMDB_READ_ACCESS_TOKEN or TMDB_API_KEY to the server environment.'
+        );
+      } else {
+        setMovieCatalogue(null);
+        setError(message);
+      }
+    } finally {
+      if (generation === searchGenerationRef.current) {
+        setIsSearching(false);
+        setCatalogueBuildProgress('');
+        if (searchRequestRef.current === controller) {
+          searchRequestRef.current = null;
+        }
+      }
+    }
+  };
+
   const sortedResults = useMemo(() => {
     // Home intentionally allows up to 5 GB. new-test remains the 2 GB variant.
     const maxSeedrFriendlySize = 5 * 1024 * 1024 * 1024;
@@ -888,6 +947,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 onClick={() => {
                   setQuery('');
                   setError('');
+                  setMovieCatalogue(null);
                   setSearched(false);
                   setResults([]);
                   setShowRecentSearches(recentSearches.length > 0);
@@ -987,12 +1047,11 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             ['latest-bollywood', '🎥 Latest Bollywood', 'Latest Bollywood Movies'],
           ] as const).map(([key, label, searchText]) => (
             <button key={key} type="button" onClick={() => {
-              setQuery(searchText);
               setResolutionFilter(null);
               setSizeSort(null);
               setTimeSort(null);
               setReleaseYearSort(null);
-              void runSearch(undefined, searchText, key);
+              void openMovieCatalogue(key, searchText, 1);
             }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">{label}</button>
           ))}
         </div>
@@ -1062,6 +1121,101 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 Try the full movie or series title, and include a year or season/episode when needed.
               </div>
             ) : null}
+          </div>
+        </div>
+      )}
+
+      {movieCatalogue && (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+            <div className="text-xs text-slate-400">
+              {movieCatalogue.totalResults.toLocaleString()} movies · Page {movieCatalogue.page} of {movieCatalogue.totalPages.toLocaleString()} · Metadata by {movieCatalogue.provider}
+            </div>
+            <div className="text-[11px] text-slate-500">Select a movie to search torrent providers</div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
+            {movieCatalogue.results.map(movie => (
+              <article key={String(movie.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 flex flex-col">
+                <div className="relative aspect-[2/3] bg-slate-950">
+                  {movie.posterUrl ? (
+                    <img
+                      src={movie.posterUrl}
+                      alt={movie.title}
+                      loading="lazy"
+                      className="h-full w-full object-cover"
+                      onError={(event) => { event.currentTarget.style.display = 'none'; }}
+                    />
+                  ) : (
+                    <div className="absolute inset-0 flex items-center justify-center text-slate-600">
+                      <Film className="h-8 w-8" />
+                    </div>
+                  )}
+                  {movie.rating != null && movie.rating > 0 && (
+                    <span className="absolute left-2 top-2 rounded-md bg-slate-950/90 px-2 py-1 text-[10px] font-bold text-emerald-300">
+                      ★ {movie.rating.toFixed(1)}
+                    </span>
+                  )}
+                </div>
+                <div className="flex flex-1 flex-col gap-2 p-2.5">
+                  <div>
+                    <h3 className="text-sm font-bold leading-snug text-slate-100">{movie.title}</h3>
+                    <p className="mt-0.5 text-xs text-slate-500">{movie.year || 'Release year unknown'}</p>
+                  </div>
+                  {movie.overview && (
+                    <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{movie.overview}</p>
+                  )}
+                  <button
+                    type="button"
+                    disabled={isSearching}
+                    onClick={() => {
+                      const titleQuery = movie.title + (movie.year ? ' ' + movie.year : '');
+                      setMovieCatalogue(null);
+                      setQuery(titleQuery);
+                      void runSearch(undefined, titleQuery);
+                    }}
+                    className="mt-auto w-full rounded-lg bg-cyan-500 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-50"
+                  >
+                    <Search className="mr-1.5 inline h-3.5 w-3.5" />
+                    Find torrents
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900 px-3 py-2">
+            <button
+              type="button"
+              disabled={isSearching || movieCatalogue.page <= 1}
+              onClick={() => void openMovieCatalogue(movieCatalogue.catalogue, movieCatalogueSearchText, movieCatalogue.page - 1)}
+              className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-semibold text-slate-300 hover:border-cyan-500 disabled:opacity-40"
+            >
+              Previous
+            </button>
+            <span className="text-xs text-slate-500">Browse all pages to explore older releases too</span>
+            <button
+              type="button"
+              disabled={isSearching || movieCatalogue.page >= movieCatalogue.totalPages}
+              onClick={() => void openMovieCatalogue(movieCatalogue.catalogue, movieCatalogueSearchText, movieCatalogue.page + 1)}
+              className="rounded-lg bg-cyan-500 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-40"
+            >
+              Next
+            </button>
+          </div>
+
+          <div className="flex flex-col items-start gap-2 rounded-xl border border-slate-800 bg-slate-900/70 px-3 py-3 sm:flex-row sm:items-center">
+            <a href="https://www.themoviedb.org/" target="_blank" rel="noreferrer" className="inline-flex shrink-0 items-center gap-2">
+              <img
+                src="https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_1-5bdc75aaebeb75dc7ae79426ddd9be3b2be1e342510f8202baf6bffa71d7f5c4.svg"
+                alt="The Movie Database (TMDB)"
+                className="h-7 w-7 object-contain"
+              />
+              <span className="text-xs font-bold text-slate-300">The Movie Database (TMDB)</span>
+            </a>
+            <p className="text-[10px] leading-relaxed text-slate-500">
+              This product uses the TMDB API but is not endorsed or certified by TMDB.
+            </p>
           </div>
         </div>
       )}
@@ -1379,7 +1533,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         </div>
       )}
 
-      {!isSearching && searched && groupedResults.length === 0 && !error && (
+      {!movieCatalogue && !isSearching && searched && groupedResults.length === 0 && !error && (
         <div className="py-14 text-center rounded-2xl bg-slate-900 border border-slate-800">
           <Search className="w-10 h-10 text-slate-700 mx-auto mb-3" />
           <h3 className="text-sm font-bold text-slate-300">
