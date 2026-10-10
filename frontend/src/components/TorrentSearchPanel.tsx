@@ -1112,6 +1112,12 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               {group.title}
                             </button>
 
+                            <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[10px] sm:text-xs">
+                              <span className="font-semibold text-emerald-400">▲ {Number(result.seeders) || 0} seeders</span>
+                              <span className="font-semibold text-amber-400">▼ {Number(result.leechers) || 0} peers</span>
+                              {group.year && <span className="text-slate-500">{group.year}</span>}
+                            </div>
+
                             {group.variants.length > 1 && (
                               <select
                                 aria-label={`Choose quality for ${group.title}`}
