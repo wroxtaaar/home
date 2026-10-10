@@ -4605,6 +4605,30 @@ async def api_marvel_catalogue():
     }
 
 
+
+async def _warm_marvel_catalogue_on_startup() -> None:
+    """Start the one-time build during deployment, not only after a user clicks."""
+    global _marvel_catalogue_task
+    if _read_marvel_catalogue():
+        logger.info("Persistent Marvel catalogue is already cached; startup warm-up skipped.")
+        return
+    if _marvel_catalogue_task is None or _marvel_catalogue_task.done():
+        if _marvel_catalogue_state.get("status") == "failed" and time.time() < _marvel_catalogue_retry_after:
+            return
+        _marvel_catalogue_state.update({
+            "status": "building",
+            "completed": 0,
+            "total": len(MARVEL_MOVIE_SEARCHES),
+            "resultCount": 0,
+            "error": "",
+        })
+        _marvel_catalogue_task = asyncio.create_task(_build_marvel_catalogue())
+        logger.info("Started first-time Marvel catalogue warm-up in the background.")
+
+
+app.add_event_handler("startup", _warm_marvel_catalogue_on_startup)
+
+
 @app.get("/api/search")
 async def api_search(q: str = Query(..., min_length=1), limit: int = Query(50, ge=1, le=50)):
     return await search_1337x(q, limit)
