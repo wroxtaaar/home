@@ -4251,7 +4251,7 @@ async def _poster_lookup_uncached(clean_title: str, clean_year: str, cache_key: 
                         score += 10
                     score += max(0, 20 - int(row.get("rank") or 20))
                     candidates.append((score, image))
-                if candidates:
+                if candidates and not poster:
                     candidates.sort(key=lambda pair: pair[0], reverse=True)
                     poster = candidates[0][1]
     except Exception:
