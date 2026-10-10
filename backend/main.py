@@ -42,6 +42,10 @@ TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
 TMDB_CATALOGUE_CACHE_SECONDS = max(300, int(os.getenv("TMDB_CATALOGUE_CACHE_SECONDS", str(6 * 60 * 60))))
 TMDB_COMPANY_CACHE_SECONDS = max(3600, int(os.getenv("TMDB_COMPANY_CACHE_SECONDS", str(24 * 60 * 60))))
 TMDB_CATALOGUE_CACHE_FILE = Path(os.getenv("TMDB_CATALOGUE_CACHE_FILE", "/app/data/tmdb_movie_catalogue_cache.json"))
+TMDB_OTT_CACHE_SECONDS = max(3600, int(os.getenv("TMDB_OTT_CACHE_SECONDS", str(24 * 60 * 60))))
+TMDB_OTT_CACHE_FILE = Path(os.getenv("TMDB_OTT_CACHE_FILE", "/app/data/tmdb_ott_availability_cache.json"))
+_tmdb_ott_cache: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
+_tmdb_ott_inflight: dict[tuple[int, str], asyncio.Task[dict[str, Any]]] = {}
 _tmdb_movie_catalogue_cache: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
 _tmdb_movie_catalogue_inflight: dict[tuple[str, int], asyncio.Task[dict[str, Any]]] = {}
 _tmdb_company_id_cache: dict[str, tuple[float, list[str]]] = {}
@@ -5134,6 +5138,177 @@ def _write_tmdb_persistent_cache(cache_key: tuple[str, int], payload: dict[str, 
         logger.info("Could not write TMDB persistent cache: %s", exc)
 
 
+def _tmdb_ott_disk_key(cache_key: tuple[int, str]) -> str:
+    return str(cache_key[0]) + ":" + cache_key[1]
+
+
+def _read_tmdb_ott_persistent_cache(cache_key: tuple[int, str]) -> tuple[float, dict[str, Any]] | None:
+    try:
+        payload = json.loads(TMDB_OTT_CACHE_FILE.read_text(encoding="utf-8"))
+        row = (payload.get("items") or {}).get(_tmdb_ott_disk_key(cache_key))
+        if not isinstance(row, dict) or not isinstance(row.get("payload"), dict):
+            return None
+        saved_at = float(row.get("savedAt") or 0)
+        if saved_at <= 0:
+            return None
+        return saved_at, row["payload"]
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def _write_tmdb_ott_persistent_cache(cache_key: tuple[int, str], payload: dict[str, Any]) -> None:
+    try:
+        TMDB_OTT_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            disk = json.loads(TMDB_OTT_CACHE_FILE.read_text(encoding="utf-8"))
+            if not isinstance(disk, dict):
+                disk = {}
+        except (OSError, ValueError, TypeError):
+            disk = {}
+        items = disk.get("items")
+        if not isinstance(items, dict):
+            items = {}
+        items[_tmdb_ott_disk_key(cache_key)] = {
+            "savedAt": time.time(),
+            "payload": payload,
+        }
+        # Bound cache growth as users browse many different movie titles.
+        if len(items) > 1500:
+            ordered = sorted(
+                items.items(),
+                key=lambda pair: float((pair[1] or {}).get("savedAt") or 0),
+                reverse=True,
+            )
+            items = dict(ordered[:1500])
+        disk["items"] = items
+        temp_path = TMDB_OTT_CACHE_FILE.with_name(
+            TMDB_OTT_CACHE_FILE.name + "." + uuid.uuid4().hex + ".tmp"
+        )
+        temp_path.write_text(json.dumps(disk, ensure_ascii=False), encoding="utf-8")
+        os.replace(temp_path, TMDB_OTT_CACHE_FILE)
+    except (OSError, ValueError, TypeError) as exc:
+        # A cache write failure must not hide otherwise usable availability data.
+        logger.info("Could not write TMDB OTT cache: %s", exc)
+
+
+def _tmdb_watch_provider_rows(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("provider_name") or "").strip()
+        provider_id = item.get("provider_id")
+        if not name:
+            continue
+        identity = str(provider_id if provider_id is not None else name.casefold())
+        if identity in seen:
+            continue
+        seen.add(identity)
+        logo_path = str(item.get("logo_path") or "").strip()
+        rows.append({
+            "providerId": provider_id,
+            "name": name,
+            "logoUrl": "https://image.tmdb.org/t/p/w92" + logo_path if logo_path else "",
+        })
+    return rows
+
+
+async def _tmdb_fetch_movie_ott_availability(movie_id: int, region: str) -> dict[str, Any]:
+    # Provider availability and regional release dates are separate TMDB resources.
+    # Failure to fetch release dates should not discard a successful provider result.
+    provider_result, release_result = await asyncio.gather(
+        _tmdb_get_json(f"movie/{movie_id}/watch/providers"),
+        _tmdb_get_json(f"movie/{movie_id}/release_dates"),
+        return_exceptions=True,
+    )
+    if isinstance(provider_result, Exception):
+        if isinstance(provider_result, HTTPException):
+            raise provider_result
+        raise HTTPException(status_code=502, detail="Could not load OTT provider availability.") from provider_result
+
+    if isinstance(release_result, Exception):
+        logger.info("Could not load digital release dates for TMDB movie %s: %s", movie_id, release_result)
+        release_payload: dict[str, Any] = {}
+    else:
+        release_payload = release_result if isinstance(release_result, dict) else {}
+
+    all_regions = (provider_result.get("results") or {}) if isinstance(provider_result, dict) else {}
+    region_payload = all_regions.get(region) or {}
+    streaming = (
+        _tmdb_watch_provider_rows(region_payload.get("flatrate"))
+        + _tmdb_watch_provider_rows(region_payload.get("free"))
+        + _tmdb_watch_provider_rows(region_payload.get("ads"))
+    )
+    rent = _tmdb_watch_provider_rows(region_payload.get("rent"))
+    buy = _tmdb_watch_provider_rows(region_payload.get("buy"))
+
+    def merge_providers(groups: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for group in groups:
+            for provider in group:
+                identity = str(provider.get("providerId") or provider.get("name", "").casefold())
+                if identity not in seen:
+                    seen.add(identity)
+                    merged.append(provider)
+        return merged
+
+    streaming = merge_providers([streaming])
+    rent = merge_providers([rent])
+    buy = merge_providers([buy])
+
+    digital_dates: list[str] = []
+    for region_release in release_payload.get("results") or []:
+        if not isinstance(region_release, dict) or str(region_release.get("iso_3166_1") or "").upper() != region:
+            continue
+        for release in region_release.get("release_dates") or []:
+            if not isinstance(release, dict) or str(release.get("type") or "") != "4":
+                continue
+            day = str(release.get("release_date") or "").strip()[:10]
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+                try:
+                    datetime.strptime(day, "%Y-%m-%d")
+                    digital_dates.append(day)
+                except ValueError:
+                    continue
+
+    digital_release_date = min(digital_dates) if digital_dates else None
+    today = datetime.now(timezone.utc).date().isoformat()
+    if streaming:
+        status = "streaming"
+    elif rent or buy:
+        status = "rent_buy"
+    elif digital_release_date and digital_release_date > today:
+        status = "digital_scheduled"
+    elif digital_release_date:
+        # A listed digital release date does not guarantee subscription streaming.
+        status = "digital_release_known"
+    else:
+        status = "not_confirmed"
+
+    provider_link = str(region_payload.get("link") or "").strip()
+    if not provider_link:
+        provider_link = f"https://www.themoviedb.org/movie/{movie_id}/watch?locale={region}"
+
+    return {
+        "movieId": movie_id,
+        "region": region,
+        "status": status,
+        "streamingProviders": streaming,
+        "rentProviders": rent,
+        "buyProviders": buy,
+        "digitalReleaseDate": digital_release_date,
+        "providerLink": provider_link,
+        "checkedAt": datetime.now(timezone.utc).isoformat(),
+        "source": "TMDB",
+        "providerAttribution": "Streaming availability data powered by JustWatch.",
+        "attribution": "This product uses the TMDB API but is not endorsed or certified by TMDB.",
+    }
+
+
 async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     if not TMDB_READ_ACCESS_TOKEN and not TMDB_API_KEY:
         raise HTTPException(
@@ -5499,6 +5674,63 @@ async def api_tmdb_movie_catalogue(
     finally:
         if task.done() and _tmdb_movie_catalogue_inflight.get(cache_key) is task:
             _tmdb_movie_catalogue_inflight.pop(cache_key, None)
+
+
+@app.get("/api/movies/ott/{movie_id}")
+async def api_tmdb_movie_ott_availability(
+    movie_id: int,
+    region: str = Query("IN", min_length=2, max_length=2),
+):
+    """Return cached streaming, rental, purchase and digital-release data for one movie."""
+    if movie_id < 1:
+        raise HTTPException(status_code=404, detail="Unknown movie.")
+
+    region = region.strip().upper()
+    if not re.fullmatch(r"[A-Z]{2}", region):
+        raise HTTPException(status_code=422, detail="Region must be a two-letter country code.")
+
+    cache_key = (movie_id, region)
+    now = time.monotonic()
+    cached = _tmdb_ott_cache.get(cache_key)
+    if cached and now - cached[0] < TMDB_OTT_CACHE_SECONDS:
+        return cached[1]
+
+    persistent = _read_tmdb_ott_persistent_cache(cache_key)
+    if persistent:
+        saved_at, persistent_payload = persistent
+        age_seconds = max(0.0, time.time() - saved_at)
+        if age_seconds < TMDB_OTT_CACHE_SECONDS:
+            _tmdb_ott_cache[cache_key] = (time.monotonic() - age_seconds, persistent_payload)
+            return persistent_payload
+
+    stale_payload = cached[1] if cached else (persistent[1] if persistent else None)
+    task = _tmdb_ott_inflight.get(cache_key)
+    if task is None or task.done():
+        task = asyncio.create_task(_tmdb_fetch_movie_ott_availability(movie_id, region))
+        _tmdb_ott_inflight[cache_key] = task
+    try:
+        payload = await task
+        _tmdb_ott_cache[cache_key] = (time.monotonic(), payload)
+        _write_tmdb_ott_persistent_cache(cache_key, payload)
+        return payload
+    except HTTPException as exc:
+        if stale_payload:
+            stale_response = dict(stale_payload)
+            stale_response["stale"] = True
+            stale_response["cacheWarning"] = exc.detail
+            return stale_response
+        raise
+    except Exception as exc:
+        logger.exception("TMDB OTT availability failed for movie %s in %s", movie_id, region)
+        if stale_payload:
+            stale_response = dict(stale_payload)
+            stale_response["stale"] = True
+            stale_response["cacheWarning"] = "OTT availability is temporarily unavailable; showing the last cached result."
+            return stale_response
+        raise HTTPException(status_code=502, detail="Could not load OTT availability from TMDB.") from exc
+    finally:
+        if task.done() and _tmdb_ott_inflight.get(cache_key) is task:
+            _tmdb_ott_inflight.pop(cache_key, None)
 
 
 @app.get("/api/catalogue/extra/{catalogue_key}")
