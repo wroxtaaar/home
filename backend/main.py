@@ -5697,7 +5697,7 @@ async def _tmdb_fetch_movie_ott_availability(movie_id: int, region: str) -> dict
     watchmode_buy = _watchmode_provider_rows(watchmode_rows, {"buy", "purchase"})
 
     # TMDB/JustWatch fallback remains available if Watchmode is not configured,
-    # is temporarily unreachable, or has no usable provider records for this title.
+    # temporarily unreachable, or has no usable provider records for this title.
     tmdb_provider_result: dict[str, Any] = {}
     if not (watchmode_streaming or watchmode_rent or watchmode_buy):
         try:
@@ -5706,6 +5706,7 @@ async def _tmdb_fetch_movie_ott_availability(movie_id: int, region: str) -> dict
                 tmdb_provider_result = result
         except Exception as exc:
             logger.info("TMDB provider fallback failed for movie %s: %s", movie_id, exc)
+
     all_regions = (tmdb_provider_result.get("results") or {}) if isinstance(tmdb_provider_result, dict) else {}
     region_payload = all_regions.get(region) or {}
     streaming = watchmode_streaming or (
@@ -5716,26 +5717,6 @@ async def _tmdb_fetch_movie_ott_availability(movie_id: int, region: str) -> dict
     rent = watchmode_rent or _tmdb_watch_provider_rows(region_payload.get("rent"))
     buy = watchmode_buy or _tmdb_watch_provider_rows(region_payload.get("buy"))
     availability_source = "Watchmode" if watchmode_streaming or watchmode_rent or watchmode_buy else "TMDB"
-    if isinstance(provider_result, Exception):
-        if isinstance(provider_result, HTTPException):
-            raise provider_result
-        raise HTTPException(status_code=502, detail="Could not load OTT provider availability.") from provider_result
-
-    if isinstance(release_result, Exception):
-        logger.info("Could not load digital release dates for TMDB movie %s: %s", movie_id, release_result)
-        release_payload: dict[str, Any] = {}
-    else:
-        release_payload = release_result if isinstance(release_result, dict) else {}
-
-    all_regions = (provider_result.get("results") or {}) if isinstance(provider_result, dict) else {}
-    region_payload = all_regions.get(region) or {}
-    streaming = (
-        _tmdb_watch_provider_rows(region_payload.get("flatrate"))
-        + _tmdb_watch_provider_rows(region_payload.get("free"))
-        + _tmdb_watch_provider_rows(region_payload.get("ads"))
-    )
-    rent = _tmdb_watch_provider_rows(region_payload.get("rent"))
-    buy = _tmdb_watch_provider_rows(region_payload.get("buy"))
 
     def merge_providers(groups: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
         merged: list[dict[str, Any]] = []
@@ -5809,7 +5790,6 @@ async def _tmdb_fetch_movie_ott_availability(movie_id: int, region: str) -> dict
         "providerAttribution": "Streaming availability data powered by Watchmode." if availability_source == "Watchmode" else "Streaming availability data powered by JustWatch via TMDB.",
         "attribution": "This product uses the TMDB API but is not endorsed or certified by TMDB.",
     }
-
 
 async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     global _tmdb_api_connect_failure_until
