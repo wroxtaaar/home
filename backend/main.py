@@ -3957,12 +3957,26 @@ def _poster_title_aliases(title: str, year: str = "") -> list[str]:
             if alias not in aliases:
                 aliases.append(alias)
 
+    # Cinemeta/IMDb listings may use the film's full subtitle instead of its
+    # marketed short title. These remain exact normalized-title matches.
+    if normalized == "birds of prey" and (not clean_year or clean_year == "2020"):
+        for alias in (
+            "Birds of Prey: And the Fantabulous Emancipation of One Harley Quinn",
+            "Birds of Prey (and the Fantabulous Emancipation of One Harley Quinn)",
+        ):
+            if alias not in aliases:
+                aliases.append(alias)
+
     return aliases
 
 def _poster_title_parts(raw_title: str) -> tuple[str, str]:
     """Extract the movie title/year while removing common release-name debris."""
     value = str(raw_title or "").replace(".", " ").replace("_", " ")
-    year_match = re.search(r"\b((?:19|20)\d{2})\b", value)
+    # Release helpers often append the real release year after the title
+    # (e.g. "Wonder Woman 1984 2020"). Prefer the last year token so a year
+    # that is part of the title is preserved.
+    year_matches = list(re.finditer(r"\b((?:19|20)\d{2})\b", value))
+    year_match = year_matches[-1] if year_matches else None
     year = year_match.group(1) if year_match else ""
 
     if year_match:
@@ -4792,8 +4806,13 @@ async def _build_marvel_catalogue() -> None:
 # catalogues are refreshed monthly and keep serving the previous good cache during refresh.
 _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
     "dc-live-action": {
-        "file": "dc_live_action_catalogue.json", "version": 3, "refresh_days": 36500,
+        "file": "dc_live_action_catalogue.json", "version": 4, "refresh_days": 36500,
         "minimum_movies": 5, "mode": "fixed", "language": "english",
+        "exclude_titles": [
+            "The Old Guard", "The Old Guard 2", "RED 2", "The Kitchen", "RED",
+            "The Losers", "Stardust", "A History of Violence", "The League of Extraordinary Gentlemen",
+            "Road to Perdition", "Steel", "The Spirit",
+        ],
         "titles": [
             ("Superman", 2025), ("Supergirl", 2026), ("The Batman Part II", 2027),
             ("Joker: Folie à Deux", 2024), ("The Batman", 2022), ("The Suicide Squad", 2021),
@@ -4801,13 +4820,11 @@ _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
             ("Superman: Legacy", 2025), ("The Batman - Part II", 2027),
             ("Batman Forever", 1995), ("Batman & Robin", 1997), ("Batman: Mask of the Phantasm", 1993),
             ("Superman III", 1983), ("Superman IV: The Quest for Peace", 1987),
-            ("Superman: The Movie", 1978), ("Steel", 1997), ("Road to Perdition", 2002),
-            ("A History of Violence", 2005), ("The Losers", 2010), ("RED", 2010),
-            ("RED 2", 2013), ("The Kitchen", 2019), ("The Old Guard", 2020),
-            ("The Old Guard 2", 2025), ("Stardust", 2007), ("The Crow", 1994),
+            ("Superman: The Movie", 1978),
+            ("The Crow", 1994),
             ("The Crow", 2024), ("Spawn", 1997), ("Jonah Hex", 2010),
             ("Superman II: The Richard Donner Cut", 2006), ("Watchmen: Chapter I", 2024),
-            ("Watchmen: Chapter II", 2024), ("The Spirit", 2008), ("Swamp Thing", 1982),
+            ("Watchmen: Chapter II", 2024), ("Swamp Thing", 1982),
             ("Zack Snyder's Justice League", 2021), ("Wonder Woman 1984", 2020),
             ("Birds of Prey", 2020), ("Joker", 2019), ("Shazam!", 2019),
             ("Aquaman", 2018), ("Aquaman and the Lost Kingdom", 2023),
@@ -4817,7 +4834,7 @@ _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
             ("The Dark Knight", 2008), ("Batman Begins", 2005), ("Batman Returns", 1992),
             ("Batman", 1989), ("Superman Returns", 2006), ("Superman II", 1980),
             ("Superman", 1978), ("Constantine", 2005), ("Watchmen", 2009),
-            ("V for Vendetta", 2005), ("The League of Extraordinary Gentlemen", 2003),
+            ("V for Vendetta", 2005),
             ("Catwoman", 2004), ("The Flash", 2023), ("Black Adam", 2022),
             ("Blue Beetle", 2023), ("Shazam! Fury of the Gods", 2023),
         ],
@@ -4866,7 +4883,7 @@ _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
 _EXTRA_CATALOGUES["dc-live-action-hindi"] = {
     **_EXTRA_CATALOGUES["dc-live-action"],
     "file": "dc_live_action_hindi_catalogue.json",
-    "version": 3,
+    "version": 4,
     "language": "hindi",
     "titles": list(_EXTRA_CATALOGUES["dc-live-action"]["titles"]),
 }
@@ -4907,6 +4924,38 @@ def _read_extra_catalogue(key: str) -> dict[str, Any] | None:
             isinstance(payload_version, int) and payload_version < current_version
         )
         if (is_current_version or is_older_compatible_version) and isinstance(payload.get("results"), list) and payload["results"]:
+            excluded_titles = {
+                _normalize_title(value)
+                for value in (config.get("exclude_titles") or [])
+                if str(value or "").strip()
+            }
+            if excluded_titles:
+                retained_results = []
+                for item in payload["results"]:
+                    if not isinstance(item, dict):
+                        continue
+                    canonical_title = str(
+                        item.get("catalogueTitle")
+                        or item.get("mediaTitle")
+                        or item.get("title")
+                        or ""
+                    ).strip()
+                    if _normalize_title(canonical_title) not in excluded_titles:
+                        retained_results.append(item)
+                if not retained_results:
+                    return None
+                if len(retained_results) != len(payload["results"]):
+                    payload = {
+                        **payload,
+                        "results": retained_results,
+                        "resultCount": len(retained_results),
+                        "movieCount": len({
+                            _normalize_title(str(
+                                item.get("catalogueTitle") or item.get("mediaTitle") or item.get("title") or ""
+                            ))
+                            for item in retained_results
+                        }),
+                    }
             return payload
     except (OSError, ValueError, TypeError, AttributeError):
         pass
