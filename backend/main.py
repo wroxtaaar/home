@@ -4740,13 +4740,13 @@ _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
         ],
     },
     "latest-hollywood": {
-        # Bump the cache schema so old, unfiltered results are discarded and rebuilt.
-        "file": "latest_hollywood_catalogue.json", "version": 2, "refresh_days": 30,
+        # Generic media search strips bare years, so latest catalogues search direct listings.
+        "file": "latest_hollywood_catalogue.json", "version": 3, "refresh_days": 30,
         "minimum_movies": 1, "mode": "latest", "queries": ["2026", "2025"],
     },
     "latest-bollywood": {
-        # Bump the cache schema so old, unfiltered results are discarded and rebuilt.
-        "file": "latest_bollywood_catalogue.json", "version": 2, "refresh_days": 30,
+        # Search Hindi/Bollywood provider listings directly rather than title-only generic search.
+        "file": "latest_bollywood_catalogue.json", "version": 3, "refresh_days": 30,
         "minimum_movies": 1, "mode": "latest", "queries": ["Hindi 2026", "Hindi 2025", "Bollywood 2026", "Bollywood 2025"],
     },
 }
@@ -4834,17 +4834,53 @@ async def _build_extra_catalogue(key: str) -> None:
         async with semaphore:
             query = f"{title} {year}".strip() if year else title
             try:
-                try:
-                    items = await asyncio.wait_for(search_1337x(query, limit=50, allow_series_fallback=False), timeout=18)
-                except Exception as exc:
-                    logger.info("Catalogue %s primary search failed for %s: %s", key, query, exc)
-                    items = []
-                if len(items) < 2:
+                if fixed_mode:
                     try:
-                        fallback = await asyncio.wait_for(search_yts_movies(query, limit=20), timeout=9)
-                        items = list(items or []) + list(fallback or [])
+                        items = await asyncio.wait_for(
+                            search_1337x(query, limit=50, allow_series_fallback=False),
+                            timeout=18,
+                        )
                     except Exception as exc:
-                        logger.debug("Catalogue %s YTS fallback failed for %s: %s", key, query, exc)
+                        logger.info("Catalogue %s primary search failed for %s: %s", key, query, exc)
+                        items = []
+                    if len(items) < 2:
+                        try:
+                            fallback = await asyncio.wait_for(search_yts_movies(query, limit=20), timeout=9)
+                            items = list(items or []) + list(fallback or [])
+                        except Exception as exc:
+                            logger.debug("Catalogue %s YTS fallback failed for %s: %s", key, query, exc)
+                else:
+                    # Do not route bare-year/language catalogues through the generic title
+                    # search pipeline: it strips the very tokens needed for discovery.
+                    year_match = re.search(r"\b((?:19|20)\d{2})\b", query)
+                    release_year = year_match.group(1) if year_match else str(datetime.now(timezone.utc).year)
+                    if key == "latest-hollywood":
+                        provider_query = release_year
+                        listing_query = f"movies {release_year}"
+                    else:
+                        language = "Hindi" if re.search(r"\bhindi\b", query, re.I) else "Bollywood"
+                        provider_query = language
+                        listing_query = f"{language} {release_year}"
+
+                    primary_search = asyncio.wait_for(
+                        search_1337x_direct(
+                            listing_query, limit=50, pages=2, provider_query=provider_query,
+                        ),
+                        timeout=18,
+                    )
+                    secondary_search = asyncio.wait_for(
+                        search_limetorrents(listing_query, limit=30, pages=1),
+                        timeout=12,
+                    )
+                    searched = await asyncio.gather(
+                        primary_search, secondary_search, return_exceptions=True,
+                    )
+                    items = []
+                    for value in searched:
+                        if isinstance(value, list):
+                            items.extend(value)
+                        elif isinstance(value, Exception):
+                            logger.info("Catalogue %s provider search failed for %s: %s", key, query, value)
 
                 accepted: list[dict[str, Any]] = []
                 for original in items or []:
@@ -4864,11 +4900,16 @@ async def _build_extra_catalogue(key: str) -> None:
                         media_year = _extra_item_year(item)
                         # Only keep recent movie releases; discard TV seasons and
                         # unrelated years returned by broad provider queries.
-                        if not media_year or media_year < datetime.now(timezone.utc).year - 1 or media_year > datetime.now(timezone.utc).year + 1:
+                        current_year = datetime.now(timezone.utc).year
+                        if not media_year or media_year < current_year - 1 or media_year > current_year:
                             continue
                         if re.search(r"\b(?:S\d{1,2}E\d{1,2}|season\s+\d+|complete\s+series|episode\s+\d+)\b", raw_title, re.I):
                             continue
-                        if key == "latest-bollywood" and not re.search(r"\b(?:hindi|bollywood|hin-dub|hindi-dubbed)\b", raw_title, re.I):
+                        if key == "latest-bollywood" and not re.search(
+                            r"\b(?:hindi|hin|bollywood|hin[- .]?dub(?:bed)?|hindi[- .]?dubbed|dual[ ._-]?audio|multi[ ._-]?audio)\b",
+                            raw_title,
+                            re.I,
+                        ):
                             continue
                         media_title = re.sub(r"\b(?:1080p|720p|2160p|4k|web[- .]?dl|webrip|bluray|brrip|hdtv|x264|x265|hevc|proper|repack)\b.*$", "", raw_title, flags=re.I).strip(" .-_")
                         media_title = media_title or raw_title
