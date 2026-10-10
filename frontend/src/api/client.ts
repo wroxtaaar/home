@@ -352,7 +352,8 @@ export const api = {
   async prepareSeedrMagnet(
     magnet: string,
     requiredBytes = 0,
-    torrentName?: string
+    torrentName?: string,
+    replaceTaskId?: number | string
   ): Promise<any> {
     const value = String(magnet || '');
     if (!value.trim().toLowerCase().startsWith('magnet:?')) {
@@ -367,6 +368,7 @@ export const api = {
         required_bytes: Math.max(0, Number(requiredBytes) || 0),
         auto_cleanup: true,
         replace_active: true,
+        replace_task_id: replaceTaskId == null ? undefined : String(replaceTaskId),
         torrent_name: torrentName || undefined,
       })
     });
@@ -392,6 +394,7 @@ export const api = {
       seedrFolderName: data?.torrent_name || data?.name || data?.task?.name || torrentName || null,
       seedrFolderId: data?.folder_id ?? data?.folderId ?? data?.task?.folder_id ?? null,
       deletedFolders: Array.isArray(data?.deleted_folders) ? data.deleted_folders : [],
+      cancelledTasks: Array.isArray(data?.cancelled_tasks) ? data.cancelled_tasks : [],
     };
   },
 

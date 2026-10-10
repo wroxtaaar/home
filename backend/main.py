@@ -2691,6 +2691,28 @@ def _limetorrents_rows(html_text: str, base_url: str) -> list[dict[str, str]]:
         if not title or not detail_href:
             continue
 
+        # LimeTorrents exposes the BTIH hash on the small download-icon
+        # link in the listing row. Prefer this hash so Prepare can submit a
+        # real magnet to Seedr without relying only on a detail-page scrape.
+        download_anchor = (
+            row.select_one(".tt-name a.csprite_dl14[href]")
+            or row.select_one(".tt-name a[href*='/download/']")
+        )
+        download_href = str(download_anchor.get("href") or "").strip() if download_anchor else ""
+        hash_match = re.search(
+            r"(?i)(?<![0-9a-f])([0-9a-f]{40})(?![0-9a-f])",
+            download_href,
+        )
+        torrent_hash = hash_match.group(1).lower() if hash_match else ""
+        magnet_url = ""
+        if torrent_hash:
+            magnet_url = f"magnet:?xt=urn:btih:{torrent_hash}&dn={quote(title, safe='')}"
+            for tracker in (
+                "udp://tracker.opentrackr.org:1337/announce",
+                "udp://open.stealth.si:80/announce",
+            ):
+                magnet_url += "&tr=" + quote(tracker, safe="")
+
         seed_cell = row.select_one(".tdseed")
         leech_cell = row.select_one(".tdleech")
         seeders = "0"
@@ -2727,6 +2749,8 @@ def _limetorrents_rows(html_text: str, base_url: str) -> list[dict[str, str]]:
             "size": size,
             "seeders": seeders,
             "leechers": leechers,
+            "info_hash": torrent_hash,
+            "magnet_url": magnet_url,
         })
 
     return rows
@@ -2864,9 +2888,9 @@ async def search_limetorrents(
                 "indexer": "LimeTorrents",
                 "protocol": "torrent",
                 "publishDate": "",
-                "magnetUrl": None,
-                "infoHash": "",
-                "downloadUrl": None,
+                "magnetUrl": str(row.get("magnet_url") or "").strip() or None,
+                "infoHash": str(row.get("info_hash") or "").strip(),
+                "downloadUrl": str(row.get("magnet_url") or "").strip() or None,
                 "infoUrl": detail_url,
                 "sourceUrl": detail_url,
                 "descriptorUrl": "",
@@ -3748,6 +3772,7 @@ def _poster_prepare_lookup_title(title: str, year: str = "") -> str:
 def _poster_title_aliases(title: str, year: str = "") -> list[str]:
     """Return provider-friendly title aliases for common torrent shorthand."""
     clean_title = str(title or "").strip()
+    clean_year = str(year or "").strip()
     normalized = _poster_normalize_title(clean_title)
     aliases = [clean_title] if clean_title else []
 
@@ -3765,6 +3790,20 @@ def _poster_title_aliases(title: str, year: str = "") -> list[str]:
         alias = pirates_sequels[match.group(1)]
         if alias not in aliases:
             aliases.append(alias)
+
+    # Common LimeTorrents naming variants differ from catalog titles. These
+    # explicit aliases preserve exact matching and do not reopen broad substring
+    # matches that previously returned unrelated artwork.
+    known_aliases = {
+        "avengers 2": ("Avengers: Age of Ultron", "2015"),
+        "marvels the avengers": ("The Avengers", "2012"),
+    }
+    known = known_aliases.get(normalized)
+    if known:
+        alias, expected_year = known
+        if not clean_year or clean_year == expected_year:
+            if alias not in aliases:
+                aliases.append(alias)
 
     return aliases
 
@@ -4084,18 +4123,58 @@ async def resolve_search_magnet(body: dict[str, Any]):
         logger.info("Lazy magnet resolution failed for provider URL %s: %s", info_url, exc)
         raise HTTPException(502, "Could not reach the torrent provider. Please try another result.") from exc
 
-    match = re.search(
-        r"magnet:\?xt=urn:btih:[^\"'<\s]+",
-        response.text,
-        re.IGNORECASE,
-    )
-    if not match:
-        raise HTTPException(404, "The provider did not expose a magnet link for this result.")
+    # Prefer a real magnet anchor when the detail page includes one.
+    # Parsing hrefs handles HTML-escaped ampersands better than scanning the
+    # entire page for arbitrary strings.
+    page = BeautifulSoup(response.text or "", "html.parser")
+    magnet = ""
+    for anchor in page.select('a[href^="magnet:"]'):
+        candidate = unescape(str(anchor.get("href") or "")).strip()
+        if info_hash(candidate):
+            magnet = candidate
+            break
 
-    magnet = unescape(match.group(0))
+    if not magnet:
+        match = re.search(
+            r"magnet:\?xt=urn:btih:[^\"<\s]+",
+            response.text,
+            re.IGNORECASE,
+        )
+        if match:
+            candidate = unescape(match.group(0))
+            if info_hash(candidate):
+                magnet = candidate
+
+    if not magnet:
+        # LimeTorrents also exposes a hash on its download-icon/.torrent URL.
+        # Recover a standard magnet when the detail page omits a magnet anchor.
+        download_anchor = (
+            page.select_one("a.csprite_dl14[href]")
+            or page.select_one("a[href*='/download/']")
+        )
+        download_href = str(download_anchor.get("href") or "").strip() if download_anchor else ""
+        hash_match = re.search(
+            r"(?i)(?<![0-9a-f])([0-9a-f]{40})(?![0-9a-f])",
+            download_href,
+        )
+        if hash_match:
+            digest = hash_match.group(1).lower()
+            title_node = page.select_one("#content h1, h1, .tt-name")
+            display_name = (
+                title_node.get_text(" ", strip=True)
+                if title_node is not None
+                else Path(parsed.path).stem.replace("-", " ")
+            )
+            magnet = f"magnet:?xt=urn:btih:{digest}&dn={quote(display_name, safe='')}"
+            for tracker in (
+                "udp://tracker.opentrackr.org:1337/announce",
+                "udp://open.stealth.si:80/announce",
+            ):
+                magnet += "&tr=" + quote(tracker, safe="")
+
     digest = info_hash(magnet)
     if not digest:
-        raise HTTPException(502, "The provider returned an invalid magnet link.")
+        raise HTTPException(404, "The provider did not expose a usable magnet/hash for this result.")
     return {"magnet": magnet, "infoHash": digest}
 
 
@@ -4812,7 +4891,8 @@ async def seedr_add(request: Request):
     # refresh or when the task was created from another tab.
     cancelled_tasks: list[dict[str, Any]] = []
     if bool(payload.get("replace_active")):
-        cancelled_tasks = await _cancel_active_seedr_tasks_for_replacement()
+        replace_task_id = str(payload.get("replace_task_id") or "").strip()
+        cancelled_tasks = await _cancel_active_seedr_tasks_for_replacement(replace_task_id)
 
     deleted_folders: list[dict[str, Any]] = [
         {
@@ -6695,8 +6775,15 @@ async def _cancel_seedr_task_and_partial_folder(
     }
 
 
-async def _cancel_active_seedr_tasks_for_replacement() -> list[dict[str, Any]]:
-    """Cancel all unfinished Seedr tasks before a newly selected torrent is added."""
+async def _cancel_active_seedr_tasks_for_replacement(
+    replace_task_id: str = "",
+) -> list[dict[str, Any]]:
+    """Cancel the current/app-owned unfinished task, not unrelated account downloads."""
+    explicit_id = str(replace_task_id or "").strip()
+    tracked_ids = {str(task_id_value).strip() for task_id_value in _seedr_cleanup_jobs}
+    tracked_ids.discard("")
+    allowed_ids = tracked_ids | ({explicit_id} if explicit_id else set())
+
     try:
         payload = seedr_data(await seedr_request("/tasks"))
     except (HTTPException, SeedrError) as exc:
@@ -6714,10 +6801,17 @@ async def _cancel_active_seedr_tasks_for_replacement() -> list[dict[str, Any]]:
         if not task or task_complete(task):
             continue
         task_id_value = task_id(task)
-        if not task_id_value or task_id_value in seen_ids:
+        if not task_id_value or task_id_value in seen_ids or task_id_value not in allowed_ids:
             continue
         seen_ids.add(task_id_value)
         result = await _cancel_seedr_task_and_partial_folder(task_id_value, task)
+        if result.get("active"):
+            cancelled.append(result)
+
+    # The task-list and task-detail endpoints aren't perfectly consistent.
+    # If the selected task is absent from the list, check that known ID directly.
+    if explicit_id and explicit_id not in seen_ids:
+        result = await _cancel_seedr_task_and_partial_folder(explicit_id)
         if result.get("active"):
             cancelled.append(result)
 
