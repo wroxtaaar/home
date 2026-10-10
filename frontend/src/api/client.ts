@@ -231,7 +231,7 @@ export const api = {
     const params = new URLSearchParams({ region: region.toUpperCase() });
     const res = await fetch(
       API_BASE + '/api/movies/ott/' + encodeURIComponent(String(movieId)) + '?' + params.toString(),
-      { signal, credentials: 'include' },
+      { signal, credentials: 'include', cache: 'no-store' },
     );
     const body = await res.text();
     let data: any = null;
