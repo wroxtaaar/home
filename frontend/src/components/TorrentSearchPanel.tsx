@@ -14,8 +14,15 @@ import {
   SlidersHorizontal,
   Film
 } from 'lucide-react';
-import { api, API_BASE, MovieCatalogueKey, MovieCataloguePage, TorrentSearchResult } from '../api/client.ts';
+import { api, API_BASE, MovieCatalogueItem, MovieCatalogueKey, MovieCataloguePage, MovieOttAvailability, MovieOttProvider, TorrentSearchResult } from '../api/client.ts';
 import { formatBytes } from '../utils/formatters.ts';
+
+type MovieOttCardState = MovieOttAvailability | { status: 'loading' | 'error'; message?: string };
+
+function providerNames(providers: MovieOttProvider[]): string {
+  const names = providers.slice(0, 3).map(provider => provider.name);
+  return names.join(', ') + (providers.length > 3 ? ' +' + (providers.length - 3) : '');
+}
 
 type SeedrSearchFile = {
   id: string;
@@ -214,6 +221,77 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [movieCatalogue, setMovieCatalogue] = useState<MovieCataloguePage | null>(null);
   const [movieCatalogueSearchText, setMovieCatalogueSearchText] = useState('');
   const [releasedOnly, setReleasedOnly] = useState(true);
+  const [streamingOnly, setStreamingOnly] = useState(false);
+  const [ottAvailability, setOttAvailability] = useState<Record<string, MovieOttCardState>>({});
+  const ottAvailabilityRef = useRef<Record<string, MovieOttCardState>>({});
+  const ottQueueRef = useRef<string[]>([]);
+  const ottQueuedIdsRef = useRef(new Set<string>());
+  const ottActiveWorkersRef = useRef(0);
+  const ottQueuePumpRef = useRef<() => void>(() => {});
+
+  const setOttState = (movieId: string, state: MovieOttCardState) => {
+    const next = { ...ottAvailabilityRef.current, [movieId]: state };
+    ottAvailabilityRef.current = next;
+    setOttAvailability(next);
+  };
+
+  // Limit upstream load. The backend also caches each movie/region response for 24 hours
+  // and coalesces simultaneous requests, so repeated visitors reuse the same result.
+  const pumpOttQueue = () => {
+    while (ottActiveWorkersRef.current < 3 && ottQueueRef.current.length > 0) {
+      const movieId = ottQueueRef.current.shift();
+      if (!movieId) continue;
+      ottActiveWorkersRef.current += 1;
+      void (async () => {
+        try {
+          const availability = await api.getMovieOttAvailability(Number(movieId), 'IN');
+          setOttState(movieId, availability);
+        } catch (error: any) {
+          setOttState(movieId, {
+            status: 'error',
+            message: String(error?.message || 'OTT availability could not be checked.'),
+          });
+        } finally {
+          ottQueuedIdsRef.current.delete(movieId);
+          ottActiveWorkersRef.current -= 1;
+          ottQueuePumpRef.current();
+        }
+      })();
+    }
+  };
+  ottQueuePumpRef.current = pumpOttQueue;
+
+  const queueOttLookups = (movies: MovieCatalogueItem[], retryErrors = false) => {
+    const next = { ...ottAvailabilityRef.current };
+    let changed = false;
+    for (const movie of movies) {
+      const movieId = String(movie.id);
+      if (!/^\d+$/.test(movieId) || ottQueuedIdsRef.current.has(movieId)) continue;
+      const existing = next[movieId];
+      if (existing && !(retryErrors && existing.status === 'error')) continue;
+      ottQueuedIdsRef.current.add(movieId);
+      ottQueueRef.current.push(movieId);
+      next[movieId] = { status: 'loading' };
+      changed = true;
+    }
+    if (changed) {
+      ottAvailabilityRef.current = next;
+      setOttAvailability(next);
+    }
+    ottQueuePumpRef.current();
+  };
+
+  const visibleMovieCatalogueItems = useMemo(() => {
+    const movies = movieCatalogue?.results || [];
+    if (!streamingOnly) return movies;
+    return movies.filter(movie => ottAvailability[String(movie.id)]?.status === 'streaming');
+  }, [movieCatalogue, streamingOnly, ottAvailability]);
+
+  const ottPendingCount = movieCatalogue?.results.filter(movie => {
+    const status = ottAvailability[String(movie.id)]?.status;
+    return !status || status === 'loading';
+  }).length || 0;
+
   // Seed count is the default ranking so the strongest swarms appear first.
   // 720p/1080p are mutually exclusive. Size and Time are independent sort toggles.
   const [resolutionFilter, setResolutionFilter] = useState<'720p' | '1080p' | null>(null);
@@ -827,6 +905,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       const data = await api.getMovieCatalogue(key, page, onlyReleased, controller.signal);
       if (generation !== searchGenerationRef.current) return;
       setMovieCatalogue(data);
+      queueOttLookups(data.results);
       setCatalogueBuildProgress('');
     } catch (err: any) {
       if (generation !== searchGenerationRef.current) return;
@@ -1165,32 +1244,45 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             <div className="text-[11px] text-slate-500">Select a movie to search torrent providers</div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/80 px-3 py-2.5">
-            <label className="flex cursor-pointer select-none items-center gap-2 text-xs font-semibold text-slate-200">
-              <input
-                type="checkbox"
-                checked={releasedOnly}
-                onChange={(event) => {
-                  const next = event.target.checked;
-                  setReleasedOnly(next);
-                  void openMovieCatalogue(
-                    movieCatalogue.catalogue,
-                    movieCatalogueSearchText,
-                    movieCatalogue.page,
-                    next,
-                  );
-                }}
-                className="h-4 w-4 accent-cyan-400"
-              />
-              Released movies only
-            </label>
-            <span className="text-[11px] text-slate-500">
-              {releasedOnly ? 'Hides future and unconfirmed release dates' : 'Includes upcoming releases'}
-            </span>
+          <div className="flex flex-col gap-2 rounded-xl border border-slate-800 bg-slate-900/80 px-3 py-2.5">
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+              <label className="flex cursor-pointer select-none items-center gap-2 text-xs font-semibold text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={releasedOnly}
+                  onChange={(event) => {
+                    const next = event.target.checked;
+                    setReleasedOnly(next);
+                    void openMovieCatalogue(
+                      movieCatalogue.catalogue,
+                      movieCatalogueSearchText,
+                      movieCatalogue.page,
+                      next,
+                    );
+                  }}
+                  className="h-4 w-4 accent-cyan-400"
+                />
+                Released movies only
+              </label>
+              <label className="flex cursor-pointer select-none items-center gap-2 text-xs font-semibold text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={streamingOnly}
+                  onChange={(event) => setStreamingOnly(event.target.checked)}
+                  className="h-4 w-4 accent-cyan-400"
+                />
+                Streaming now in India
+              </label>
+            </div>
+            <div className="text-[11px] leading-relaxed text-slate-500">
+              {releasedOnly ? 'Hides future and unconfirmed release dates.' : 'Includes upcoming releases.'}
+              {' '}OTT status, provider names and India digital-release dates are checked in the background.
+              {' '}Availability powered by <a href="https://www.justwatch.com/in" target="_blank" rel="noreferrer" className="text-slate-300 underline underline-offset-2">JustWatch</a> via TMDB and may be incomplete.
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
-            {movieCatalogue.results.map(movie => (
+            {visibleMovieCatalogueItems.map(movie => (
               <article key={String(movie.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 flex flex-col">
                 <div className="relative aspect-[2/3] bg-slate-950">
                   {movie.posterUrl ? (
@@ -1216,6 +1308,74 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   <div>
                     <h3 className="text-sm font-bold leading-snug text-slate-100">{movie.title}</h3>
                     <p className="mt-0.5 text-xs text-slate-500">{movie.year || 'Release year unknown'}</p>
+                    {(() => {
+                      const ott = ottAvailability[String(movie.id)];
+                      if (!ott || ott.status === 'loading') {
+                        return <p className="mt-2 text-[10px] text-slate-500">Checking OTT availability in India…</p>;
+                      }
+                      if (ott.status === 'error') {
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => queueOttLookups([movie], true)}
+                            title={ott.message}
+                            className="mt-2 text-left text-[10px] font-semibold text-amber-300 underline underline-offset-2"
+                          >
+                            OTT check failed · Retry
+                          </button>
+                        );
+                      }
+                      const label = ott.status === 'streaming'
+                        ? 'Streaming in India'
+                        : ott.status === 'rent_buy'
+                          ? 'Rent / Buy'
+                          : ott.status === 'digital_scheduled'
+                            ? 'Digital release scheduled'
+                            : ott.status === 'digital_release_known'
+                              ? 'Digital date recorded'
+                              : 'OTT not confirmed';
+                      const badgeClass = ott.status === 'streaming'
+                        ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                        : ott.status === 'rent_buy'
+                          ? 'border-sky-500/30 bg-sky-500/10 text-sky-300'
+                          : ott.status === 'digital_scheduled'
+                            ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+                            : 'border-slate-700 bg-slate-800 text-slate-300';
+                      return (
+                        <div className="mt-2 space-y-1.5">
+                          <span className={'inline-flex rounded-md border px-1.5 py-1 text-[10px] font-semibold ' + badgeClass}>
+                            {label}
+                          </span>
+                          {ott.digitalReleaseDate && (
+                            <p className="text-[10px] text-slate-400">Digital release: {formatPublished(ott.digitalReleaseDate)}</p>
+                          )}
+                          {ott.streamingProviders.length > 0 && (
+                            <p className="text-[10px] leading-relaxed text-slate-400">
+                              <span className="text-slate-300">Stream:</span> {providerNames(ott.streamingProviders)}
+                            </p>
+                          )}
+                          {ott.rentProviders.length > 0 && (
+                            <p className="text-[10px] leading-relaxed text-slate-400">
+                              <span className="text-slate-300">Rent:</span> {providerNames(ott.rentProviders)}
+                            </p>
+                          )}
+                          {ott.buyProviders.length > 0 && (
+                            <p className="text-[10px] leading-relaxed text-slate-400">
+                              <span className="text-slate-300">Buy:</span> {providerNames(ott.buyProviders)}
+                            </p>
+                          )}
+                          <a
+                            href={ott.providerLink}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-[10px] text-cyan-300 hover:text-cyan-200"
+                          >
+                            Provider details <ExternalLink className="h-3 w-3" />
+                          </a>
+                          {ott.stale && <p className="text-[10px] text-amber-300">Showing cached availability.</p>}
+                        </div>
+                      );
+                    })()}
                   </div>
                   {movie.overview && (
                     <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{movie.overview}</p>
@@ -1238,6 +1398,17 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               </article>
             ))}
           </div>
+
+          {streamingOnly && ottPendingCount > 0 && (
+            <div className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-xs text-slate-400">
+              Checking OTT availability in India for {ottPendingCount} more title{ottPendingCount === 1 ? '' : 's'}…
+            </div>
+          )}
+          {streamingOnly && visibleMovieCatalogueItems.length === 0 && ottPendingCount === 0 && (
+            <div className="rounded-xl border border-slate-800 bg-slate-900 px-4 py-5 text-sm text-slate-400">
+              No titles on this page have confirmed streaming availability in India. Provider data can be incomplete; try another page or turn off this filter.
+            </div>
+          )}
 
           <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900 px-3 py-2">
             <button
