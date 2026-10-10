@@ -197,6 +197,7 @@ export const api = {
     const res = await fetch(API_BASE + '/api/movies/catalogue/' + encodeURIComponent(key) + '?' + params.toString(), {
       signal,
       credentials: 'include',
+      cache: 'no-store',
     });
     const body = await res.text();
     let data: any = null;
@@ -205,6 +206,21 @@ export const api = {
       throw new Error(data?.detail || data?.error || body || ('Movie catalogue failed (HTTP ' + res.status + ')'));
     }
     return data as MovieCataloguePage;
+  },
+
+  async clearTmdbMovieCaches(): Promise<{ status: string; cacheTypes?: string[]; refetchRequired?: boolean }> {
+    const res = await fetch(API_BASE + '/api/movies/catalogue/cache/clear', {
+      method: 'POST',
+      credentials: 'include',
+      cache: 'no-store',
+    });
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch {}
+    if (!res.ok) {
+      throw new Error(data?.detail || data?.error || body || ('TMDB cache clear failed (HTTP ' + res.status + ')'));
+    }
+    return data;
   },
 
   async getMovieOttAvailability(
