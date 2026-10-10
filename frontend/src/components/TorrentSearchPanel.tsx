@@ -271,6 +271,27 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   type CachedFranchiseKey = 'marvel' | 'dc-live-action';
   const [tmdbFranchiseKey, setTmdbFranchiseKey] = useState<FranchiseTmdbKey>('marvel');
   const [openCachedLanguageMenu, setOpenCachedLanguageMenu] = useState<CachedFranchiseKey | null>(null);
+
+  useEffect(() => {
+    if (!openCachedLanguageMenu) return;
+
+    const handleOutsidePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Element && !target.closest('[data-cached-language-menu="true"]')) {
+        setOpenCachedLanguageMenu(null);
+      }
+    };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpenCachedLanguageMenu(null);
+    };
+
+    document.addEventListener('pointerdown', handleOutsidePointerDown);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('pointerdown', handleOutsidePointerDown);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [openCachedLanguageMenu]);
   const [isClearingTmdbCache, setIsClearingTmdbCache] = useState(false);
   const [tmdbCacheMessage, setTmdbCacheMessage] = useState('');
 
@@ -1454,7 +1475,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             ['marvel', '🦸 Marvel Movies'],
             ['dc-live-action', '🦇 DC Live-Action'],
           ] as const).map(([franchise, label]) => (
-            <div key={franchise} className="relative">
+            <div key={franchise} data-cached-language-menu="true" className="relative">
               <button
                 type="button"
                 aria-expanded={openCachedLanguageMenu === franchise}
