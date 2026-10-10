@@ -1516,11 +1516,11 @@ def magnet_display_name(value: Any) -> str:
 
 
 def task_complete(task: dict[str, Any]) -> bool:
-    """Return True when Seedr reports a task as finished."""
+    """Return True only when Seedr reports a task as finished."""
     if not isinstance(task, dict):
         return False
 
-    # Seedr/API variants use different completion fields across versions.
+    # Explicit completion flags are authoritative.
     for key in ("completed", "complete", "finished", "done", "is_completed", "isComplete"):
         value = task.get(key)
         if isinstance(value, bool) and value:
@@ -1533,20 +1533,38 @@ def task_complete(task: dict[str, Any]) -> bool:
         or task.get("status")
         or task.get("phase")
         or ""
-    ).strip().lower()
-    if state in {"complete", "completed", "finished", "done", "success", "seeding"}:
+    ).strip().lower().replace("-", "_")
+
+    try:
+        progress = float(task.get("progress") or 0)
+    except (TypeError, ValueError):
+        progress = 0.0
+
+    # A new Prepare must be able to replace stuck, queued, paused, or
+    # metadata/seed-discovery tasks, even if the provider calls them "seeding".
+    # Keep these as unfinished unless Seedr's explicit completion flags above
+    # confirm completion. This avoids treating "Collecting Seeds" as completed.
+    active_states = {
+        "paused", "paused_dl", "pauseddl", "paused_download",
+        "queued", "queued_dl", "queueddl", "queued_download",
+        "downloading", "download", "collecting_seeds", "collecting seeds",
+        "waiting", "metadata", "fetching_metadata", "checking",
+    }
+    if state in active_states:
+        return False
+
+    completed_states = {"complete", "completed", "finished", "done", "success"}
+    if state in completed_states:
         return True
+
+    # "seeding" normally means the payload is complete, but some Seedr task
+    # variants use it for a stalled seed-discovery state without progress.
+    if state == "seeding":
+        return progress >= 100
 
     # A numeric 100% is authoritative even when the state field is absent or
     # uses a provider-specific value.
-    try:
-        if float(task.get("progress") or 0) >= 100:
-            return True
-    except (TypeError, ValueError):
-        pass
-
-    return False
-
+    return progress >= 100
 
 def seedr_task_name(task: dict[str, Any]) -> str:
     nested_torrent = task.get("torrent") if isinstance(task.get("torrent"), dict) else {}
@@ -4812,15 +4830,19 @@ async def seedr_quota():
         "remainingSpace": max(0, max_space - used),
     }
 
-async def _prepare_seedr_space(required_bytes: int) -> list[dict[str, Any]]:
-    """Free the oldest completed Seedr torrent folders when a new torrent needs more space."""
+async def _prepare_seedr_space(
+    required_bytes: int,
+    *,
+    force_one: bool = False,
+) -> list[dict[str, Any]]:
+    """Free old completed Seedr folders; optionally force at least one deletion after a quota rejection."""
     required = max(0, int(required_bytes or 0))
     if required <= 0:
         return []
 
     quota = await seedr_quota()
     remaining = int(quota.get("remainingSpace") or 0)
-    if remaining >= required:
+    if remaining >= required and not force_one:
         return []
 
     library = await get_seedr_metadata_tree(force_refresh=True)
@@ -4879,7 +4901,7 @@ async def _prepare_seedr_space(required_bytes: int) -> list[dict[str, Any]]:
 
     deleted: list[dict[str, Any]] = []
     for _, _, folder in candidates:
-        if remaining >= required:
+        if remaining >= required and (not force_one or deleted):
             break
 
         folder_id = str(folder.get("folderId") or folder.get("id") or "").strip()
@@ -4962,14 +4984,11 @@ async def seedr_add(request: Request):
         folder,
     )
 
-    # Search Prepare behaves as a single active Seedr slot. Cancel any
-    # unfinished task still present in Seedr before measuring quota or adding
-    # the new magnet. This also covers stale/missing browser notices after a
-    # refresh or when the task was created from another tab.
-    cancelled_tasks: list[dict[str, Any]] = []
-    if bool(payload.get("replace_active")):
-        replace_task_id = str(payload.get("replace_task_id") or "").strip()
-        cancelled_tasks = await _cancel_active_seedr_tasks_for_replacement(replace_task_id)
+    # Treat every new Seedr add as replacing the prior unfinished transfer.
+    # Do not depend on frontend localStorage/current-notice state: an old task
+    # may still exist after a page refresh or backend/container restart.
+    replace_task_id = str(payload.get("replace_task_id") or "").strip()
+    cancelled_tasks = await _cancel_active_seedr_tasks_for_replacement(replace_task_id)
 
     deleted_folders: list[dict[str, Any]] = [
         {
@@ -4986,15 +5005,45 @@ async def seedr_add(request: Request):
     try:
         task = unwrap_seedr_task(await add_task(raw_magnet, folder))
     except SeedrError as exc:
-        logger.exception(
-            "Seedr add failed: session=%s mode=%s code=%s status=%s detail=%s",
-            _seedr_session_fingerprint(session_id),
-            _seedr_session_auth_mode(session_id),
-            exc.code,
-            exc.status_code,
-            exc.detail,
+        reason = str(exc.detail or "").lower()
+        is_storage_shortage = (
+            exc.status_code == 413
+            or "not enough space" in reason
+            or "insufficient storage" in reason
+            or "insufficient space" in reason
         )
-        raise
+        if not (is_storage_shortage and auto_cleanup and required_bytes > 0):
+            logger.exception(
+                "Seedr add failed: session=%s mode=%s code=%s status=%s detail=%s",
+                _seedr_session_fingerprint(session_id),
+                _seedr_session_auth_mode(session_id),
+                exc.code,
+                exc.status_code,
+                exc.detail,
+            )
+            raise
+
+        # Seedr can reject a new magnet even when its quota endpoint appears to
+        # have enough free bytes (for example, while an old transfer is stuck
+        # reserving space). Cancelled tasks are already removed; now delete at
+        # least one oldest completed folder and retry the same requested magnet
+        # exactly once.
+        logger.warning(
+            "Seedr reported insufficient space after preflight; reclaiming one more completed folder before retry: required=%s",
+            required_bytes,
+        )
+        deleted_folders.extend(await _prepare_seedr_space(required_bytes, force_one=True))
+        try:
+            task = unwrap_seedr_task(await add_task(raw_magnet, folder))
+        except SeedrError as retry_exc:
+            logger.exception(
+                "Seedr retry after storage cleanup failed: session=%s code=%s status=%s detail=%s",
+                _seedr_session_fingerprint(session_id),
+                retry_exc.code,
+                retry_exc.status_code,
+                retry_exc.detail,
+            )
+            raise
     except Exception as exc:
         logger.exception(
             "Seedr add unexpected failure: session=%s mode=%s exception_type=%s exception=%s",
@@ -6855,11 +6904,10 @@ async def _cancel_seedr_task_and_partial_folder(
 async def _cancel_active_seedr_tasks_for_replacement(
     replace_task_id: str = "",
 ) -> list[dict[str, Any]]:
-    """Cancel the current/app-owned unfinished task, not unrelated account downloads."""
+    """Cancel all unfinished tasks in the connected Seedr account before a new torrent is added."""
     explicit_id = str(replace_task_id or "").strip()
     tracked_ids = {str(task_id_value).strip() for task_id_value in _seedr_cleanup_jobs}
     tracked_ids.discard("")
-    allowed_ids = tracked_ids | ({explicit_id} if explicit_id else set())
 
     try:
         payload = seedr_data(await seedr_request("/tasks"))
@@ -6875,20 +6923,34 @@ async def _cancel_active_seedr_tasks_for_replacement(
     seen_ids: set[str] = set()
     for raw_task in arr(payload, ("tasks", "torrents", "items")):
         task = unwrap_seedr_task(seedr_data(raw_task))
-        if not task or task_complete(task):
+        if not task:
             continue
         task_id_value = task_id(task)
-        if not task_id_value or task_id_value in seen_ids or task_id_value not in allowed_ids:
+        if task_id_value:
+            seen_ids.add(task_id_value)
+        if not task_id_value or task_complete(task):
             continue
-        seen_ids.add(task_id_value)
+        if task_id_value in {str(item.get("taskId") or "") for item in cancelled}:
+            continue
+
         result = await _cancel_seedr_task_and_partial_folder(task_id_value, task)
         if result.get("active"):
             cancelled.append(result)
 
-    # The task-list and task-detail endpoints aren't perfectly consistent.
-    # If the selected task is absent from the list, check that known ID directly.
-    if explicit_id and explicit_id not in seen_ids:
-        result = await _cancel_seedr_task_and_partial_folder(explicit_id)
+    # A tracked or explicitly selected task may be temporarily absent from the
+    # list endpoint. Check those IDs directly so stale Seedr tasks do not survive
+    # simply because the backend restarted or /tasks omitted a row.
+    fallback_ids = tracked_ids | ({explicit_id} if explicit_id else set())
+    for task_id_value in sorted(fallback_ids - seen_ids):
+        try:
+            result = await _cancel_seedr_task_and_partial_folder(task_id_value)
+        except (HTTPException, SeedrError) as exc:
+            logger.warning(
+                "Seedr replacement could not cancel stale task=%s: %s",
+                task_id_value,
+                getattr(exc, "detail", str(exc)),
+            )
+            raise
         if result.get("active"):
             cancelled.append(result)
 
