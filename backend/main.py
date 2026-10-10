@@ -6859,25 +6859,53 @@ async def _cancel_seedr_task_and_partial_folder(
 
     folder_deleted = False
     if active and folder_id and folder_id != "0":
-        try:
-            await seedr_request(f"/fs/folder/{quote(folder_id, safe='')}", "DELETE")
-            folder_deleted = True
-        except (HTTPException, SeedrError) as exc:
-            if getattr(exc, "status_code", 0) == 404:
-                # Task cleanup may already have removed this transient folder.
+        # Seedr can remove the task before its partial folder is ready to be
+        # deleted. Retry the folder DELETE with backoff instead of returning an
+        # error that forces the user to click Prepare a second time.
+        max_delete_attempts = 5
+        last_delete_error: Exception | None = None
+        for attempt in range(max_delete_attempts):
+            try:
+                await seedr_request(f"/fs/folder/{quote(folder_id, safe='')}", "DELETE")
                 folder_deleted = True
-            else:
-                logger.warning(
-                    "Seedr replacement cancelled task=%s but could not remove partial folder=%s: %s",
-                    task_id_value,
-                    folder_id,
-                    getattr(exc, "detail", str(exc)),
-                )
-                raise SeedrError(
-                    "SEEDR_PARTIAL_FOLDER_CLEANUP_FAILED",
-                    502,
-                    "Seedr stopped the previous torrent, but its partial files could not be removed. Please retry before starting another torrent.",
-                ) from exc
+                last_delete_error = None
+                break
+            except (HTTPException, SeedrError) as exc:
+                status_code = getattr(exc, "status_code", 0)
+                if status_code == 404:
+                    # A previous attempt or Seedr's own task deletion already
+                    # removed the transient folder.
+                    folder_deleted = True
+                    last_delete_error = None
+                    break
+
+                last_delete_error = exc
+                if attempt + 1 < max_delete_attempts:
+                    delay = min(0.75 * (2 ** attempt), 4.0)
+                    logger.warning(
+                        "Seedr partial-folder delete retry task=%s folder=%s attempt=%s/%s delay_seconds=%.2f status=%s detail=%s",
+                        task_id_value,
+                        folder_id,
+                        attempt + 1,
+                        max_delete_attempts,
+                        delay,
+                        status_code,
+                        getattr(exc, "detail", str(exc)),
+                    )
+                    await asyncio.sleep(delay)
+
+        if not folder_deleted:
+            # Do not abort the new Prepare solely because the partial-folder
+            # deletion endpoint briefly failed. The old task has already been
+            # cancelled; continue to quota cleanup and the requested add, which
+            # will trigger the existing storage-recovery retry if necessary.
+            logger.error(
+                "Seedr partial-folder deletion did not confirm success after retries; continuing with new add task=%s folder=%s status=%s detail=%s",
+                task_id_value,
+                folder_id,
+                getattr(last_delete_error, "status_code", 0),
+                getattr(last_delete_error, "detail", str(last_delete_error)),
+            )
 
     _seedr_cleanup_jobs.pop(task_id_value, None)
     _seedr_torrent_names_by_task.pop(task_id_value, None)
