@@ -749,6 +749,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
   const runSearch = async (event?: React.FormEvent, searchOverride?: string, searchMode?: 'marvel' | 'dc-live-action' | 'dc-animated' | 'latest-hollywood' | 'latest-bollywood') => {
     event?.preventDefault();
+    setMovieTorrentSearchError('');
     movieTorrentSearchControllerRef.current?.abort();
     movieTorrentSearchGenerationRef.current += 1;
     setMovieTorrentSearchLoading(false);
@@ -936,8 +937,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
       startPosterBackgroundSearch(groups.flatMap(group => group.variants));
       if (groups.length === 1) {
-        // One canonical result stays on the movie browser and uses the exact
-        // same normal result-card renderer, including its quality dropdown.
+        // One canonical result stays on the movie browser in a normal-style
+        // inline torrent card, including its grouped quality dropdown.
         const group = groups[0];
         setSelectedMovieTorrentQualityByGroup({ [group.key]: torrentResultKey(group.variants[0]) });
         setMovieTorrentPreviewGroup(group);
@@ -1018,6 +1019,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     setMovieTorrentSearchLoading(false);
     setMovieTorrentPickerGroups(null);
     setMovieTorrentPreviewGroup(null);
+    setMovieTorrentSearchError('');
     const generation = ++searchGenerationRef.current;
     searchRequestRef.current?.abort();
     const controller = new AbortController();
