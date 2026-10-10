@@ -791,11 +791,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         const comparison = timeSort === 'asc' ? aTime - bTime : bTime - aTime;
         if (comparison !== 0) return comparison;
       }
-      // Unless the user explicitly sorts by size/date, prefer the best release
-      // quality first; seed count breaks ties between comparable releases.
-      const qualityDifference = torrentQualityDetails(b).rank - torrentQualityDetails(a).rank;
-      if (qualityDifference !== 0) return qualityDifference;
-      return (Number(b.seeders) || 0) - (Number(a.seeders) || 0);
+      // Keep the backend's relevance-first ranking by default. Re-sorting here
+      // by quality/seeders would undo its title-match scoring and let popular
+      // but less relevant releases appear above better matches.
+      return 0;
     });
     return sorted;
   }, [results, resolutionFilter, sizeSort, timeSort]);
