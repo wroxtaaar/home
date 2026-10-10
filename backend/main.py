@@ -5671,6 +5671,7 @@ def _watchmode_provider_rows(rows: list[dict[str, Any]], accepted_types: set[str
             "providerId": provider_id,
             "name": name,
             "logoUrl": logo,
+            "webUrl": str(item.get("web_url") or item.get("url") or "").strip(),
         })
     return providers
 
@@ -5691,20 +5692,20 @@ async def _tmdb_fetch_movie_ott_availability(movie_id: int, region: str) -> dict
     else:
         release_payload = release_result if isinstance(release_result, dict) else {}
 
+    watchmode_streaming = _watchmode_provider_rows(watchmode_rows, {"sub", "free", "ads", "tve", "subscription"})
+    watchmode_rent = _watchmode_provider_rows(watchmode_rows, {"rent", "rental"})
+    watchmode_buy = _watchmode_provider_rows(watchmode_rows, {"buy", "purchase"})
+
     # TMDB/JustWatch fallback remains available if Watchmode is not configured,
-    # is temporarily unreachable, or has no provider records for this title.
+    # is temporarily unreachable, or has no usable provider records for this title.
     tmdb_provider_result: dict[str, Any] = {}
-    if not watchmode_rows:
+    if not (watchmode_streaming or watchmode_rent or watchmode_buy):
         try:
             result = await _tmdb_get_json(f"movie/{movie_id}/watch/providers")
             if isinstance(result, dict):
                 tmdb_provider_result = result
         except Exception as exc:
             logger.info("TMDB provider fallback failed for movie %s: %s", movie_id, exc)
-
-    watchmode_streaming = _watchmode_provider_rows(watchmode_rows, {"sub", "free", "ads", "tve", "subscription"})
-    watchmode_rent = _watchmode_provider_rows(watchmode_rows, {"rent", "rental"})
-    watchmode_buy = _watchmode_provider_rows(watchmode_rows, {"buy", "purchase"})
     all_regions = (tmdb_provider_result.get("results") or {}) if isinstance(tmdb_provider_result, dict) else {}
     region_payload = all_regions.get(region) or {}
     streaming = watchmode_streaming or (
