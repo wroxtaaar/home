@@ -648,10 +648,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
 
 
-  const runSearch = async (event?: React.FormEvent) => {
+  const runSearch = async (event?: React.FormEvent, searchOverride?: string) => {
     event?.preventDefault();
 
-    const trimmed = query.trim();
+    const trimmed = (searchOverride ?? query).trim();
     if (trimmed.length < 2) {
       setError('Enter at least 2 characters to search.');
       setResults([]);
@@ -761,9 +761,16 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const sortedResults = useMemo(() => {
     // Home intentionally allows up to 5 GB. new-test remains the 2 GB variant.
     const maxSeedrFriendlySize = 5 * 1024 * 1024 * 1024;
+    // Exclude theatrical/unfinished releases regardless of provider. Keep the
+    // tokens bounded so words such as "timestamp" are not mistaken for TS.
+    const lowQualityRelease = /(?:^|[\\s._()[\\]-])(?:cam(?:rip)?|hdcam|hd[ ._-]?cam|telesync|tele[ ._-]?sync|ts[ ._-]?(?:md|ac3|hd)?|telecine|dvdscr|dvd[ ._-]?scr|screener|workprint)(?:$|[\\s._()[\\]-])/i;
     const sorted = results.filter(result => {
       const size = Number(result.size) || 0;
+      const seeders = Number(result.seeders);
+      if (!Number.isFinite(seeders) || seeders <= 0) return false;
       if (size > maxSeedrFriendlySize) return false;
+      const releaseText = `${String(result.title || '')} ${String(result.quality || '')}`;
+      if (lowQualityRelease.test(releaseText)) return false;
       if (resolutionFilter) {
         const quality = torrentQualityDetails(result).label;
         const pattern = resolutionFilter === '720p' ? /(?:^|[^0-9])720p(?:[^0-9]|$)/i : /(?:^|[^0-9])1080p(?:[^0-9]|$)/i;
@@ -784,6 +791,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         const comparison = timeSort === 'asc' ? aTime - bTime : bTime - aTime;
         if (comparison !== 0) return comparison;
       }
+      // Unless the user explicitly sorts by size/date, prefer the best release
+      // quality first; seed count breaks ties between comparable releases.
+      const qualityDifference = torrentQualityDetails(b).rank - torrentQualityDetails(a).rank;
+      if (qualityDifference !== 0) return qualityDifference;
       return (Number(b.seeders) || 0) - (Number(a.seeders) || 0);
     });
     return sorted;
@@ -919,7 +930,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           </button>
         </form>
 
-
+        <div className="mt-2 flex flex-wrap gap-2" aria-label="Popular comic universes">
+          <button type="button" onClick={() => { setQuery('Marvel'); setResolutionFilter(null); setSizeSort(null); setTimeSort(null); void runSearch(undefined, 'Marvel'); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">Marvel</button>
+          <button type="button" onClick={() => { setQuery('DC Comics'); setResolutionFilter(null); setSizeSort(null); setTimeSort(null); void runSearch(undefined, 'DC Comics'); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">DC Comics</button>
+        </div>
       </div>
 
       {isSearching && (
@@ -1009,8 +1023,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           </div>
 
           <div
-            className="grid grid-cols-2 gap-2 sm:block sm:rounded-2xl sm:border sm:border-slate-800 sm:overflow-hidden sm:bg-slate-900 sm:divide-y sm:divide-slate-800/80 lg:grid lg:grid-cols-[repeat(var(--desktop-result-columns),minmax(0,1fr))] lg:gap-[22px] lg:w-full lg:max-w-none lg:mx-0 lg:p-0 lg:border-0 lg:bg-transparent lg:divide-y-0 lg:overflow-visible"
-            style={{ '--desktop-result-columns': Math.min(Math.max(groupedResults.length, 1), 6) } as React.CSSProperties}
+            className="grid grid-cols-2 gap-2 sm:block sm:rounded-2xl sm:border sm:border-slate-800 sm:overflow-hidden sm:bg-slate-900 sm:divide-y sm:divide-slate-800/80 lg:grid lg:grid-cols-4 lg:gap-[22px] lg:w-full lg:max-w-none lg:mx-0 lg:p-0 lg:border-0 lg:bg-transparent lg:divide-y-0 lg:overflow-visible"
           >
             {groupedResults.map((group, index) => {
               const selectedKey = selectedQualityByGroup[group.key];
