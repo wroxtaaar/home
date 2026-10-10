@@ -5990,30 +5990,20 @@ async def api_health():
 
 @app.get("/api/seedr/session")
 async def seedr_session(request: Request):
-    """Initialize/restore the browser session and expose only the CSRF token."""
+    """Initialize the browser session quickly; provider health checks happen on demand."""
     session_id = _seedr_request_session_id.get().strip()
     session = _seedr_get_session(session_id)
-    token = current_seedr_token()
-    connected = False
-
-    if token:
-        try:
-            token_ctx = _seedr_request_token.set(token)
-            try:
-                await seedr_request("/tasks" if _seedr_session_auth_mode(session_id) == "pat" else "/user")
-            finally:
-                _seedr_request_token.reset(token_ctx)
-            connected = True
-        except Exception:
-            _clear_seedr_session_token(session_id)
-
+    # Session bootstrap must not wait on Seedr. The CSRF token is needed before
+    # the browser can submit a PAT, and a slow provider must not cause POST 403s.
+    # Actual token/API failures are reported by the operation the user requests.
     return {
-        "connected": connected,
+        "connected": bool(current_seedr_token()),
         "csrfToken": str(session.get("csrf_token") or ""),
     }
 
 
 async def _validate_seedr_pat(token: str) -> None:
+    """Validate a Seedr PAT against supported API variants without long serial waits."""
     token = normalize_seedr_token(token)
     if not token:
         raise SeedrError("SEEDR_PAT_MISSING", 400, "A Seedr Personal Access Token is required.")
@@ -6024,60 +6014,84 @@ async def _validate_seedr_pat(token: str) -> None:
         f"{SEEDR_V2_BASE}/fs/root/contents",
         f"{SEEDR_V2_BASE}/tasks",
     )
-    saw_unauthorized = False
 
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-        for url in endpoints:
-            try:
-                response = await client.get(
-                    url,
-                    headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-                )
-            except httpx.HTTPError as exc:
-                logger.info("Seedr PAT validation transport error: %s", exc)
-                continue
-
-            raw = response.text
-            if 200 <= response.status_code < 300:
-                logger.info("Seedr PAT validation succeeded")
-                return
-
-            if response.status_code == 401:
-                saw_unauthorized = True
-                continue
-
-            if response.status_code in {404, 405, 403}:
-                continue
-
-            try:
-                data = response.json() if raw else {}
-                reason = str(
-                    data.get("error_description")
-                    or data.get("reason_phrase")
-                    or data.get("message")
-                    or data.get("error")
-                    or ""
-                ).strip()
-            except Exception:
-                reason = ""
-
-            raise SeedrError(
-                "SEEDR_PAT_REJECTED",
-                502,
-                reason or f"Seedr PAT validation failed (HTTP {response.status_code}).",
+    async def probe(client: httpx.AsyncClient, url: str) -> dict[str, Any]:
+        try:
+            response = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
             )
+        except httpx.HTTPError as exc:
+            logger.info(
+                "Seedr PAT validation transport error: endpoint=%s error=%s",
+                url,
+                type(exc).__name__,
+            )
+            return {"kind": "transport", "endpoint": url}
 
-    if saw_unauthorized:
+        if 200 <= response.status_code < 300:
+            return {"kind": "success", "endpoint": url, "status": response.status_code}
+        if response.status_code == 401:
+            return {"kind": "unauthorized", "endpoint": url, "status": 401}
+        if response.status_code in {403, 404, 405}:
+            return {"kind": "unsupported", "endpoint": url, "status": response.status_code}
+
+        try:
+            payload = response.json() if response.content else {}
+            reason = str(
+                payload.get("error_description")
+                or payload.get("reason_phrase")
+                or payload.get("message")
+                or payload.get("error")
+                or ""
+            ).strip() if isinstance(payload, dict) else ""
+        except (ValueError, TypeError):
+            reason = ""
+
+        return {
+            "kind": "provider_error",
+            "endpoint": url,
+            "status": response.status_code,
+            "reason": reason,
+        }
+
+    timeout = httpx.Timeout(8.0, connect=3.0)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        results = await asyncio.gather(*(probe(client, url) for url in endpoints))
+
+    successful = next((row for row in results if row["kind"] == "success"), None)
+    if successful:
+        logger.info(
+            "Seedr PAT validation succeeded: endpoint=%s status=%s",
+            successful["endpoint"],
+            successful["status"],
+        )
+        return
+
+    provider_error = next((row for row in results if row["kind"] == "provider_error"), None)
+    if provider_error:
+        raise SeedrError(
+            "SEEDR_PAT_REJECTED",
+            502,
+            str(provider_error.get("reason") or
+                f"Seedr PAT validation failed (HTTP {provider_error.get('status')})."),
+        )
+
+    if any(row["kind"] == "unauthorized" for row in results):
         raise SeedrError(
             "SEEDR_PAT_REJECTED",
             401,
             "Seedr rejected the Personal Access Token. Copy a fresh PAT from Seedr and try again.",
         )
 
+    logger.warning(
+        "Seedr PAT validation could not reach a supported API endpoint: %s",
+        ", ".join(f'{row["endpoint"]}={row.get("status", row["kind"])}' for row in results),
+    )
     raise SeedrError(
         "SEEDR_PAT_VALIDATION_FAILED",
         502,
-        "Seedr could not validate the Personal Access Token right now.",
+        "Could not reach Seedr's account API from this server. Please retry shortly.",
     )
 
 
