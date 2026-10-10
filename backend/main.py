@@ -87,7 +87,7 @@ _seedr_request_token: contextvars.ContextVar[str] = contextvars.ContextVar("seed
 _seedr_request_session_id: contextvars.ContextVar[str] = contextvars.ContextVar("seedr_request_session_id", default="")
 SEARCH_STOPWORDS = {"the", "a", "an", "movie", "film", "series", "season", "episode", "web", "show", "tv"}
 TORRENT_SEARCH_API_URL = os.getenv("TORRENT_SEARCH_API_URL", "https://torrent-search-api-ujfa.onrender.com").rstrip("/")
-KNABEN_API_URL = os.getenv("KNABEN_API_URL", "https://api.knaben.org/v1").rstrip("/")
+KNABEN_API_URL = os.getenv("KNABEN_API_URL", "https://api.knaben.org/v2/search").rstrip("/")
 TORRENT_METADATA_API_URL = os.getenv("TORRENT_METADATA_API_URL", "https://torrentmeta.fly.dev").rstrip("/")
 FAST_SEARCH_TEST_URL = os.getenv("FAST_SEARCH_TEST_URL", "https://torrent-search-test.onrender.com").rstrip("/")
 SEARCH_SOURCE_TIMEOUT_SECONDS = float(os.getenv("SEARCH_SOURCE_TIMEOUT_SECONDS", "2.25"))
@@ -2948,69 +2948,75 @@ async def search_limetorrents(
         len(results),
         ",".join(str(item.get("seeders") or 0) for item in results[:5]),
     )
-    return results
-
-
-async def search_knaben(
+    return resasync def search_knaben(
     query: str,
     limit: int = 100,
     provider_query: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Search Knaben with a title-only provider query and strict local filtering."""
+    """Search Knaben API v2 using its edge-cached GET interface."""
     title_query, season, episode = _media_search_parts(query)
-    title_query = re.sub(r"\s+", " ", provider_query or _media_provider_query(query)).strip()
+    title_query = re.sub(r"\\s+", " ", provider_query or _media_provider_query(query)).strip()
     if not title_query:
         return []
 
-    # Search the provider by the actual title only. Qualifiers such as year
-    # and language are applied locally so "Spider-Man 2026" does not get
-    # reduced to an unqualified search that can return old movies.
     target_tokens = _search_tokens(title_query)
-    # Keep the full Knaben candidate pool. The previous working Vercel
-    # implementation requested 300 before applying local filtering.
-    request_size = 500
+    # Knaben API v2 moved search to GET /v2/search and renamed the parameters.
+    # Accept an older /v1 environment override but transparently upgrade it.
+    endpoint = KNABEN_API_URL.rstrip("/")
+    if endpoint.endswith("/v1"):
+        endpoint = endpoint[:-3] + "/v2/search"
+    elif endpoint.endswith("/v2"):
+        endpoint += "/search"
+    elif endpoint in {"https://api.knaben.org", "http://api.knaben.org"}:
+        endpoint += "/v2/search"
 
-    body = {
-        "search_type": "100%",
-        "search_field": "title",
-        "query": title_query,
-        "order_by": "seeders",
-        "order_direction": "desc",
-        "from": 0,
-        "size": request_size,
-        "hide_unsafe": True,
-        "hide_xxx": True,
-        "seconds_since_last_seen": 604800,
+    params = {
+        "q": title_query,
+        "sf": "title",
+        "o": "seeders",
+        "d": "desc",
+        "s": min(max(int(limit or 100), 1), 150),
+        "f": 0,
+        "seen": 604800,
     }
 
     try:
-        async with httpx.AsyncClient(timeout=SEARCH_SOURCE_TIMEOUT_SECONDS) as client:
-            response = await client.post(
-                KNABEN_API_URL,
-                json=body,
-                headers={
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                },
+        # v2 is edge-cached, but give it a little more than the old 2.25s v1
+        # budget: the latter was consistently timing out in Home's live logs.
+        timeout = httpx.Timeout(max(5.0, SEARCH_SOURCE_TIMEOUT_SECONDS), connect=3.0)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            response = await client.get(
+                endpoint,
+                params=params,
+                headers={"Accept": "application/json", "User-Agent": "HomeMovieSearch/1.0"},
             )
             response.raise_for_status()
             payload = response.json()
+            raw_hits = payload if isinstance(payload, list) else (
+                payload.get("hits", []) if isinstance(payload, dict) else []
+            )
             logger.info(
-                "Knaben HTTP %s for '%s': %d hits",
+                "Knaben v2 HTTP %s for '%s': %d hits",
                 response.status_code,
                 query,
-                len(payload.get("hits", [])) if isinstance(payload, dict) and isinstance(payload.get("hits"), list) else 0,
+                len(raw_hits) if isinstance(raw_hits, list) else 0,
             )
     except (httpx.HTTPError, ValueError) as exc:
-        logger.warning("Knaben search failed for '%s': %s", query, exc)
+        # Include the exception type because timeout exceptions often have an
+        # empty string, which made the previous production logs unhelpful.
+        logger.warning(
+            "Knaben v2 search failed for '%s': %s: %r",
+            query,
+            type(exc).__name__,
+            str(exc),
+        )
         return []
 
-    hits = payload.get("hits") if isinstance(payload, dict) else None
-    if not isinstance(hits, list):
+    if not isinstance(raw_hits, list):
         return []
 
     results: list[dict[str, Any]] = []
-    for hit in hits:
+    for hit in raw_hits:
         if not isinstance(hit, dict):
             continue
 
@@ -3035,39 +3041,62 @@ async def search_knaben(
         if season is not None and not _season_episode_match(title, season, episode):
             continue
 
-        magnet = str(hit.get("magnetUrl") or "").strip()
-        h = str(hit.get("hash") or "").strip().lower()
+        magnet = str(hit.get("magnetUrl") or hit.get("magnet_url") or "").strip()
+        h = str(hit.get("hash") or hit.get("infoHash") or hit.get("info_hash") or "").strip().lower()
         if not re.fullmatch(r"[0-9a-f]{40}", h):
             h = info_hash(magnet)
+        if not magnet and re.fullmatch(r"[0-9a-f]{40}", h):
+            magnet = f"magnet:?xt=urn:btih:{h}&dn={quote(title, safe='')}"
+
+        try:
+            size = int(hit.get("bytes") or hit.get("size_bytes") or hit.get("size") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        try:
+            seeders = int(hit.get("seeders") or hit.get("seeds") or 0)
+        except (TypeError, ValueError):
+            seeders = 0
+        try:
+            leechers = int(hit.get("peers") or hit.get("leechers") or 0)
+        except (TypeError, ValueError):
+            leechers = 0
+
+        detail_url = str(hit.get("details") or hit.get("infoUrl") or "").strip()
+        descriptor_url = str(hit.get("link") or hit.get("descriptorUrl") or "").strip()
+        tracker = str(hit.get("cachedOrigin") or hit.get("tracker") or hit.get("trackerId") or "Knaben").strip()
+        published = str(hit.get("date") or hit.get("publishDate") or "").strip()
 
         results.append({
             "guid": f"knaben-{h or hit.get('id') or title}",
             "title": title,
-            "size": int(hit.get("bytes") or 0),
-            "seeders": int(hit.get("seeders") or 0),
-            "leechers": int(hit.get("peers") or 0),
-            "indexer": str(hit.get("cachedOrigin") or hit.get("tracker") or "Knaben").strip(),
+            "size": size,
+            "seeders": seeders,
+            "leechers": leechers,
+            "indexer": tracker,
             "protocol": "torrent",
-            "publishDate": str(hit.get("date") or ""),
+            "publishDate": published,
             "magnetUrl": magnet or None,
             "infoHash": h if re.fullmatch(r"[0-9a-f]{40}", h, re.I) else "",
             "downloadUrl": magnet or None,
-            "infoUrl": str(hit.get("details") or ""),
-            "sourceUrl": str(hit.get("details") or ""),
-            "descriptorUrl": str(hit.get("link") or ""),
+            "infoUrl": detail_url,
+            "sourceUrl": detail_url or descriptor_url,
+            "descriptorUrl": descriptor_url,
             "category": category,
         })
 
-    target_text = _normalize_title(title_query)
     results.sort(
         key=lambda row: (
-            1 if _normalize_title(str(row["title"])).startswith(target_text) else 0,
+            1 if _normalize_title(str(row["title"])).startswith(_normalize_title(title_query)) else 0,
             int(row.get("seeders") or 0),
         ),
         reverse=True,
     )
-    logger.info("Knaben search '%s': %d relevant results", query, len(results))
+    logger.info("Knaben v2 search '%s': %d relevant results after title/category filtering", query, len(results))
     return results[:limit]
+
+
+
+it]
 
 
 
@@ -3538,6 +3567,15 @@ async def _search_1337x_uncached(
             yts_primary = await yts_task
         except Exception as exc:
             logger.info("YTS primary search failed for '%s': %s", query, exc)
+
+    logger.info(
+        "Raw search source counts for '%s': 1337x=%d, LimeTorrents=%d, Knaben=%d, YTS=%d",
+        query,
+        len(primary_1337x),
+        len(primary_lime),
+        len(primary_knaben),
+        len(yts_primary),
+    )
 
     results: list[dict[str, Any]] = []
 
