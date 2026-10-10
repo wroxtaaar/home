@@ -4277,7 +4277,7 @@ async def resolve_search_magnet(body: dict[str, Any]):
 # One-time Marvel catalogue. Results are shared by every visitor to this Home
 # instance and never expire; the deployment mounts /app/data on persistent VPS
 # storage so a container replacement does not force another provider crawl.
-MARVEL_CATALOGUE_VERSION = 1
+MARVEL_CATALOGUE_VERSION = 2
 MARVEL_CATALOGUE_PATH = Path(os.getenv("MARVEL_CATALOGUE_PATH", "/app/data/marvel_catalogue.json"))
 MARVEL_MOVIE_SEARCHES: tuple[tuple[str, int], ...] = (
     ("Spider-Man: Brand New Day", 2026),
@@ -4428,44 +4428,145 @@ def _write_marvel_catalogue(payload: dict[str, Any]) -> None:
                 pass
 
 
+def _marvel_result_matches_title(item: dict[str, Any], title: str, year: int) -> bool:
+    """Prevent related Marvel releases from being mislabeled as another movie."""
+    raw_title = str(item.get("title") or "").strip()
+    if not raw_title:
+        return False
+
+    actual_tokens = set(_search_tokens(raw_title))
+    expected_tokens = _search_tokens(title)
+    if expected_tokens and expected_tokens[0] in {"the", "a", "an"}:
+        expected_tokens = expected_tokens[1:]
+    if not expected_tokens or not all(token in actual_tokens for token in expected_tokens):
+        return False
+
+    # If a release explicitly carries a year, don't cross-wire remakes/sequels.
+    title_years = {
+        int(value) for value in re.findall(r"\b((?:19|20)\d{2})\b", raw_title)
+    }
+    if title_years and year not in title_years:
+        return False
+
+    metadata_year = item.get("year")
+    if metadata_year not in (None, "") and not title_years:
+        try:
+            if int(metadata_year) != year:
+                return False
+        except (TypeError, ValueError):
+            pass
+
+    return True
+
+
 async def _build_marvel_catalogue() -> None:
     global _marvel_catalogue_retry_after
     semaphore = asyncio.Semaphore(_MARVEL_CATALOGUE_CONCURRENCY)
+    poster_semaphore = asyncio.Semaphore(2)
     rows_by_hash: dict[str, dict[str, Any]] = {}
+    found_movies: set[str] = set()
+
+    async def resolve_movie_poster(title: str, year: int) -> str:
+        async with poster_semaphore:
+            try:
+                poster = await asyncio.wait_for(
+                    _poster_lookup(title, str(year)),
+                    timeout=14.0,
+                )
+                if poster:
+                    return poster
+            except Exception as exc:
+                logger.debug("Marvel poster lookup failed for '%s (%s)': %s", title, year, exc)
+        return _poster_url_for_release(f"{title} {year}")
 
     async def search_movie(title: str, year: int) -> list[dict[str, Any]]:
         async with semaphore:
             try:
-                # Reuse Home's normal multi-provider search (1337x, LimeTorrents,
-                # Knaben and YTS metadata enrichment) instead of building a
-                # separate scraper or presenting unverified placeholder cards.
-                items = await search_1337x(
-                    f"{title} {year}",
-                    limit=50,
-                    allow_series_fallback=False,
-                )
-                accepted: list[dict[str, Any]] = []
-                for original in items:
-                    if not isinstance(original, dict):
-                        continue
-                    item = dict(original)
+                query = f"{title} {year}"
+                # Use Home's full provider fan-out first. Some providers return
+                # zero rows for older/animated Marvel titles, so fall back to
+                # the dedicated YTS catalogue search for those titles.
+                try:
+                    primary = await asyncio.wait_for(
+                        search_1337x(query, limit=50, allow_series_fallback=False),
+                        timeout=16.0,
+                    )
+                except Exception as exc:
+                    logger.info("Marvel provider search timed out for '%s': %s", query, exc)
+                    primary = []
+
+                def validate_items(items: Any) -> list[dict[str, Any]]:
+                    accepted: list[dict[str, Any]] = []
+                    if not isinstance(items, list):
+                        return accepted
+                    for original in items:
+                        if not isinstance(original, dict) or not _marvel_result_matches_title(original, title, year):
+                            continue
+                        item = dict(original)
+                        try:
+                            size = int(float(item.get("size") or 0))
+                            seeders = int(float(item.get("seeders") or 0))
+                        except (TypeError, ValueError, OverflowError):
+                            continue
+                        if size < 100 * 1024 * 1024 or size > MAX_SEARCH_RESULT_SIZE_BYTES or seeders <= 0:
+                            continue
+                        if not any(str(item.get(key) or "").strip() for key in (
+                            "magnetUrl", "downloadUrl", "sourceUrl", "infoUrl", "infoHash"
+                        )):
+                            continue
+
+                        # This field is the stable catalogue identity, not the
+                        # raw torrent release name. Quality/magnet stay per variant.
+                        item["mediaTitle"] = title
+                        item["year"] = year
+                        if not item.get("posterUrl"):
+                            item["posterUrl"] = _poster_url_for_release(f"{title} {year}")
+                        accepted.append(item)
+                    return accepted
+
+                accepted = validate_items(primary)
+                if len(accepted) < 3:
                     try:
-                        size = int(float(item.get("size") or 0))
-                        seeders = int(float(item.get("seeders") or 0))
-                    except (TypeError, ValueError, OverflowError):
-                        continue
-                    # Match the live search cards' useful-size and live-swarm gates.
-                    if size < 100 * 1024 * 1024 or size > MAX_SEARCH_RESULT_SIZE_BYTES or seeders <= 0:
-                        continue
-                    if not any(str(item.get(key) or "").strip() for key in (
-                        "magnetUrl", "downloadUrl", "sourceUrl", "infoUrl", "infoHash"
-                    )):
-                        continue
-                    if not str(item.get("posterUrl") or "").strip():
-                        item["posterUrl"] = _poster_url_for_release(
-                            str(item.get("mediaTitle") or item.get("title") or "")
+                        yts_items = await asyncio.wait_for(
+                            search_yts_movies(query, limit=20),
+                            timeout=8.0,
                         )
-                    accepted.append(item)
+                        accepted.extend(validate_items(yts_items))
+                    except Exception as exc:
+                        logger.info("Marvel YTS fallback failed for '%s': %s", query, exc)
+
+                # Deduplicate alternatives per movie before enriching shared poster
+                # metadata. Keep the strongest copy of the same info hash.
+                per_movie: dict[str, dict[str, Any]] = {}
+                for item in accepted:
+                    digest = str(item.get("infoHash") or "").strip().lower()
+                    if not re.fullmatch(r"[0-9a-f]{40}", digest):
+                        digest = info_hash(str(item.get("magnetUrl") or item.get("downloadUrl") or ""))
+                    key = "hash:" + digest if re.fullmatch(r"[0-9a-f]{40}", digest, re.I) else (
+                        f"title-size:{_normalize_title(str(item.get('title') or ''))}|{int(item.get('size') or 0)}"
+                    )
+                    previous = per_movie.get(key)
+                    if previous is None or (
+                        int(item.get("seeders") or 0),
+                        int(item.get("leechers") or 0),
+                        1 if str(item.get("magnetUrl") or "").startswith("magnet:") else 0,
+                    ) > (
+                        int(previous.get("seeders") or 0),
+                        int(previous.get("leechers") or 0),
+                        1 if str(previous.get("magnetUrl") or "").startswith("magnet:") else 0,
+                    ):
+                        per_movie[key] = item
+
+                accepted = list(per_movie.values())
+                if accepted:
+                    found_movies.add(f"{_normalize_title(title)}|{year}")
+                    poster_url = await resolve_movie_poster(title, year)
+                    for item in accepted:
+                        item["mediaTitle"] = title
+                        item["year"] = year
+                        item["posterUrl"] = poster_url
+                        item["marvelCatalogueTitle"] = title
+
                 return accepted
             except Exception as exc:
                 logger.info("Marvel catalogue search failed for '%s (%s)': %s", title, year, exc)
@@ -4481,6 +4582,7 @@ async def _build_marvel_catalogue() -> None:
             "completed": 0,
             "total": len(MARVEL_MOVIE_SEARCHES),
             "resultCount": 0,
+            "movieCount": 0,
             "error": "",
         })
         tasks = [
@@ -4521,10 +4623,19 @@ async def _build_marvel_catalogue() -> None:
                 if previous is None or candidate_score > previous_score:
                     rows_by_hash[key] = item
             _marvel_catalogue_state["resultCount"] = len(rows_by_hash)
+            _marvel_catalogue_state["movieCount"] = len(found_movies)
 
         results = list(rows_by_hash.values())
-        if not results:
-            raise RuntimeError("No usable Marvel torrent results were returned by the configured providers.")
+        movie_count = len({
+            f"{_normalize_title(str(item.get('mediaTitle') or item.get('title') or ''))}|{item.get('year') or ''}"
+            for item in results
+        })
+        # Don't permanently cache a partial crawl like a list of just a handful
+        # of recent releases. A shared catalogue must contain a useful spread.
+        if movie_count < 12:
+            raise RuntimeError(
+                f"Only {movie_count} Marvel movie titles produced usable results; refusing to cache an incomplete catalogue."
+            )
 
         def catalogue_sort_key(item: dict[str, Any]) -> tuple[int, float, int, str]:
             source = str(item.get("mediaTitle") or item.get("title") or "")
@@ -4544,6 +4655,7 @@ async def _build_marvel_catalogue() -> None:
             "version": MARVEL_CATALOGUE_VERSION,
             "builtAt": datetime.now(timezone.utc).isoformat(),
             "titlesQueried": len(MARVEL_MOVIE_SEARCHES),
+            "movieCount": movie_count,
             "resultCount": len(results),
             "results": results,
         }
@@ -4553,11 +4665,13 @@ async def _build_marvel_catalogue() -> None:
             "completed": len(MARVEL_MOVIE_SEARCHES),
             "total": len(MARVEL_MOVIE_SEARCHES),
             "resultCount": len(results),
+            "movieCount": movie_count,
             "error": "",
             "builtAt": payload["builtAt"],
         })
         logger.info(
-            "Built persistent Marvel catalogue: %d torrent options from %d title searches",
+            "Built persistent Marvel catalogue: %d movie titles, %d torrent options from %d title searches",
+            movie_count,
             len(results),
             len(MARVEL_MOVIE_SEARCHES),
         )
@@ -4582,6 +4696,7 @@ async def api_marvel_catalogue():
             "completed": int(cached.get("titlesQueried") or len(MARVEL_MOVIE_SEARCHES)),
             "total": int(cached.get("titlesQueried") or len(MARVEL_MOVIE_SEARCHES)),
             "resultCount": int(cached.get("resultCount") or len(cached["results"])),
+            "movieCount": int(cached.get("movieCount") or 0),
             "results": cached["results"],
         }
 
