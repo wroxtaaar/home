@@ -5277,7 +5277,7 @@ async def _tmdb_load_company_ids(franchise: str) -> list[str]:
 def _tmdb_release_date_is_released(value: Any, today: str) -> bool:
     """Return True only when a real ISO release date is on or before today's UTC date."""
     release_text = str(value or "").strip()
-    if not re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", release_text):
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", release_text):
         return False
     try:
         release_date = datetime.strptime(release_text, "%Y-%m-%d").date()
@@ -5449,7 +5449,7 @@ async def api_tmdb_movie_catalogue(
         raise HTTPException(status_code=404, detail="Unknown movie catalogue.")
 
     # Keep released-only and include-upcoming responses in separate cache slots.
-    cache_key = (catalogue_key + ("|released-v2" if released_only else "|upcoming-v2"), page)
+    cache_key = (catalogue_key + ("|released-v3" if released_only else "|upcoming-v2"), page)
     now = time.monotonic()
     cache_ttl = 30 * 60 if catalogue_key.startswith("trending-") else TMDB_CATALOGUE_CACHE_SECONDS
     cached = _tmdb_movie_catalogue_cache.get(cache_key)
