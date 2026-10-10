@@ -41,6 +41,7 @@ For non-commercial use, request a free TMDB API credential in your TMDB account 
 
 ```dotenv
 TMDB_READ_ACCESS_TOKEN=<your TMDB API Read Access Token>
+WATCHMODE_API_KEY=<your Watchmode API key>
 # Or use the v3 API key instead:
 # TMDB_API_KEY=<your TMDB API key>
 ```
