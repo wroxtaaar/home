@@ -50,9 +50,163 @@ function formatPublished(value?: string) {
   return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+interface TorrentQualityGroup {
+  key: string;
+  title: string;
+  year: string;
+  variants: TorrentSearchResult[];
+  posterResult: TorrentSearchResult;
+}
+
+function torrentResultKey(result: TorrentSearchResult): string {
+  return String(result.guid || result.infoHash || result.magnetUrl || result.downloadUrl || result.title);
+}
+
+function normalizeGroupTitle(value: string): string {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[’']/g, '')
+    .replace(/[._]+/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^(?:the|a|an)\s+/, '');
+}
+
+function torrentMediaIdentity(result: TorrentSearchResult): { title: string; normalized: string; year: string } {
+  const source = String(result.mediaTitle || result.title || '').trim();
+  const embeddedYear = source.match(/\b((?:19|20)\d{2})\b/);
+  let year = String(result.year || embeddedYear?.[1] || '').trim();
+  let title = source.replace(/[._]+/g, ' ');
+
+  if (embeddedYear) {
+    title = title.slice(0, embeddedYear.index);
+  } else {
+    // Release tags in brackets are often incomplete on public indexers.
+    title = title
+      .replace(/\[[^\]]*(?:\]|$)/g, ' ')
+      .replace(/\([^)]*(?:\)|$)/g, ' ');
+    title = title.split(
+      /\b(?:2160p|1440p|1080p|720p|576p|480p|4k|8k|web[- ]?dl|web[- ]?rip|webrip|bluray|blu[- ]?ray|brrip|hdrip|dvdrip|dvdscr|telesync|telecine|r5|r6|cam|hdcam|x264|x265|h264|h265|hevc|xvid|divx|dts|aac|ac3|ddp|eng|english|nlsub|dual[ .-]?audio|hindi|tamil|telugu|malayalam|kannada|proper|repack|remux|hdr|bluelady|jaybob|haggis|voltage|dtrg|document|vision|sonido|saimorny|ltt)\b/i
+    )[0];
+  }
+
+  title = title.replace(/\s+/g, ' ').trim().replace(/[\s._:[\](){}-]+$/g, '').trim();
+  let normalized = normalizeGroupTitle(title);
+
+  // Common LimeTorrents release shorthand: keep the sequel distinct from
+  // The Avengers (2012), while presenting it with its catalogue title.
+  if ((normalized === 'avengers 2' || normalized === 'the avengers 2') && (!year || year === '2015')) {
+    title = 'Avengers: Age of Ultron';
+    normalized = normalizeGroupTitle(title);
+    year = year || '2015';
+  } else if (
+    (normalized === 'marvel s the avengers' || normalized === 'marvels the avengers') &&
+    (!year || year === '2012')
+  ) {
+    title = 'The Avengers';
+    normalized = normalizeGroupTitle(title);
+    year = year || '2012';
+  } else if (normalized === 'avengers age of ultron' && (!year || year === '2015')) {
+    title = 'Avengers: Age of Ultron';
+    year = year || '2015';
+  } else if (normalized === 'the avengers' && year === '2012') {
+    title = 'The Avengers';
+  }
+
+  if (!title) title = String(result.title || result.mediaTitle || 'Unknown title').trim();
+  return { title, normalized: normalizeGroupTitle(title), year };
+}
+
+function torrentQualityDetails(result: TorrentSearchResult): { key: string; label: string; rank: number } {
+  const raw = `${String(result.quality || '')} ${String(result.title || '')}`;
+  const resolution = raw.match(/\b(2160p|1440p|1080p|720p|576p|480p|4k|8k)\b/i)?.[1]?.toLowerCase() || '';
+  const resolutionLabel = resolution === '4k' ? '2160p (4K)' : resolution.toUpperCase();
+  const formats: Array<[RegExp, string, number]> = [
+    [/\b3d\b.*\b(?:bluray|blu[ .-]?ray)\b|\b(?:bluray|blu[ .-]?ray)\b.*\b3d\b/i, '3D BluRay', 900],
+    [/\b(?:web[- .]?dl)\b/i, 'WEB-DL', 800],
+    [/\b(?:web[- .]?rip|webrip)\b/i, 'WEBRip', 750],
+    [/\b(?:blu[ .-]?ray|bluray)\b/i, 'BluRay', 700],
+    [/\b(?:brrip)\b/i, 'BRRip', 650],
+    [/\b(?:hdtv)\b/i, 'HDTV', 600],
+    [/\b(?:hdrip)\b/i, 'HDRip', 550],
+    [/\b(?:dvdscr|dvd[ .-]?scr)\b/i, 'DVDScr', 500],
+    [/\b(?:dvdrip|dvd)\b/i, 'DVDRip', 450],
+    [/\b(?:telesync|ts)\b/i, 'Telesync', 400],
+    [/\b(?:telecine|tc)\b/i, 'Telecine', 350],
+    [/\b(?:r5|r6)\b/i, 'R5/R6', 300],
+    [/\b(?:hdcam|cam)\b/i, 'CAM', 200],
+  ];
+  const format = formats.find(([pattern]) => pattern.test(raw));
+  const label = [resolutionLabel, format?.[1]].filter(Boolean).join(' ') || (resolutionLabel || 'Other release');
+  const rank = (resolution === '2160p' || resolution === '4k' ? 2160
+    : resolution === '1440p' ? 1440
+    : resolution === '1080p' ? 1080
+    : resolution === '720p' ? 720
+    : resolution === '576p' ? 576
+    : resolution === '480p' ? 480
+    : resolution === '8k' ? 4320
+    : 0) + (format?.[2] || 0);
+  return { key: label.toLowerCase().replace(/[^a-z0-9]+/g, '-'), label, rank };
+}
+
+function groupTorrentResults(results: TorrentSearchResult[]): TorrentQualityGroup[] {
+  const titleBuckets = new Map<string, Array<{ result: TorrentSearchResult; identity: ReturnType<typeof torrentMediaIdentity> }>>();
+  for (const result of results) {
+    const identity = torrentMediaIdentity(result);
+    if (!identity.normalized) continue;
+    const bucket = titleBuckets.get(identity.normalized) || [];
+    bucket.push({ result, identity });
+    titleBuckets.set(identity.normalized, bucket);
+  }
+
+  const groups: TorrentQualityGroup[] = [];
+  for (const [normalized, entries] of titleBuckets) {
+    const knownYears = Array.from(new Set(entries.map(entry => entry.identity.year).filter(Boolean)));
+    const yearBuckets = new Map<string, typeof entries>();
+    for (const entry of entries) {
+      // Unknown-year releases can join a title only if this result set has one
+      // unambiguous year for that title; don't merge remakes with one another.
+      const year = entry.identity.year || (knownYears.length === 1 ? knownYears[0] : '');
+      const bucket = yearBuckets.get(year) || [];
+      bucket.push(entry);
+      yearBuckets.set(year, bucket);
+    }
+
+    for (const [year, yearEntries] of yearBuckets) {
+      const bestByQuality = new Map<string, { result: TorrentSearchResult; quality: ReturnType<typeof torrentQualityDetails> }>();
+      for (const entry of yearEntries) {
+        const quality = torrentQualityDetails(entry.result);
+        const previous = bestByQuality.get(quality.key);
+        if (!previous) {
+          // sortedResults is already ordered by the chosen ranking, so the
+          // first occurrence is the preferred swarm for this quality.
+          bestByQuality.set(quality.key, { result: entry.result, quality });
+        }
+      }
+
+      const variants = Array.from(bestByQuality.values()).map(value => value.result);
+      if (!variants.length) continue;
+      // Preserve the current seed/size/time ranking within the quality picker.
+      const title = yearEntries[0].identity.title;
+      groups.push({
+        key: `${normalized}|${year || 'unknown'}`,
+        title: year ? `${title} (${year})` : title,
+        year,
+        variants,
+        posterResult: variants.find(item => item.posterUrl || item.mediaTitle) || variants[0],
+      });
+    }
+  }
+
+  return groups;
+}
+
 export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepare, onCancelPrepare, onOpenProgress, seedrFiles = [], seedrDeletedFolderIds = [], onPlaySeedrFile }) => {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<TorrentSearchResult[]>([]);
+  const [selectedQualityByGroup, setSelectedQualityByGroup] = useState<Record<string, string>>({});
   const [isSearching, setIsSearching] = useState(false);
   const [searched, setSearched] = useState(false);
   const [error, setError] = useState('');
@@ -515,6 +669,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       setShowRecentSearches(false);
       setError('');
       setResults([]);
+      setSelectedQualityByGroup({});
       setSearched(false);
       setPosterOverrides({});
       posterLoadedRef.current.clear();
@@ -610,9 +765,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       const size = Number(result.size) || 0;
       if (size > maxSeedrFriendlySize) return false;
       if (resolutionFilter) {
-        const title = String(result.title || '');
+        const quality = torrentQualityDetails(result).label;
         const pattern = resolutionFilter === '720p' ? /(?:^|[^0-9])720p(?:[^0-9]|$)/i : /(?:^|[^0-9])1080p(?:[^0-9]|$)/i;
-        if (!pattern.test(title)) return false;
+        if (!pattern.test(quality)) return false;
       }
       return true;
     });
@@ -634,11 +789,11 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     return sorted;
   }, [results, resolutionFilter, sizeSort, timeSort]);
 
+  const groupedResults = useMemo(() => groupTorrentResults(sortedResults), [sortedResults]);
+
   const extractedQuality = (result: TorrentSearchResult) => {
-    if (result.quality) return result.quality;
-    const title = String(result.title || '');
-    const match = title.match(/\b(2160p|1440p|1080p|720p|480p|4k|8k)\b(?:\s+(WEB-DL|WEBRip|BluRay|HDR|HEVC|x264|x265))?/i);
-    return match ? match[0] : '';
+    const details = torrentQualityDetails(result);
+    return details.label === 'Other release' ? '' : details.label;
   };
 
   return (
@@ -849,17 +1004,21 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
           <div className="flex items-center justify-between gap-2 px-1">
             <div className="text-xs text-slate-400">
-              {sortedResults.length} of {results.length} result{results.length === 1 ? '' : 's'}
+              {groupedResults.length} titles · {sortedResults.length} torrent options
             </div>
           </div>
 
           <div
             className="grid grid-cols-2 gap-2 sm:block sm:rounded-2xl sm:border sm:border-slate-800 sm:overflow-hidden sm:bg-slate-900 sm:divide-y sm:divide-slate-800/80 lg:grid lg:grid-cols-[repeat(var(--desktop-result-columns),minmax(0,1fr))] lg:gap-[22px] lg:w-full lg:max-w-none lg:mx-0 lg:p-0 lg:border-0 lg:bg-transparent lg:divide-y-0 lg:overflow-visible"
-            style={{ '--desktop-result-columns': Math.min(Math.max(sortedResults.length, 1), 6) } as React.CSSProperties}
+            style={{ '--desktop-result-columns': Math.min(Math.max(groupedResults.length, 1), 6) } as React.CSSProperties}
           >
-            {sortedResults.map((result, index) => (
+            {groupedResults.map((group, index) => {
+              const selectedKey = selectedQualityByGroup[group.key];
+              const result = group.variants.find(variant => torrentResultKey(variant) === selectedKey) || group.variants[0];
+              const posterResult = group.posterResult;
+              return (
               <div
-                key={result.guid || result.infoHash || (result.title + '-' + index)}
+                key={group.key || (group.title + '-' + index)}
                 className={[
                   'relative min-w-0 rounded-xl border border-slate-800 bg-slate-900 p-2 hover:bg-slate-800/80 transition sm:rounded-none sm:border-0 sm:bg-transparent sm:p-2 sm:px-4 sm:py-4 lg:flex lg:flex-col lg:self-start lg:h-fit lg:rounded-[14px] lg:border lg:border-slate-800 lg:bg-slate-900 lg:p-0 lg:hover:-translate-y-1 lg:hover:border-slate-700',
                   fullTorrentTitleKey === posterKeyFor(result) ? 'z-50' : 'z-0'
@@ -869,21 +1028,21 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   <div className="min-w-0 flex-1 lg:w-full">
                     <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-2 sm:gap-3 lg:flex-col lg:gap-0">
                       <div className="relative w-full sm:w-24 shrink-0 aspect-[2/3] rounded-lg overflow-hidden border border-slate-800 bg-slate-950 shadow-md lg:w-full lg:rounded-none lg:border-0 lg:shadow-none">
-                        {posterUrlFor(result) ? (
+                        {posterUrlFor(posterResult) ? (
                           <>
                             <img
-                              src={posterUrlFor(result)}
-                              alt={result.mediaTitle || result.title}
+                              src={posterUrlFor(posterResult)}
+                              alt={group.title}
                               loading="lazy"
                               className="w-full h-full object-cover"
                               onLoad={(event) => {
-                                const key = posterKeyFor(result);
+                                const key = posterKeyFor(posterResult);
                                 posterLoadedRef.current.add(key);
                                 event.currentTarget.style.display = '';
                                 event.currentTarget.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.add('hidden');
                               }}
                               onError={(event) => {
-                                const key = posterKeyFor(result);
+                                const key = posterKeyFor(posterResult);
                                 posterLoadedRef.current.delete(key);
                                 event.currentTarget.style.display = 'none';
                                 event.currentTarget.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.remove('hidden');
@@ -893,7 +1052,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                   !posterOverrides[key]
                                 ) {
                                   posterBackgroundQueuedRef.current.add(key);
-                                  posterBackgroundQueueRef.current.unshift({ key, result });
+                                  posterBackgroundQueueRef.current.unshift({ key, result: posterResult });
                                   startPosterBackgroundWorkers();
                                 }
                               }}
@@ -950,8 +1109,39 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               title="Click to view full torrent name"
                               aria-label="View full torrent name"
                             >
-                              {result.mediaTitle || result.title}
+                              {group.title}
                             </button>
+
+                            <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[10px] sm:text-xs">
+                              <span className="font-semibold text-emerald-400">▲ {Number(result.seeders) || 0} seeders</span>
+                              <span className="font-semibold text-amber-400">▼ {Number(result.leechers) || 0} peers</span>
+                              {group.year && <span className="text-slate-500">{group.year}</span>}
+                            </div>
+
+                            {group.variants.length > 1 && (
+                              <select
+                                aria-label={`Choose quality for ${group.title}`}
+                                value={torrentResultKey(result)}
+                                onChange={(event) => setSelectedQualityByGroup(previous => ({
+                                  ...previous,
+                                  [group.key]: event.target.value
+                                }))}
+                                className="mt-2 w-full min-w-0 rounded-lg border border-slate-800 bg-slate-950 px-2 py-2 text-[10px] sm:text-xs font-medium text-slate-200 outline-none focus:border-cyan-500"
+                                title="Choose quality and torrent source"
+                              >
+                                {group.variants.map(variant => {
+                                  const quality = torrentQualityDetails(variant);
+                                  const provider = String(variant.indexer || '').trim();
+                                  const size = formatBytes(Number(variant.size) || 0);
+                                  const seeds = Number(variant.seeders) || 0;
+                                  return (
+                                    <option key={torrentResultKey(variant)} value={torrentResultKey(variant)}>
+                                      {quality.label} · {size} · ▲{seeds}{provider ? ` · ${provider}` : ''}
+                                    </option>
+                                  );
+                                })}
+                              </select>
+                            )}
 
                             {fullTorrentTitleKey === posterKeyFor(result) && fullTorrentTitle && (
                               <div
@@ -1107,12 +1297,13 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   </div>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
 
-      {!isSearching && searched && sortedResults.length === 0 && !error && (
+      {!isSearching && searched && groupedResults.length === 0 && !error && (
         <div className="py-14 text-center rounded-2xl bg-slate-900 border border-slate-800">
           <Search className="w-10 h-10 text-slate-700 mx-auto mb-3" />
           <h3 className="text-sm font-bold text-slate-300">
