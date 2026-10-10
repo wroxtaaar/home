@@ -4741,7 +4741,7 @@ _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
     },
     "latest-hollywood": {
         # Query actual releases so catalogues do not depend on unreliable year-only searches.
-        "file": "latest_hollywood_catalogue.json", "version": 4, "refresh_days": 30,
+        "file": "latest_hollywood_catalogue.json", "version": 5, "refresh_days": 30,
         "minimum_movies": 1, "mode": "latest",
         "queries": [
             "Project Hail Mary 2026", "Disclosure Day 2026", "Mortal Kombat II 2026",
@@ -4753,10 +4753,10 @@ _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
     },
     "latest-bollywood": {
         # Query recent Hindi movie titles directly, not broad queries that can return TV series.
-        "file": "latest_bollywood_catalogue.json", "version": 4, "refresh_days": 30,
+        "file": "latest_bollywood_catalogue.json", "version": 5, "refresh_days": 30,
         "minimum_movies": 1, "mode": "latest",
         "queries": [
-            "Dhurandhar Revenge 2026", "Border 2 2026", "Bhooth Bangla 2026",
+            "Dhurandhar The Revenge 2026", "Border 2 2026", "Bhooth Bangla 2026",
             "Dhamaal 4 2026", "Awarapan 2 2026", "Welcome to the Jungle 2026",
             "Mardaani 3 2026", "O Romeo 2026",
             "Chhaava 2025", "Saiyaara 2025", "Dhurandhar 2025",
@@ -4917,10 +4917,19 @@ async def _build_extra_catalogue(key: str) -> None:
                             or re.search(r"\b(?:S\d{1,2}E\d{1,2}|season\s+\d+|complete\s+series|episode\s+\d+|web[\s.-]?series)\b", raw_title, re.I)
                         ):
                             continue
-                        # The query itself is a known Hindi-film title; release names
-                        # often omit a language tag, so do not require "Hindi" in the filename.
-                        media_title = re.sub(r"\b(?:1080p|720p|2160p|4k|web[- .]?dl|webrip|bluray|brrip|hdtv|x264|x265|hevc|proper|repack)\b.*$", "", raw_title, flags=re.I).strip(" .-_")
-                        media_title = media_title or raw_title
+                        # Use the matching catalogue query as the canonical movie title.
+                        # Provider filenames contain language/source tags (and sometimes
+                        # HTML entities), which otherwise split one film into many cards.
+                        media_title = re.sub(r"\b(?:19|20)\d{2}\b", "", query).strip(" .-_")
+                        media_title = unescape(media_title)
+                        if not media_title:
+                            media_title = re.sub(
+                                r"\b(?:1080p|720p|2160p|4k|web[- .]?dl|webrip|bluray|brrip|hdtv|x264|x265|hevc|proper|repack)\b.*$",
+                                "",
+                                unescape(raw_title),
+                                flags=re.I,
+                            ).strip(" .-_")
+                        media_title = media_title or unescape(raw_title)
                     try:
                         raw_size = item.get("size_bytes") or item.get("sizeBytes") or item.get("size") or 0
                         if isinstance(raw_size, (int, float)):
