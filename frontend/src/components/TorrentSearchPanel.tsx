@@ -1371,20 +1371,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     <button
                       key={language}
                       type="button"
-                      onClick={() => {
-                        setOpenCachedLanguageMenu(null);
-                        setResolutionFilter(null);
-                        setSizeSort(null);
-                        setTimeSort(null);
-                        setReleaseYearSort(null);
-                        setTmdbFranchiseKey(franchise);
-                        const mode = franchise === 'marvel'
-                          ? (language === 'hindi' ? 'marvel-hindi' : 'marvel')
-                          : (language === 'hindi' ? 'dc-live-action-hindi' : 'dc-live-action');
-                        const category = franchise === 'marvel' ? 'Marvel Movies' : 'DC Live-Action Movies';
-                        const languageLabel = language === 'hindi' ? 'Hindi' : 'English';
-                        void runSearch(undefined, category + ' (' + languageLabel + ')', mode);
-                      }}
+                      onClick={() => selectCachedFranchiseLanguage(franchise, language)}
                       className="block w-full px-3 py-2.5 text-left text-xs font-semibold text-slate-200 hover:bg-slate-800 hover:text-cyan-300"
                     >
                       {language === 'hindi' ? 'Hindi audio' : 'English audio'}
