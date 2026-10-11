@@ -42,7 +42,7 @@ jobs:
 
           ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=120 \
             -p "$VPS_SSH_PORT" "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
-          set -eu
+          set -euo pipefail
 
           APP_DIR="$HOME/home"
           DATA_DIR="$HOME/home-data"
