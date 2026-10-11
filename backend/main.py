@@ -6929,6 +6929,53 @@ async def _warm_extra_catalogues_on_startup() -> None:
 app.router.add_event_handler("startup", _warm_extra_catalogues_on_startup)
 
 
+@app.get("/api/catalogue/ott/search")
+async def api_search_saved_ott(titles: list[str] = Query(..., min_length=1, max_length=80)):
+    """Look up saved OTT enrichment by title from persistent franchise catalogue caches only."""
+    source_paths = [MARVEL_CATALOGUE_PATH, *_EXTRA_CATALOGUE_PATHS.values()]
+    saved_rows: list[dict[str, Any]] = []
+    seen_rows: set[tuple[str, str]] = set()
+    for source_path in source_paths:
+        try:
+            payload = json.loads(source_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        rows = payload.get("results", []) if isinstance(payload, dict) else []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict) or not isinstance(row.get("ottAvailability"), dict):
+                continue
+            title = str(row.get("catalogueTitle") or row.get("marvelCatalogueTitle") or row.get("mediaTitle") or row.get("title") or "").strip()
+            if not title:
+                continue
+            year = str(row.get("year") or "")
+            identity = (_normalize_title(re.sub(r"\s*\(?((?:19|20)\d{2})\)?\s*$", "", title)), year)
+            if identity in seen_rows:
+                continue
+            seen_rows.add(identity)
+            saved_rows.append({
+                "title": title,
+                "year": year or None,
+                "tmdbId": row.get("tmdbId"),
+                "ottAvailability": row.get("ottAvailability"),
+            })
+
+    requested = []
+    for raw in titles:
+        title = re.sub(r"\s+", " ", str(raw or "")).strip()
+        if title:
+            requested.append({"title": title, "normalized": _normalize_title(re.sub(r"\s*\(?((?:19|20)\d{2})\)?\s*$", "", title))})
+
+    matches = []
+    for request in requested:
+        candidates = [row for row in saved_rows
+            if _normalize_title(re.sub(r"\s*\(?((?:19|20)\d{2})\)?\s*$", "", row["title"])) == request["normalized"]]
+        if candidates:
+            matches.append({"query": request["title"], "found": True, "entries": candidates[:3]})
+        else:
+            matches.append({"query": request["title"], "found": False, "entries": []})
+    return {"status": "ready", "results": matches}
+
+
 @app.get("/api/catalogue/marvel")
 async def api_marvel_catalogue():
     # A completed catalogue is served straight from the persistent shared file:
