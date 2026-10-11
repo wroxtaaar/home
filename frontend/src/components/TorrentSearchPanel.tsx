@@ -516,6 +516,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const posterBackgroundActiveRef = useRef(0);
   const posterBackgroundGenerationRef = useRef(0);
   const posterBackgroundAttemptsRef = useRef(new Map<string, number>());
+  // Avoid repeating an identical failed poster request for every quality/variant
+  // of the same title. 404s expire after ten minutes so later retries can recover.
+  const posterResolveCacheRef = useRef(new Map<string, { url: string; expiresAt: number }>());
 
   const posterKeyFor = (result: TorrentSearchResult) =>
     String(
@@ -648,6 +651,11 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const resolvePosterInBackground = async (url: string, generation: number) => {
     if (generation !== posterBackgroundGenerationRef.current) return '';
 
+    const now = Date.now();
+    const cached = posterResolveCacheRef.current.get(url);
+    if (cached && cached.expiresAt > now) return cached.url;
+    if (cached) posterResolveCacheRef.current.delete(url);
+
     try {
       const response = await fetch(url, {
         method: 'GET',
@@ -655,12 +663,23 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         cache: 'force-cache'
       });
 
-      if (!response.ok) return '';
+      if (!response.ok) {
+        if (response.status === 404) {
+          posterResolveCacheRef.current.set(url, { url: '', expiresAt: Date.now() + 10 * 60 * 1000 });
+        }
+        return '';
+      }
 
       const data = await response.json().catch(() => null);
       const resolved = String(data?.url || '').trim();
+      if (resolved) {
+        posterResolveCacheRef.current.set(url, { url: resolved, expiresAt: Date.now() + 6 * 60 * 60 * 1000 });
+      } else {
+        posterResolveCacheRef.current.set(url, { url: '', expiresAt: Date.now() + 10 * 60 * 1000 });
+      }
       return resolved;
     } catch {
+      // Network/server failures are not cached; allow transient failures to retry.
       return '';
     }
   };
