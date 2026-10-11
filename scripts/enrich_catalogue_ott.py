@@ -114,6 +114,7 @@ TMDB_ID_OVERRIDES = {
     ("the fantastic four first steps", 2025): 617126,  # TMDB title: The Fantastic 4: First Steps
     ("x2 x men united", 2003): 36658,                # TMDB title: X2
     ("superman the movie", 1978): 1924,              # TMDB title: Superman
+    ("battle of the super sons", 2022): 886396,     # TMDB title: Batman and Superman: Battle of the Super Sons
 }
 
 
