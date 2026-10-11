@@ -90,6 +90,17 @@ export interface SearchMediaMetadataResponse {
   results: SearchMediaMetadata[];
 }
 
+export interface ImdbRatingResult {
+  query?: string;
+  title: string;
+  year?: number | null;
+  status: 'found' | 'not_found' | 'unavailable' | 'rate_limited';
+  imdbRating?: number | null;
+  imdbVotes?: string | null;
+  imdbId?: string | null;
+  imdbUrl?: string | null;
+}
+
 export interface MovieCataloguePage {
   catalogue: MovieCatalogueKey;
   provider: string;
@@ -221,6 +232,26 @@ export const api = {
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch {}
     if (!res.ok) throw new Error(data?.detail || body || ('Cached search metadata lookup failed (HTTP ' + res.status + ')'));
+    return data;
+  },
+
+  async getImdbRatings(titles: string[], signal?: AbortSignal): Promise<{
+    status: string;
+    requested?: number;
+    matched?: number;
+    results: ImdbRatingResult[];
+  }> {
+    const params = new URLSearchParams();
+    [...new Set(titles.map(title => String(title || '').trim()).filter(Boolean))]
+      .slice(0, 80)
+      .forEach(title => params.append('titles', title));
+    const res = await fetch(API_BASE + '/api/catalogue/imdb-ratings?' + params.toString(), {
+      signal, credentials: 'include', cache: 'no-store',
+    });
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch {}
+    if (!res.ok) throw new Error(data?.detail || body || ('IMDb rating lookup failed (HTTP ' + res.status + ')'));
     return data;
   },
 
