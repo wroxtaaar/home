@@ -1535,9 +1535,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
         void Promise.allSettled(pendingLiveLookups.map(async group => {
           try {
-            const availabilityQuery = group.year
-              ? group.title.slice(0, group.title.lastIndexOf(' (')).trim()
-              : group.title.trim();
+            const providerLookupTitle = episodeSeriesTitle(group.title) || group.title;
+            const availabilityQuery = providerLookupTitle
+              .replace(/\s+\(\d{4}\)\s*$/, '')
+              .trim();
             const value = await api.searchAvailability(availabilityQuery);
             if (generation === searchGenerationRef.current) {
               setSearchAvailabilityByGroup(previous => ({ ...previous, [group.key]: value }));
@@ -2702,11 +2703,27 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       <Film className="h-8 w-8" />
                     </div>
                   )}
-                  {movie.rating != null && movie.rating > 0 && (
-                    <span className="absolute left-2 top-2 rounded-md bg-slate-950/90 px-2 py-1 text-[10px] font-bold text-emerald-300">
-                      ★ {movie.rating.toFixed(1)}
-                    </span>
-                  )}
+                  {(() => {
+                    const imdb = imdbRatingsByKey[imdbRatingKey(movie.title, movie.year)];
+                    if (imdb?.imdbRating != null && imdb.imdbRating > 0) {
+                      return (
+                        <a
+                          href={imdb.imdbUrl || (imdb.imdbId ? 'https://www.imdb.com/title/' + imdb.imdbId + '/' : '#')}
+                          target="_blank"
+                          rel="noreferrer"
+                          title={'IMDb rating' + (imdb.imdbVotes ? ' · ' + imdb.imdbVotes + ' votes' : '')}
+                          className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow"
+                        >
+                          IMDb {imdb.imdbRating.toFixed(1)}
+                        </a>
+                      );
+                    }
+                    return movie.rating != null && movie.rating > 0 ? (
+                      <span className="absolute left-2 top-2 rounded-md bg-slate-950/90 px-2 py-1 text-[10px] font-bold text-emerald-300">
+                        TMDB {movie.rating.toFixed(1)}
+                      </span>
+                    ) : null;
+                  })()}
                   {(() => {
                     const imdb = imdbRatingsByKey[imdbRatingKey(movie.title, movie.year)];
                     return imdb?.imdbRating != null && imdb.imdbRating > 0 ? (
@@ -2962,7 +2979,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               // quality picker are rendered only after the user presses Get.
               if (expandedSearchGroupKey !== group.key) {
                 const availability = searchAvailabilityByGroup[group.key];
-                const groupTitleKey = normalizeSavedOttTitle(group.title);
+                const providerMatchTitle = episodeSeriesTitle(group.title) || group.title;
+                const groupTitleKey = normalizeSavedOttTitle(providerMatchTitle);
                 const matchingSavedTitles = (availability?.matches || []).filter(match =>
                   Array.isArray(match.providers) &&
                   match.providers.length > 0 &&
@@ -2976,7 +2994,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 // Prefer the same poster-resolver URL as the expanded torrent card. It is
                 // backed by the existing poster cache, so switching card modes reuses it
                 // instead of starting with a separate direct TMDB image request.
-                const compactPosterUrl = posterUrlFor(posterResult) || mediaMetadata?.posterUrl || '';
+                const posterKey = posterKeyFor(posterResult);
+                const canonicalPosterUrl = String(mediaMetadata?.posterUrl || '').trim();
+                const compactPosterUrl = posterOverrides[posterKey] || canonicalPosterUrl || rawPosterUrlFor(posterResult) || '';
 
                 return (
                   <article
@@ -3035,7 +3055,17 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           <Film className="h-8 w-8" />
                         </div>
                       )}
-
+                      {displayImdbRating?.imdbRating != null && displayImdbRating.imdbRating > 0 && (
+                        <a
+                          href={displayImdbRating.imdbUrl || (displayImdbRating.imdbId ? 'https://www.imdb.com/title/' + displayImdbRating.imdbId + '/' : '#')}
+                          target="_blank"
+                          rel="noreferrer"
+                          title={'IMDb rating' + (displayImdbRating.imdbVotes ? ' · ' + displayImdbRating.imdbVotes + ' votes' : '')}
+                          className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow"
+                        >
+                          IMDb {displayImdbRating.imdbRating.toFixed(1)}
+                        </a>
+                      )}
                     </div>
 
                     <div className="flex flex-1 flex-col gap-2 p-2.5">
@@ -3049,8 +3079,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                         </h3>
                         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] sm:text-xs">
                           {mediaDisplayYear && <span className="text-slate-400">{mediaDisplayYear}</span>}
-                          {mediaMetadata?.rating ? <span className="text-amber-300">TMDB {mediaMetadata.rating.toFixed(1)}</span> : null}
-                          {displayImdbRating?.imdbRating != null && displayImdbRating.imdbRating > 0 && (
+                          {displayImdbRating?.imdbRating != null && displayImdbRating.imdbRating > 0 ? (
                             <a
                               href={displayImdbRating.imdbUrl || (displayImdbRating.imdbId ? 'https://www.imdb.com/title/' + displayImdbRating.imdbId + '/' : '#')}
                               target="_blank"
@@ -3060,7 +3089,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             >
                               IMDb {displayImdbRating.imdbRating.toFixed(1)}
                             </a>
-                          )}
+                          ) : mediaMetadata?.rating ? (
+                            <span className="text-amber-300">TMDB {mediaMetadata.rating.toFixed(1)}</span>
+                          ) : null}
 
                         </div>
                       </div>
@@ -3137,10 +3168,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   <div className="min-w-0 flex-1 lg:w-full">
                     <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-2 sm:gap-3 lg:flex-col lg:gap-0">
                       <div className="relative w-full sm:w-24 shrink-0 aspect-[2/3] rounded-lg overflow-hidden border border-slate-800 bg-slate-950 shadow-md lg:w-full lg:rounded-none lg:border-0 lg:shadow-none">
-                        {posterUrlFor(posterResult) ? (
+                        {posterOverrides[posterKeyFor(posterResult)] || mediaMetadata?.posterUrl || rawPosterUrlFor(posterResult) ? (
                           <>
                             <img
-                              src={posterUrlFor(posterResult)}
+                              src={posterOverrides[posterKeyFor(posterResult)] || mediaMetadata?.posterUrl || rawPosterUrlFor(posterResult)}
                               alt={group.title}
                               loading="lazy"
                               className="w-full h-full object-cover"
@@ -3176,8 +3207,19 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           </div>
                         )}
 
+                        {displayImdbRating?.imdbRating != null && displayImdbRating.imdbRating > 0 && (
+                          <a
+                            href={displayImdbRating.imdbUrl || (displayImdbRating.imdbId ? 'https://www.imdb.com/title/' + displayImdbRating.imdbId + '/' : '#')}
+                            target="_blank"
+                            rel="noreferrer"
+                            title={'IMDb rating' + (displayImdbRating.imdbVotes ? ' · ' + displayImdbRating.imdbVotes + ' votes' : '')}
+                            className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow"
+                          >
+                            IMDb {displayImdbRating.imdbRating.toFixed(1)}
+                          </a>
+                        )}
                         {result.seeders > 0 && (
-                          <div className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-md bg-black/80 px-2 py-1 text-[10px] font-bold text-emerald-400">
+                          <div className={'absolute left-2 inline-flex items-center gap-1 rounded-md bg-black/80 px-2 py-1 text-[10px] font-bold text-emerald-400 ' + (displayImdbRating?.imdbRating != null && displayImdbRating.imdbRating > 0 ? 'top-10' : 'top-2')}>
                             <Users className="w-3 h-3" />
                             {result.seeders}
                           </div>
@@ -3236,8 +3278,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               <span className="font-semibold text-emerald-400">▲ {Number(result.seeders) || 0} seeders</span>
                               <span className="font-semibold text-amber-400">▼ {Number(result.leechers) || 0} peers</span>
                               {(mediaMetadata?.year || group.year) && <span className="text-slate-500">{mediaMetadata?.year || group.year}</span>}
-                              {mediaMetadata?.rating ? <span className="text-amber-300">TMDB {mediaMetadata.rating.toFixed(1)}</span> : null}
-                              {displayImdbRating?.imdbRating != null && displayImdbRating.imdbRating > 0 && (
+                              {displayImdbRating?.imdbRating != null && displayImdbRating.imdbRating > 0 ? (
                                 <a
                                   href={displayImdbRating.imdbUrl || (displayImdbRating.imdbId ? 'https://www.imdb.com/title/' + displayImdbRating.imdbId + '/' : '#')}
                                   target="_blank"
@@ -3247,7 +3288,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                 >
                                   IMDb {displayImdbRating.imdbRating.toFixed(1)}
                                 </a>
-                              )}
+                              ) : mediaMetadata?.rating ? (
+                                <span className="text-amber-300">TMDB {mediaMetadata.rating.toFixed(1)}</span>
+                              ) : null}
                             </div>
 
                             <p className="mt-2 line-clamp-3 text-[10px] leading-relaxed text-slate-400">
