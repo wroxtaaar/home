@@ -6753,95 +6753,289 @@ app.router.add_event_handler("startup", _warm_marvel_catalogue_on_startup)
 
 _watchmode_search_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _WATCHMODE_SEARCH_CACHE_TTL = 6 * 60 * 60
+_TVMAZE_SEARCH_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def _availability_normalize_title(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+
+
+async def _fallback_tvmaze_search(query: str, timeout: httpx.Timeout) -> list[dict[str, Any]]:
+    """Metadata-only fallback used only when Watchmode and TMDB find no title."""
+    cache_key = query.casefold()
+    cached = _TVMAZE_SEARCH_CACHE.get(cache_key)
+    if cached and time.time() - cached[0] < _WATCHMODE_SEARCH_CACHE_TTL:
+        return cached[1]
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            response = await client.get("https://api.tvmaze.com/search/shows", params={"q": query})
+        if response.status_code != 200:
+            return []
+        payload = response.json()
+    except (httpx.HTTPError, ValueError, TypeError):
+        return []
+    target = _availability_normalize_title(query)
+    matches = []
+    for row in payload if isinstance(payload, list) else []:
+        show = row.get("show") if isinstance(row, dict) else None
+        if not isinstance(show, dict) or not show.get("id"):
+            continue
+        title = str(show.get("name") or "").strip()
+        if not title:
+            continue
+        normalized = _availability_normalize_title(title)
+        if normalized != target and target not in normalized and normalized not in target:
+            continue
+        premiered = str(show.get("premiered") or "")
+        network = show.get("network") or show.get("webChannel") or {}
+        matches.append({
+            "id": str(show["id"]), "title": title, "year": premiered[:4] or None,
+            "type": "tv", "providers": [], "status": "not_confirmed", "source": "TVmaze",
+            "tvmazeId": show["id"], "imdbId": (show.get("externals") or {}).get("imdb"),
+            "overview": re.sub(r"<[^>]+>", " ", str(show.get("summary") or "")).strip(),
+            "network": network.get("name") if isinstance(network, dict) else None,
+            "url": show.get("url"),
+        })
+    matches.sort(key=lambda item: (
+        _availability_normalize_title(item.get("title")) == target,
+        bool(item.get("year")),
+    ), reverse=True)
+    matches = matches[:5]
+    _TVMAZE_SEARCH_CACHE[cache_key] = (time.time(), matches)
+    return matches
+
+
+async def _fallback_omdb_search(query: str, timeout: httpx.Timeout) -> list[dict[str, Any]]:
+    """OMDb metadata fallback; OMDb does not provide streaming availability."""
+    keys = _split_env_keys(os.getenv("OMDB_API_KEYS", ""), os.getenv("OMDB_API_KEY", ""))
+    if not keys:
+        return []
+    target = _availability_normalize_title(query)
+    for key in keys:
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                response = await client.get("https://www.omdbapi.com/", params={"apikey": key, "s": query})
+            if response.status_code != 200:
+                continue
+            payload = response.json()
+        except (httpx.HTTPError, ValueError, TypeError):
+            continue
+        matches = []
+        for row in payload.get("Search") or []:
+            title = str(row.get("Title") or "").strip()
+            imdb_id = str(row.get("imdbID") or "").strip()
+            if not title or not imdb_id:
+                continue
+            normalized = _availability_normalize_title(title)
+            if normalized != target and target not in normalized and normalized not in target:
+                continue
+            kind = "tv" if str(row.get("Type") or "").casefold() == "series" else "movie"
+            matches.append({
+                "id": imdb_id, "title": title, "year": row.get("Year"), "type": kind,
+                "providers": [], "status": "not_confirmed", "source": "OMDb",
+                "imdbId": imdb_id, "poster": row.get("Poster"),
+            })
+        if matches:
+            matches.sort(key=lambda item: _availability_normalize_title(item["title"]) == target, reverse=True)
+            return matches[:5]
+        # Search returned no titles; try the next configured key only on auth errors
+        # is intentionally avoided here so rate limits cannot be bypassed.
+        if payload.get("Response") == "False":
+            return []
+    return []
 
 
 @app.get("/api/search/availability")
 async def api_search_availability(q: str = Query(..., min_length=2, max_length=160)):
-    """Return separate India streaming availability for multiple matching movie titles."""
+    """Search Watchmode and TMDB first; use TVmaze/OMDb for metadata only if neither finds a title."""
     query = re.sub(r"\s+", " ", q).strip()
     cache_key = query.casefold()
     now = time.time()
     cached = _watchmode_search_cache.get(cache_key)
     if cached and now - cached[0] < _WATCHMODE_SEARCH_CACHE_TTL:
         return cached[1]
-    if not WATCHMODE_API_KEYS:
-        return {"status": "unavailable", "query": query, "matches": [], "providers": [], "message": "Watchmode is not configured."}
+
     timeout = httpx.Timeout(8.0, connect=3.0)
-    try:
-        response = await _watchmode_get("/search/",
-            params={"search_field": "name", "search_value": query, "types": "movie"}, timeout=timeout)
-        if response is None or response.status_code >= 400:
-            raise httpx.RequestError("Watchmode search had no successful credential")
-        data = response.json()
-        titles = data.get("title_results", []) if isinstance(data, dict) else []
-        titles = [item for item in titles if isinstance(item, dict) and item.get("id")]
-        if not titles:
-            result = {"status": "not_found", "query": query, "matches": [], "providers": []}
-            _watchmode_search_cache[cache_key] = (now, result)
-            return result
+    target = _availability_normalize_title(query)
+    primary_matches: list[dict[str, Any]] = []
+    primary_errors = []
 
-        def norm(value: Any) -> str:
-            return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
-        target = norm(query)
-        titles.sort(key=lambda item: (norm(item.get("name")) == target, target in norm(item.get("name")), bool(item.get("year"))), reverse=True)
-        selected, seen = [], set()
-        for item in titles:
-            wid = str(item.get("id") or "")
-            kind = str(item.get("type") or "").lower()
-            if not wid or wid in seen or (kind and "movie" not in kind and kind not in {"film", "feature"}):
-                continue
-            seen.add(wid)
-            selected.append(item)
-            if len(selected) >= 6:
-                break
+    # Primary source 1: Watchmode. Search both films and TV series automatically.
+    if WATCHMODE_API_KEYS:
+        try:
+            response = await _watchmode_get("/search/", params={
+                "search_field": "name", "search_value": query, "types": "movie,tv"
+            }, timeout=timeout)
+            if response is not None and response.status_code < 400:
+                data = response.json()
+                titles = data.get("title_results", []) if isinstance(data, dict) else []
+                titles = [item for item in titles if isinstance(item, dict) and item.get("id")]
+                titles.sort(key=lambda item: (
+                    _availability_normalize_title(item.get("name")) == target,
+                    target in _availability_normalize_title(item.get("name")),
+                    bool(item.get("year")),
+                ), reverse=True)
+                selected, seen_ids = [], set()
+                for item in titles:
+                    wid = str(item.get("id") or "")
+                    if not wid or wid in seen_ids:
+                        continue
+                    kind = str(item.get("type") or "").casefold()
+                    if kind and not any(token in kind for token in ("movie", "film", "feature", "tv", "show", "series")):
+                        continue
+                    seen_ids.add(wid)
+                    selected.append(item)
+                    if len(selected) >= 6:
+                        break
 
-        async def resolve(item: dict[str, Any]) -> dict[str, Any]:
-            wid = str(item.get("id") or "")
+                async def resolve_watchmode(item: dict[str, Any]) -> dict[str, Any]:
+                    wid = str(item.get("id") or "")
+                    kind = str(item.get("type") or "").lower()
+                    try:
+                        resp = await _watchmode_get(
+                            f"/title/{quote(wid, safe='')}/sources/",
+                            params={"regions": "IN"}, timeout=timeout)
+                        raw = resp.json() if resp is not None and resp.status_code < 400 else []
+                    except (httpx.HTTPError, ValueError, TypeError):
+                        raw = []
+                    providers, seen_sources = [], set()
+                    for source in raw if isinstance(raw, list) else []:
+                        if not isinstance(source, dict):
+                            continue
+                        name = str(source.get("name") or source.get("source_name") or "").strip()
+                        if not name:
+                            continue
+                        region = str(source.get("region") or "IN").upper()
+                        provider_type = str(source.get("type") or "").lower()
+                        identity = (name.casefold(), region, provider_type)
+                        if identity in seen_sources:
+                            continue
+                        seen_sources.add(identity)
+                        providers.append({"name": name, "region": region, "type": provider_type,
+                            "webUrl": source.get("web_url") or source.get("ios_url") or source.get("android_url") or ""})
+                    return {"id": wid, "title": str(item.get("name") or query), "year": item.get("year"),
+                        "type": kind or "unknown", "tmdbId": item.get("tmdb_id"), "providers": providers[:24],
+                        "status": "ready" if providers else "not_confirmed", "source": "Watchmode"}
+
+                primary_matches.extend(await asyncio.gather(*(resolve_watchmode(item) for item in selected)))
+            else:
+                primary_errors.append("Watchmode unavailable")
+        except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+            primary_errors.append("Watchmode " + type(exc).__name__)
+
+    # Primary source 2: TMDB searches movies and TV independently, then asks TMDB
+    # for the regional provider list using the correct media-specific endpoint.
+    if TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS:
+        for media_type, search_path, title_key, date_key in (
+            ("movie", "search/movie", "title", "release_date"),
+            ("tv", "search/tv", "name", "first_air_date"),
+        ):
             try:
-                resp = await _watchmode_get(f"/title/{quote(wid, safe='')}/sources/",
-                    params={"regions": "IN"}, timeout=timeout)
-                if resp is None or resp.status_code >= 400:
-                    return {"id": wid, "title": str(item.get("name") or query), "year": item.get("year"), "providers": [], "status": "unavailable"}
-                raw = resp.json()
-            except (httpx.HTTPError, ValueError, TypeError):
-                raw = []
-            providers, seen_sources = [], set()
-            if isinstance(raw, list):
-                for source in raw:
-                    if not isinstance(source, dict):
-                        continue
-                    name = str(source.get("name") or source.get("source_name") or "").strip()
-                    if not name:
-                        continue
-                    region = str(source.get("region") or "IN").upper()
-                    kind = str(source.get("type") or "").lower()
-                    identity = (name.casefold(), region, kind)
-                    if identity in seen_sources:
-                        continue
-                    seen_sources.add(identity)
-                    providers.append({"name": name, "region": region, "type": kind,
-                        "webUrl": source.get("web_url") or source.get("ios_url") or source.get("android_url") or ""})
-            return {"id": wid, "title": str(item.get("name") or query), "year": item.get("year"),
-                "type": str(item.get("type") or "movie"), "tmdbId": item.get("tmdb_id"),
-                "providers": providers[:24], "status": "ready" if providers else "not_confirmed", "source": "Watchmode"}
+                payload = await _tmdb_get_json(search_path, {
+                    "query": query, "include_adult": "false", "language": "en-US", "page": 1
+                })
+            except Exception as exc:
+                primary_errors.append("TMDB " + type(exc).__name__)
+                continue
+            rows = []
+            for row in payload.get("results") or []:
+                if not isinstance(row, dict) or not row.get("id"):
+                    continue
+                title = str(row.get(title_key) or "").strip()
+                normalized = _availability_normalize_title(title)
+                if not title or (normalized != target and target not in normalized and normalized not in target):
+                    continue
+                rows.append(row)
+            rows.sort(key=lambda row: (
+                _availability_normalize_title(row.get(title_key)) == target,
+                bool(row.get(date_key)),
+                float(row.get("popularity") or 0),
+            ), reverse=True)
+            for row in rows[:3]:
+                tmdb_id = int(row["id"])
+                try:
+                    provider_data = await _tmdb_get_json(
+                        f"{media_type}/{tmdb_id}/watch/providers", {})
+                except Exception as exc:
+                    primary_errors.append("TMDB providers " + type(exc).__name__)
+                    provider_data = {}
+                region_data = (provider_data.get("results") or {}).get("IN") or {}
+                providers = []
+                for category, kind in (("flatrate", "subscription"), ("free", "free"),
+                                       ("ads", "ads"), ("rent", "rent"), ("buy", "buy")):
+                    for provider in region_data.get(category) or []:
+                        name = str(provider.get("provider_name") or "").strip()
+                        if name:
+                            providers.append({"name": name, "region": "IN", "type": kind,
+                                "webUrl": region_data.get("link") or ""})
+                title = str(row.get(title_key) or query)
+                primary_matches.append({
+                    "id": str(tmdb_id), "title": title, "year": str(row.get(date_key) or "")[:4] or None,
+                    "type": media_type, "tmdbId": tmdb_id, "providers": providers[:24],
+                    "status": "ready" if providers else "not_confirmed", "source": "TMDB",
+                })
 
-        matches = await asyncio.gather(*(resolve(item) for item in selected))
-        merged, seen_merged = [], set()
-        for match in matches:
+    # De-duplicate same title/media/ID across sources; merge their provider entries.
+    deduped: list[dict[str, Any]] = []
+    index_by_identity: dict[tuple[str, str], int] = {}
+    for match in primary_matches:
+        identity = (str(match.get("type") or "").casefold(),
+                    _availability_normalize_title(match.get("title")))
+        if identity in index_by_identity:
+            existing = deduped[index_by_identity[identity]]
+            provider_seen = {(str(p.get("name") or "").casefold(), str(p.get("type") or "").casefold())
+                             for p in existing.get("providers") or []}
             for provider in match.get("providers") or []:
-                identity = (str(provider.get("name") or "").casefold(), str(provider.get("region") or "IN"), str(provider.get("type") or ""))
-                if identity not in seen_merged:
-                    seen_merged.add(identity)
-                    merged.append(provider)
-        result = {"status": "ready" if any(m.get("providers") for m in matches) else "not_confirmed",
-            "query": query, "title": str(matches[0].get("title") or query) if matches else query,
-            "year": matches[0].get("year") if matches else None, "matches": matches,
-            "providers": merged[:24], "source": "Watchmode"}
-        _watchmode_search_cache[cache_key] = (now, result)
+                key = (str(provider.get("name") or "").casefold(), str(provider.get("type") or "").casefold())
+                if key not in provider_seen:
+                    existing["providers"].append(provider)
+                    provider_seen.add(key)
+            if match.get("source") not in str(existing.get("source") or ""):
+                existing["source"] = str(existing.get("source") or "") + " + " + str(match.get("source") or "")
+            existing["status"] = "ready" if existing.get("providers") else "not_confirmed"
+        else:
+            index_by_identity[identity] = len(deduped)
+            deduped.append(match)
+
+    # Only use TVmaze/OMDb when both primary catalogues returned no title match.
+    if not deduped:
+        fallback_matches = await _fallback_tvmaze_search(query, timeout)
+        if not fallback_matches:
+            fallback_matches = await _fallback_omdb_search(query, timeout)
+        if fallback_matches:
+            result = {"status": "not_confirmed", "query": query, "title": fallback_matches[0]["title"],
+                "year": fallback_matches[0].get("year"), "matches": fallback_matches, "providers": [],
+                "source": fallback_matches[0].get("source"),
+                "message": "Metadata match found, but no streaming provider could be confirmed by Watchmode or TMDB."}
+        else:
+            result = {"status": "not_found" if not primary_errors else "unavailable", "query": query,
+                "title": query, "year": None, "matches": [], "providers": [],
+                "message": "No title match found in Watchmode, TMDB, TVmaze, or OMDb."}
+        _watchmode_search_cache[cache_key] = (time.time(), result)
         return result
-    except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
-        logger.info("Watchmode normal-search availability failed for query=%r error=%s", query, type(exc).__name__)
-        return {"status": "unavailable", "query": query, "matches": [], "providers": [], "message": "Streaming availability is temporarily unavailable."}
+
+    deduped.sort(key=lambda item: (
+        _availability_normalize_title(item.get("title")) == target,
+        bool(item.get("year")),
+        bool(item.get("providers")),
+    ), reverse=True)
+    merged_providers, seen_merged = [], set()
+    for match in deduped:
+        for provider in match.get("providers") or []:
+            identity = (str(provider.get("name") or "").casefold(),
+                        str(provider.get("region") or "IN").upper(),
+                        str(provider.get("type") or "").casefold())
+            if identity not in seen_merged:
+                seen_merged.add(identity)
+                merged_providers.append(provider)
+    result = {
+        "status": "ready" if merged_providers else "not_confirmed",
+        "query": query, "title": deduped[0].get("title") or query, "year": deduped[0].get("year"),
+        "matches": deduped[:10], "providers": merged_providers[:24],
+        "source": "Watchmode + TMDB",
+    }
+    _watchmode_search_cache[cache_key] = (time.time(), result)
+    return result
 
 
 @app.get("/api/search")
