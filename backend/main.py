@@ -5857,13 +5857,26 @@ async def _tmdb_fetch_movie_ott_availability(movie_id: int, region: str) -> dict
     # TMDB/JustWatch fallback remains available if Watchmode is not configured,
     # temporarily unreachable, or has no usable provider records for this title.
     tmdb_provider_result: dict[str, Any] = {}
+    tmdb_provider_lookup_failed = False
     if not (watchmode_streaming or watchmode_rent or watchmode_buy):
         try:
             result = await _tmdb_get_json(f"movie/{movie_id}/watch/providers")
             if isinstance(result, dict):
                 tmdb_provider_result = result
+            else:
+                tmdb_provider_lookup_failed = True
         except Exception as exc:
+            tmdb_provider_lookup_failed = True
             logger.info("TMDB provider fallback failed for movie %s: %s", movie_id, exc)
+
+    # Do not turn an upstream outage/cooldown into a permanent empty cache entry.
+    # A successful TMDB response with no regional providers is a valid empty result;
+    # a failed request is unknown and must be retried later.
+    if tmdb_provider_lookup_failed and not (watchmode_streaming or watchmode_rent or watchmode_buy):
+        raise HTTPException(
+            status_code=503,
+            detail="Streaming availability could not be verified because Watchmode returned no sources and TMDB fallback is temporarily unavailable.",
+        )
 
     all_regions = (tmdb_provider_result.get("results") or {}) if isinstance(tmdb_provider_result, dict) else {}
     region_payload = all_regions.get(region) or {}
