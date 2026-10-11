@@ -49,21 +49,16 @@ function normalizeProviderLogoUrl(value: unknown): string {
 
 function fallbackProviderLogoUrl(providerName: string): string {
   const name = normalizeOttProviderName(providerName).replace(/[^a-z0-9]+/g, ' ').trim();
+  // Only use verified Simple Icons slugs here. Most Indian OTT services
+  // are supplied by TMDB as logo_path values instead of Simple Icons assets.
   const brands: Array<{ match: RegExp; slug: string; color: string }> = [
     { match: /\bnetflix\b/, slug: 'netflix', color: 'E50914' },
-    { match: /\b(prime video|amazon prime|prime)\b/, slug: 'amazonprime', color: '00A8E1' },
-    { match: /\b(hotstar|jiohotstar|disney hotstar)\b/, slug: 'hotstar', color: '0F9D58' },
-    { match: /\bzee ?5\b/, slug: 'zee5', color: '8230C6' },
     { match: /\bapple tv\b/, slug: 'appletv', color: 'FFFFFF' },
-    { match: /\bdisney ?\+|disney plus\b/, slug: 'disneyplus', color: '113CCF' },
-    { match: /\bsony ?liv\b/, slug: 'sonyliv', color: 'FFFFFF' },
-    { match: /\bhulu\b/, slug: 'hulu', color: '1CE783' },
     { match: /\b(max|hbo max)\b/, slug: 'max', color: '002BE7' },
     { match: /\bparamount ?\+|paramount plus\b/, slug: 'paramountplus', color: '0064FF' },
-    { match: /\bpeacock\b/, slug: 'peacock', color: 'FFFFFF' },
     { match: /\bcrunchyroll\b/, slug: 'crunchyroll', color: 'F47521' },
     { match: /\byoutube\b/, slug: 'youtube', color: 'FF0000' },
-    { match: /\bjiocinema\b/, slug: 'jiocinema', color: 'D80C8C' },
+    { match: /^sony$/, slug: 'sony', color: 'FFFFFF' },
   ];
   const brand = brands.find(item => item.match.test(name));
   return brand ? 'https://cdn.simpleicons.org/' + brand.slug + '/' + brand.color : '';
@@ -381,8 +376,26 @@ function uniqueOttProviders<T extends { name: string; type?: string; webUrl?: st
   const unique = new Map<string, T>();
   providers.forEach(provider => {
     const key = normalizeOttProviderName(provider.name);
-    if (!key || unique.has(key)) return;
-    unique.set(key, { ...provider, name: displayOttProviderName(provider.name) });
+    if (!key) return;
+    const existing = unique.get(key);
+    if (existing) {
+      const existingLogo = normalizeProviderLogoUrl(existing.logoUrl);
+      const candidateLogo = normalizeProviderLogoUrl(provider.logoUrl);
+      // A Watchmode entry may appear first without artwork while TMDB has the
+      // logo for the same service. Merge, rather than dropping the later row.
+      unique.set(key, {
+        ...existing,
+        logoUrl: existingLogo || candidateLogo || existing.logoUrl || provider.logoUrl,
+        webUrl: existing.webUrl || provider.webUrl,
+        providerId: existing.providerId ?? provider.providerId,
+      });
+      return;
+    }
+    unique.set(key, {
+      ...provider,
+      name: displayOttProviderName(provider.name),
+      logoUrl: normalizeProviderLogoUrl(provider.logoUrl) || provider.logoUrl,
+    });
   });
 
   const all = Array.from(unique.entries());
