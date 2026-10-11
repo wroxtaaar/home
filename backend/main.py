@@ -4565,8 +4565,11 @@ async def resolve_search_magnet(body: dict[str, Any]):
 # One-time Marvel catalogue. Results are shared by every visitor to this Home
 # instance and never expire; the deployment mounts /app/data on persistent VPS
 # storage so a container replacement does not force another provider crawl.
-MARVEL_CATALOGUE_VERSION = 3
+MARVEL_CATALOGUE_VERSION = 4
 MARVEL_CATALOGUE_PATH = Path(os.getenv("MARVEL_CATALOGUE_PATH", "/app/data/marvel_catalogue.json"))
+# Curated live-action theatrical Marvel films across studios (Marvel Studios, Fox,
+# Sony, Universal, etc.). Excludes TV films, specials, documentaries, and animated
+# feature films so the persistent torrent catalogue stays focused on live-action movies.
 MARVEL_MOVIE_SEARCHES: tuple[tuple[str, int], ...] = (
     ("Spider-Man: Brand New Day", 2026),
     ("The Fantastic Four: First Steps", 2025),
@@ -4578,7 +4581,6 @@ MARVEL_MOVIE_SEARCHES: tuple[tuple[str, int], ...] = (
     ("Madame Web", 2024),
     ("The Marvels", 2023),
     ("Guardians of the Galaxy Vol. 3", 2023),
-    ("Spider-Man: Across the Spider-Verse", 2023),
     ("Ant-Man and the Wasp: Quantumania", 2023),
     ("Black Panther: Wakanda Forever", 2022),
     ("Thor: Love and Thunder", 2022),
@@ -4594,7 +4596,6 @@ MARVEL_MOVIE_SEARCHES: tuple[tuple[str, int], ...] = (
     ("Spider-Man: Far From Home", 2019),
     ("Avengers: Endgame", 2019),
     ("Captain Marvel", 2019),
-    ("Spider-Man: Into the Spider-Verse", 2018),
     ("Venom", 2018),
     ("Ant-Man and the Wasp", 2018),
     ("Deadpool 2", 2018),
@@ -4615,9 +4616,6 @@ MARVEL_MOVIE_SEARCHES: tuple[tuple[str, int], ...] = (
     ("The Amazing Spider-Man 2", 2014),
     ("Captain America: The Winter Soldier", 2014),
     ("Guardians of the Galaxy", 2014),
-    ("Big Hero 6", 2014),
-    ("Avengers Confidential: Black Widow & Punisher", 2014),
-    ("Iron Man: Rise of Technovore", 2013),
     ("The Wolverine", 2013),
     ("Iron Man 3", 2013),
     ("The Amazing Spider-Man", 2012),
@@ -4626,24 +4624,17 @@ MARVEL_MOVIE_SEARCHES: tuple[tuple[str, int], ...] = (
     ("X-Men: First Class", 2011),
     ("Captain America: The First Avenger", 2011),
     ("Thor", 2011),
-    ("Thor: Tales of Asgard", 2011),
     ("Iron Man 2", 2010),
-    ("Planet Hulk", 2010),
     ("X-Men Origins: Wolverine", 2009),
-    ("Hulk Vs.", 2009),
     ("Punisher: War Zone", 2008),
     ("The Incredible Hulk", 2008),
     ("Iron Man", 2008),
-    ("Next Avengers: Heroes of Tomorrow", 2008),
     ("Spider-Man 3", 2007),
     ("Ghost Rider", 2007),
     ("Fantastic Four: Rise of the Silver Surfer", 2007),
     ("X-Men: The Last Stand", 2006),
-    ("Ultimate Avengers 2", 2006),
-    ("Ultimate Avengers", 2006),
     ("Elektra", 2005),
     ("Fantastic Four", 2005),
-    ("Man-Thing", 2005),
     ("Spider-Man 2", 2004),
     ("The Punisher", 2004),
     ("Blade: Trinity", 2004),
@@ -4654,15 +4645,7 @@ MARVEL_MOVIE_SEARCHES: tuple[tuple[str, int], ...] = (
     ("Blade II", 2002),
     ("X-Men", 2000),
     ("Blade", 1998),
-    ("Nick Fury: Agent of S.H.I.E.L.D.", 1998),
-    ("Generation X", 1996),
-    ("The Trial of the Incredible Hulk", 1989),
-    ("The Punisher", 1989),
-    ("The Incredible Hulk Returns", 1988),
     ("Howard the Duck", 1986),
-    ("Captain America II: Death Too Soon", 1979),
-    ("Captain America", 1979),
-    ("Dr. Strange", 1978),
 )
 _MARVEL_CATALOGUE_CONCURRENCY = 2
 _marvel_catalogue_task: asyncio.Task | None = None
