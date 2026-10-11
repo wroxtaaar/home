@@ -8380,13 +8380,24 @@ async def _api_search_availability_impl(q: str) -> dict[str, Any]:
                     _availability_normalize_title(match.get("title")))
         if identity in index_by_identity:
             existing = deduped[index_by_identity[identity]]
-            provider_seen = {(str(p.get("name") or "").casefold(), str(p.get("type") or "").casefold())
-                             for p in existing.get("providers") or []}
+            existing_providers = existing.get("providers") or []
+            provider_indexes = {
+                (str(provider.get("name") or "").casefold(), str(provider.get("type") or "").casefold()): provider
+                for provider in existing_providers
+            }
             for provider in match.get("providers") or []:
                 key = (str(provider.get("name") or "").casefold(), str(provider.get("type") or "").casefold())
-                if key not in provider_seen:
-                    existing["providers"].append(provider)
-                    provider_seen.add(key)
+                previous_provider = provider_indexes.get(key)
+                if previous_provider is None:
+                    existing_providers.append(provider)
+                    provider_indexes[key] = provider
+                    continue
+                # Watchmode may identify the provider first but omit its logo;
+                # enrich that same provider with TMDB's logo rather than dropping it.
+                for field in ("logoUrl", "webUrl", "providerId"):
+                    if not previous_provider.get(field) and provider.get(field):
+                        previous_provider[field] = provider[field]
+            existing["providers"] = existing_providers
             if match.get("source") not in str(existing.get("source") or ""):
                 existing["source"] = str(existing.get("source") or "") + " + " + str(match.get("source") or "")
             existing["status"] = "ready" if existing.get("providers") else "not_confirmed"
@@ -8416,15 +8427,20 @@ async def _api_search_availability_impl(q: str) -> dict[str, Any]:
         bool(item.get("providers")),
         bool(item.get("year")),
     ), reverse=True)
-    merged_providers, seen_merged = [], set()
+    merged_providers, merged_provider_index = [], {}
     for match in deduped:
         for provider in match.get("providers") or []:
             identity = (str(provider.get("name") or "").casefold(),
                         str(provider.get("region") or "IN").upper(),
                         str(provider.get("type") or "").casefold())
-            if identity not in seen_merged:
-                seen_merged.add(identity)
+            existing_provider = merged_provider_index.get(identity)
+            if existing_provider is None:
+                merged_provider_index[identity] = provider
                 merged_providers.append(provider)
+                continue
+            for field in ("logoUrl", "webUrl", "providerId"):
+                if not existing_provider.get(field) and provider.get(field):
+                    existing_provider[field] = provider[field]
     result = {
         "status": "ready" if merged_providers else "not_confirmed",
         "query": query, "title": deduped[0].get("title") or query, "year": deduped[0].get("year"),
