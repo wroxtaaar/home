@@ -2294,7 +2294,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     </div>
                   )}
                   {movie.rating != null && movie.rating > 0 && (
-                    <span className="absolute left-2 top-2 rounded-md border border-amber-400/50 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow-sm shadow-amber-500/20">
+                    <span className="absolute left-2 top-2 rounded-md bg-slate-950/90 px-2 py-1 text-[10px] font-bold text-emerald-300">
                       ★ {movie.rating.toFixed(1)}
                     </span>
                   )}
