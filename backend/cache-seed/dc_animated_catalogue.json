@@ -2466,7 +2466,34 @@
       "infoUrl": "",
       "sourceUrl": "",
       "catalogueKey": "dc-animated",
-      "catalogueTitle": "Battle of the Super Sons"
+      "catalogueTitle": "Battle of the Super Sons",
+      "tmdbId": 886396,
+      "ottAvailability": {
+        "region": "IN",
+        "status": "rent_buy",
+        "streamingProviders": [],
+        "rentProviders": [
+          {
+            "providerId": "apple",
+            "name": "Apple TV",
+            "logoUrl": "https://media.movieofthenight.com/services/apple/logo-dark-theme.svg",
+            "webUrl": "https://tv.apple.com/in/movie/batman-and-superman-battle-of-the-super-sons/umc.cmc.49cwrrn7kckkvdfrit6vawmo9?playableId=tvs.sbd.9001%3A1628111287"
+          }
+        ],
+        "buyProviders": [
+          {
+            "providerId": "apple",
+            "name": "Apple TV",
+            "logoUrl": "https://media.movieofthenight.com/services/apple/logo-dark-theme.svg",
+            "webUrl": "https://tv.apple.com/in/movie/batman-and-superman-battle-of-the-super-sons/umc.cmc.49cwrrn7kckkvdfrit6vawmo9?playableId=tvs.sbd.9001%3A1628111287"
+          }
+        ],
+        "providerLink": "https://www.themoviedb.org/movie/886396/watch?locale=IN",
+        "source": "Streaming Availability API",
+        "checkedAt": "2026-10-11T14:34:57.190307+00:00",
+        "providerAttribution": "Streaming availability data powered by Streaming Availability API.",
+        "attribution": "This product uses the TMDB API but is not endorsed or certified by TMDB."
+      }
     },
     {
       "guid": "yts-2cdc3a0d3300acb3e7e47a71c5677290b11395d0",
@@ -2493,7 +2520,34 @@
       "infoUrl": "",
       "sourceUrl": "",
       "catalogueKey": "dc-animated",
-      "catalogueTitle": "Battle of the Super Sons"
+      "catalogueTitle": "Battle of the Super Sons",
+      "tmdbId": 886396,
+      "ottAvailability": {
+        "region": "IN",
+        "status": "rent_buy",
+        "streamingProviders": [],
+        "rentProviders": [
+          {
+            "providerId": "apple",
+            "name": "Apple TV",
+            "logoUrl": "https://media.movieofthenight.com/services/apple/logo-dark-theme.svg",
+            "webUrl": "https://tv.apple.com/in/movie/batman-and-superman-battle-of-the-super-sons/umc.cmc.49cwrrn7kckkvdfrit6vawmo9?playableId=tvs.sbd.9001%3A1628111287"
+          }
+        ],
+        "buyProviders": [
+          {
+            "providerId": "apple",
+            "name": "Apple TV",
+            "logoUrl": "https://media.movieofthenight.com/services/apple/logo-dark-theme.svg",
+            "webUrl": "https://tv.apple.com/in/movie/batman-and-superman-battle-of-the-super-sons/umc.cmc.49cwrrn7kckkvdfrit6vawmo9?playableId=tvs.sbd.9001%3A1628111287"
+          }
+        ],
+        "providerLink": "https://www.themoviedb.org/movie/886396/watch?locale=IN",
+        "source": "Streaming Availability API",
+        "checkedAt": "2026-10-11T14:34:57.190307+00:00",
+        "providerAttribution": "Streaming availability data powered by Streaming Availability API.",
+        "attribution": "This product uses the TMDB API but is not endorsed or certified by TMDB."
+      }
     },
     {
       "guid": "yts-9e1d682f02024997b146110d6c03161ee5f6e2bc",
@@ -2520,7 +2574,34 @@
       "infoUrl": "",
       "sourceUrl": "",
       "catalogueKey": "dc-animated",
-      "catalogueTitle": "Battle of the Super Sons"
+      "catalogueTitle": "Battle of the Super Sons",
+      "tmdbId": 886396,
+      "ottAvailability": {
+        "region": "IN",
+        "status": "rent_buy",
+        "streamingProviders": [],
+        "rentProviders": [
+          {
+            "providerId": "apple",
+            "name": "Apple TV",
+            "logoUrl": "https://media.movieofthenight.com/services/apple/logo-dark-theme.svg",
+            "webUrl": "https://tv.apple.com/in/movie/batman-and-superman-battle-of-the-super-sons/umc.cmc.49cwrrn7kckkvdfrit6vawmo9?playableId=tvs.sbd.9001%3A1628111287"
+          }
+        ],
+        "buyProviders": [
+          {
+            "providerId": "apple",
+            "name": "Apple TV",
+            "logoUrl": "https://media.movieofthenight.com/services/apple/logo-dark-theme.svg",
+            "webUrl": "https://tv.apple.com/in/movie/batman-and-superman-battle-of-the-super-sons/umc.cmc.49cwrrn7kckkvdfrit6vawmo9?playableId=tvs.sbd.9001%3A1628111287"
+          }
+        ],
+        "providerLink": "https://www.themoviedb.org/movie/886396/watch?locale=IN",
+        "source": "Streaming Availability API",
+        "checkedAt": "2026-10-11T14:34:57.190307+00:00",
+        "providerAttribution": "Streaming availability data powered by Streaming Availability API.",
+        "attribution": "This product uses the TMDB API but is not endorsed or certified by TMDB."
+      }
     },
     {
       "guid": "yts-38e927f5c49ff5d36ee86ecaf8202c409814fae8",
