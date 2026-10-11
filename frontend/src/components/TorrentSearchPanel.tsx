@@ -111,6 +111,20 @@ function normalizeGroupTitle(value: string): string {
     .replace(/^(?:the|a|an)\s+/, '');
 }
 
+function uniqueOttProviders<T extends { name: string; type?: string; webUrl?: string }>(providers: T[]): T[] {
+  const seen = new Set<string>();
+  return providers.filter(provider => {
+    const key = String(provider.name || '')
+      .toLowerCase()
+      .replace(/\\s*[-·:]\\s*(?:rent|buy|subscription|sub|streaming)\\s*$/i, '')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function torrentMediaIdentity(result: TorrentSearchResult): { title: string; normalized: string; year: string } {
   const source = String(result.mediaTitle || result.title || '').trim();
   const embeddedYears: Array<{ year: string; index: number }> = [];
@@ -2193,7 +2207,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
 
           <div
-            className="grid grid-cols-2 gap-2 sm:block sm:rounded-2xl sm:border sm:border-slate-800 sm:overflow-hidden sm:bg-slate-900 sm:divide-y sm:divide-slate-800/80 lg:grid lg:grid-cols-6 lg:gap-[22px] lg:w-full lg:max-w-none lg:mx-0 lg:p-0 lg:border-0 lg:bg-transparent lg:divide-y-0 lg:overflow-visible"
+            className="grid grid-cols-2 gap-2 sm:block sm:rounded-2xl sm:border sm:border-slate-800 sm:overflow-hidden sm:bg-slate-900 sm:divide-y sm:divide-slate-800/80 lg:grid lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 lg:gap-4 lg:w-full lg:max-w-none lg:mx-0 lg:p-0 lg:border-0 lg:bg-transparent lg:divide-y-0 lg:overflow-visible"
           >
             {groupedResults.map((group, index) => {
               const selectedKey = selectedQualityByGroup[group.key];
@@ -2304,49 +2318,43 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             {(() => {
                               const availability = searchAvailabilityByGroup[group.key];
                               if (!availability) return null;
-                              const matchedTitles = (availability.matches || []).filter(match => match.providers?.length);
-                              if (matchedTitles.length > 0) {
-                                return (
-                                  <div className="mt-2 space-y-1.5" aria-label={`Streaming services for ${group.title}`}>
-                                    {matchedTitles.map((match, matchIndex) => (
-                                      <div key={match.id || match.title + String(match.year || '') + matchIndex} className="rounded-md border border-slate-800 bg-slate-950/60 px-2 py-1.5">
-                                        <div className="mb-1 text-[10px] font-semibold leading-4 text-slate-300">
-                                          {match.title}{match.year ? ` (${match.year})` : ''}
-                                        </div>
-                                        <div className="flex flex-wrap gap-1">
-                                          {match.providers.map((provider, providerIndex) => (
-                                            <a
-                                              key={provider.name + provider.type + providerIndex}
-                                              href={provider.webUrl || undefined}
-                                              target={provider.webUrl ? '_blank' : undefined}
-                                              rel={provider.webUrl ? 'noreferrer' : undefined}
-                                              className="rounded-full border border-cyan-900/70 bg-cyan-950/40 px-1.5 py-0.5 text-[10px] leading-4 text-cyan-200 hover:border-cyan-600"
-                                              title={provider.type ? provider.type : 'Streaming service'}
-                                            >
-                                              {provider.name}{provider.type ? ` · ${provider.type}` : ''}
-                                            </a>
-                                          ))}
-                                        </div>
-                                      </div>
-                                    ))}
-                                  </div>
-                                );
-                              }
-                              if (availability.status === 'ready' && availability.providers.length > 0) {
+                              const groupIdentity = torrentMediaIdentity({
+                                title: group.title,
+                                mediaTitle: group.title,
+                                year: group.year
+                              } as TorrentSearchResult);
+                              const matchingTitles = (availability.matches || []).filter(match => {
+                                if (!match.providers?.length) return false;
+                                const matchIdentity = normalizeGroupTitle(match.title);
+                                const groupTitle = groupIdentity.normalized;
+                                // Do not show providers for a different movie returned by a loose title match.
+                                return matchIdentity === groupTitle ||
+                                  matchIdentity.replace(/\\s+\\d{4}$/, '') === groupTitle ||
+                                  groupTitle.replace(/\\s+\\d{4}$/, '') === matchIdentity;
+                              });
+                              const matchedProviders = uniqueOttProviders(matchingTitles.flatMap(match => match.providers));
+                              const allProviders = uniqueOttProviders(availability.providers || []);
+                              const providersToShow = matchedProviders.length ? matchedProviders : allProviders;
+                              if (providersToShow.length > 0 && (matchingTitles.length > 0 || availability.status === 'ready')) {
                                 return (
                                   <div className="mt-2 flex flex-wrap gap-1" aria-label={`Streaming services for ${group.title}`}>
-                                    {availability.providers.map((provider, providerIndex) => (
-                                      <a
-                                        key={provider.name + provider.type + providerIndex}
-                                        href={provider.webUrl || undefined}
-                                        target={provider.webUrl ? '_blank' : undefined}
-                                        rel={provider.webUrl ? 'noreferrer' : undefined}
-                                        className="rounded-full border border-cyan-900/70 bg-cyan-950/40 px-1.5 py-0.5 text-[10px] leading-4 text-cyan-200 hover:border-cyan-600"
-                                        title={provider.type ? provider.type : 'Streaming service'}
-                                      >
-                                        {provider.name}
-                                      </a>
-                                    ))}
+                                    {providersToShow.map((provider, providerIndex) => {
+                                      const name = String(provider.name || '')
+                                        .replace(/\\s*[-·:]\\s*(?:rent|buy|subscription|sub|streaming)\\s*$/i, '')
+                                        .trim();
+                                      return (
+                                        <a
+                                          key={name.toLowerCase() || String(providerIndex)}
+                                          href={provider.webUrl || undefined}
+                                          target={provider.webUrl ? '_blank' : undefined}
+                                          rel={provider.webUrl ? 'noreferrer' : undefined}
+                                          className="rounded-full border border-cyan-900/70 bg-cyan-950/40 px-1.5 py-0.5 text-[10px] leading-4 text-cyan-200 hover:border-cyan-600"
+                                          title={name || 'Streaming service'}
+                                        >
+                                          {name}
+                                        </a>
+                                      );
+                                    })}
                                   </div>
                                 );
                               }
