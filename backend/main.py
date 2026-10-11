@@ -7421,7 +7421,10 @@ async def api_search_metadata(q: str = Query(..., min_length=2, max_length=160))
         if media_type not in {"movie", "tv"} or not item.get("id"):
             continue
         title = str((item.get("title") if media_type == "movie" else item.get("name")) or "").strip()
-        if not title or not _availability_title_is_relevant(query, title):
+        # TMDB has already ranked these results for the submitted query. Do not
+        # apply the stricter Watchmode availability matcher here: franchise titles
+        # such as "The Amazing Spider-Man 2" are valid hits for "Spider-Man".
+        if not title:
             continue
         release_date = str(
             (item.get("release_date") if media_type == "movie" else item.get("first_air_date")) or ""
