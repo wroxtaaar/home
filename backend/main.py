@@ -6348,6 +6348,146 @@ async def api_tmdb_movie_ott_availability(
             _tmdb_ott_inflight.pop(cache_key, None)
 
 
+def _marvel_ott_normalize_title(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+
+
+async def _resolve_marvel_tmdb_movie_id(title: str, year: int) -> tuple[int | None, str]:
+    """Resolve a curated Marvel title only when TMDB's title match is unambiguous."""
+    try:
+        payload = await _tmdb_get_json("search/movie", {
+            "query": title,
+            "year": year,
+            "include_adult": "false",
+            "language": "en-US",
+            "page": 1,
+        })
+    except Exception as exc:
+        logger.warning("Marvel OTT ID lookup failed for %s (%s): %s", title, year, type(exc).__name__)
+        return None, "lookup_failed"
+
+    expected = _marvel_ott_normalize_title(title)
+    candidates = []
+    for row in payload.get("results") or []:
+        if not isinstance(row, dict) or not isinstance(row.get("id"), int):
+            continue
+        names = {
+            _marvel_ott_normalize_title(row.get("title")),
+            _marvel_ott_normalize_title(row.get("original_title")),
+        }
+        release_year = str(row.get("release_date") or "")[:4]
+        if expected in names and (not release_year or release_year == str(year)):
+            candidates.append(row)
+    if len(candidates) == 1:
+        return int(candidates[0]["id"]), "exact_match"
+    if len(candidates) > 1:
+        return None, "ambiguous_exact_match"
+
+    # Retry without a year in case TMDB's release year differs from the curated
+    # theatrical year, but still require an exact normalized title match.
+    try:
+        payload = await _tmdb_get_json("search/movie", {
+            "query": title,
+            "include_adult": "false",
+            "language": "en-US",
+            "page": 1,
+        })
+    except Exception as exc:
+        logger.warning("Marvel OTT fallback ID lookup failed for %s: %s", title, type(exc).__name__)
+        return None, "lookup_failed"
+    candidates = []
+    for row in payload.get("results") or []:
+        if not isinstance(row, dict) or not isinstance(row.get("id"), int):
+            continue
+        names = {
+            _marvel_ott_normalize_title(row.get("title")),
+            _marvel_ott_normalize_title(row.get("original_title")),
+        }
+        if expected in names:
+            candidates.append(row)
+    if len(candidates) == 1:
+        return int(candidates[0]["id"]), "exact_match_year_fallback"
+    return None, "ambiguous_exact_match" if candidates else "no_exact_tmdb_match"
+
+
+@app.get("/api/movies/ott/backfill/marvel")
+async def api_backfill_marvel_ott(
+    offset: int = Query(0, ge=0),
+    limit: int = Query(5, ge=1, le=10),
+    region: str = Query("IN", min_length=2, max_length=2),
+    force: bool = Query(False),
+):
+    """One-time, resumable Marvel OTT backfill. Results are saved to the permanent disk cache."""
+    region = region.strip().upper()
+    if not re.fullmatch(r"[A-Z]{2}", region):
+        raise HTTPException(status_code=422, detail="Region must be a two-letter country code.")
+    total = len(MARVEL_MOVIE_SEARCHES)
+    if offset >= total:
+        return {"status": "complete", "offset": offset, "limit": limit, "total": total, "processed": 0, "results": []}
+
+    batch = MARVEL_MOVIE_SEARCHES[offset:offset + limit]
+    results: list[dict[str, Any]] = []
+    for title, year in batch:
+        movie_id, resolution = await _resolve_marvel_tmdb_movie_id(title, year)
+        if movie_id is None:
+            results.append({
+                "title": title, "year": year, "status": "unresolved_tmdb_id",
+                "resolution": resolution, "movieId": None,
+            })
+            continue
+
+        cache_key = (movie_id, region)
+        saved = _read_tmdb_ott_persistent_cache(cache_key)
+        memory = _tmdb_ott_cache.get(cache_key)
+        payload = None
+        if not force and saved:
+            payload = saved[1]
+        elif not force and memory:
+            payload = memory[1]
+        if payload is None:
+            try:
+                payload = await _tmdb_fetch_movie_ott_availability(movie_id, region)
+            except Exception as exc:
+                results.append({
+                    "title": title, "year": year, "status": "lookup_failed",
+                    "resolution": resolution, "movieId": movie_id,
+                    "error": str(getattr(exc, "detail", "") or type(exc).__name__),
+                })
+                continue
+            _write_tmdb_ott_persistent_cache(cache_key, payload)
+            _tmdb_ott_cache[cache_key] = (time.monotonic(), payload)
+
+        providers = payload.get("streamingProviders") or []
+        rent = payload.get("rentProviders") or []
+        buy = payload.get("buyProviders") or []
+        results.append({
+            "title": title, "year": year, "movieId": movie_id,
+            "resolution": resolution,
+            "status": "streaming_info_found" if providers else "no_streaming_provider_reported",
+            "streamingProviders": [p.get("name") for p in providers if isinstance(p, dict)],
+            "rentProviders": [p.get("name") for p in rent if isinstance(p, dict)],
+            "buyProviders": [p.get("name") for p in buy if isinstance(p, dict)],
+            "providerLink": payload.get("providerLink"),
+            "cacheSaved": bool(saved) or payload is not None,
+        })
+
+    counts: dict[str, int] = {}
+    for row in results:
+        key = str(row.get("status") or "unknown")
+        counts[key] = counts.get(key, 0) + 1
+    return {
+        "status": "batch_processed",
+        "region": region,
+        "offset": offset,
+        "limit": limit,
+        "total": total,
+        "processed": len(results),
+        "nextOffset": offset + len(batch),
+        "counts": counts,
+        "results": results,
+    }
+
+
 @app.get("/api/catalogue/extra/{catalogue_key}")
 async def api_extra_catalogue(catalogue_key: str):
     if catalogue_key not in _EXTRA_CATALOGUES:
