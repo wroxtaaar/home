@@ -4169,10 +4169,85 @@ def _canonical_catalogue_poster_url(item: dict[str, Any]) -> str:
     if not title:
         return ""
     year = str(item.get("year") or "").strip()
+
+    # These cached release names previously resolved to unrelated poster art.
+    # Pin them to canonical TMDB poster files for the exact title/year.
+    poster_key_title = re.sub(r"\[[^\]]*(?:\]|$)", " ", title)
+    poster_key_title = re.sub(r"\([^)]*(?:\)|$)", " ", poster_key_title)
+    if year:
+        poster_key_title = re.sub(rf"\s*{re.escape(year)}\s*$", "", poster_key_title)
+    poster_key_title = re.split(
+        r"\b(?:2160p|1440p|1080p|720p|576p|480p|4k|8k|3d|uhd|hdrip|webrip|web[- ]?dl|bluray|blu[- ]?ray|brrip|bdrip|hdtv|x264|x265|h264|h265|hevc)\b",
+        poster_key_title,
+        maxsplit=1,
+        flags=re.I,
+    )[0]
+    poster_key = re.sub(r"[^a-z0-9]+", "", poster_key_title.casefold())
+    if year == "2014" and poster_key in {"theamazingspiderman2", "amazingspiderman2"}:
+        return "https://image.tmdb.org/t/p/w500/bU7nTmvmy0h3VUP01v1T2imgH6N.jpg"
+    if year == "2020" and poster_key == "wonderwoman1984":
+        return "https://image.tmdb.org/t/p/w500/8UlWHLMpgZm9bx6QYh0NFoq67TZ.jpg"
+
     params = {"title": title}
     if year:
         params["year"] = year
     return "/api/poster?" + urlencode(params)
+
+
+_EXCLUDED_FRANCHISE_TITLE_KEYS = {
+    "avengersconfidentialblackwidowpunisher",
+    "ironmanrisetechnovore",
+}
+
+
+def _catalogue_row_has_3d_quality(item: dict[str, Any]) -> bool:
+    marker = re.compile(r"(?:^|[^a-z0-9])3[ ._-]*d(?:$|[^a-z0-9])", re.I)
+    for field in ("quality", "title", "releaseName", "qualityLabel", "resolution"):
+        if marker.search(str(item.get(field) or "")):
+            return True
+    return False
+
+
+def _catalogue_row_is_excluded_franchise_title(item: dict[str, Any]) -> bool:
+    for field in ("catalogueTitle", "marvelCatalogueTitle", "mediaTitle", "title"):
+        raw = str(item.get(field) or "").strip()
+        if not raw:
+            continue
+        normalized = re.sub(r"[^a-z0-9]+", "", raw.casefold())
+        if any(normalized.startswith(excluded) for excluded in _EXCLUDED_FRANCHISE_TITLE_KEYS):
+            return True
+    return False
+
+
+def _cached_catalogue_year(item: Any) -> int:
+    if not isinstance(item, dict):
+        return 0
+    try:
+        year = int(item.get("year") or 0)
+        if 1880 <= year <= 2100:
+            return year
+    except (TypeError, ValueError):
+        pass
+    for field in ("catalogueTitle", "marvelCatalogueTitle", "mediaTitle", "title"):
+        matches = re.findall(r"\b((?:19|20)\d{2})\b", str(item.get(field) or ""))
+        if matches:
+            try:
+                return int(matches[-1])
+            except (TypeError, ValueError):
+                continue
+    return 0
+
+
+def _sort_cached_catalogue_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def key(item: dict[str, Any]) -> tuple[int, str, int]:
+        title = str(item.get("catalogueTitle") or item.get("marvelCatalogueTitle") or item.get("mediaTitle") or item.get("title") or "")
+        normalized = re.sub(r"[^a-z0-9]+", "", title.casefold())
+        try:
+            seeders = int(float(item.get("seeders") or 0))
+        except (TypeError, ValueError):
+            seeders = 0
+        return (-_cached_catalogue_year(item), normalized, -seeders)
+    return sorted(results, key=key)
 
 
 async def _cinemeta_poster_lookup(title: str, year: str = "") -> str | None:
@@ -4681,11 +4756,31 @@ def _read_marvel_catalogue() -> dict[str, Any] | None:
             and isinstance(payload.get("results"), list)
             and payload["results"]
         ):
+            changed = False
+            retained_results = [
+                item for item in payload["results"]
+                if isinstance(item, dict)
+                and not _catalogue_row_has_3d_quality(item)
+                and not _catalogue_row_is_excluded_franchise_title(item)
+            ]
+            if len(retained_results) != len(payload["results"]):
+                changed = True
+            sorted_results = _sort_cached_catalogue_results(retained_results)
+            if sorted_results != payload["results"]:
+                changed = True
+            payload["results"] = sorted_results
+            payload["resultCount"] = len(sorted_results)
+            payload["movieCount"] = len({
+                re.sub(r"[^a-z0-9]+", "", str(item.get("catalogueTitle") or item.get("marvelCatalogueTitle") or item.get("mediaTitle") or item.get("title") or "").casefold())
+                for item in sorted_results
+            })
             for item in payload["results"]:
-                if isinstance(item, dict):
-                    canonical_poster = _canonical_catalogue_poster_url(item)
-                    if canonical_poster:
-                        item["posterUrl"] = canonical_poster
+                canonical_poster = _canonical_catalogue_poster_url(item)
+                if canonical_poster and item.get("posterUrl") != canonical_poster:
+                    item["posterUrl"] = canonical_poster
+                    changed = True
+            if changed:
+                _write_marvel_catalogue(payload)
             return payload
     except (OSError, ValueError, TypeError):
         pass
@@ -4718,9 +4813,9 @@ def _write_marvel_catalogue(payload: dict[str, Any]) -> None:
 
 
 def _marvel_result_matches_title(item: dict[str, Any], title: str, year: int) -> bool:
-    """Prevent related Marvel releases from being mislabeled as another movie."""
+    """Prevent wrong-title and 3D releases from entering shared franchise caches."""
     raw_title = str(item.get("title") or "").strip()
-    if not raw_title:
+    if not raw_title or _catalogue_row_has_3d_quality(item) or _catalogue_row_is_excluded_franchise_title(item):
         return False
 
     actual_tokens = set(_search_tokens(raw_title))
@@ -5161,45 +5256,67 @@ def _read_extra_catalogue(key: str) -> dict[str, Any] | None:
         is_older_compatible_version = (
             isinstance(payload_version, int) and payload_version < current_version
         )
-        if (is_current_version or is_older_compatible_version) and isinstance(payload.get("results"), list) and payload["results"]:
-            excluded_titles = {
-                _normalize_title(value)
-                for value in (config.get("exclude_titles") or [])
-                if str(value or "").strip()
+        if not ((is_current_version or is_older_compatible_version) and isinstance(payload.get("results"), list) and payload["results"]):
+            return None
+
+        changed = False
+        excluded_titles = {
+            _normalize_title(value)
+            for value in (config.get("exclude_titles") or [])
+            if str(value or "").strip()
+        }
+        retained_results = []
+        for item in payload["results"]:
+            if not isinstance(item, dict):
+                changed = True
+                continue
+            canonical_title = str(
+                item.get("catalogueTitle")
+                or item.get("marvelCatalogueTitle")
+                or item.get("mediaTitle")
+                or item.get("title")
+                or ""
+            ).strip()
+            if (
+                _normalize_title(canonical_title) in excluded_titles
+                or _catalogue_row_has_3d_quality(item)
+                or _catalogue_row_is_excluded_franchise_title(item)
+            ):
+                changed = True
+                continue
+            retained_results.append(item)
+
+        if not retained_results:
+            return None
+        if len(retained_results) != len(payload["results"]):
+            payload = {
+                **payload,
+                "results": retained_results,
+                "resultCount": len(retained_results),
+                "movieCount": len({
+                    _normalize_title(str(
+                        item.get("catalogueTitle") or item.get("marvelCatalogueTitle") or item.get("mediaTitle") or item.get("title") or ""
+                    ))
+                    for item in retained_results
+                }),
             }
-            if excluded_titles:
-                retained_results = []
-                for item in payload["results"]:
-                    if not isinstance(item, dict):
-                        continue
-                    canonical_title = str(
-                        item.get("catalogueTitle")
-                        or item.get("mediaTitle")
-                        or item.get("title")
-                        or ""
-                    ).strip()
-                    if _normalize_title(canonical_title) not in excluded_titles:
-                        retained_results.append(item)
-                if not retained_results:
-                    return None
-                if len(retained_results) != len(payload["results"]):
-                    payload = {
-                        **payload,
-                        "results": retained_results,
-                        "resultCount": len(retained_results),
-                        "movieCount": len({
-                            _normalize_title(str(
-                                item.get("catalogueTitle") or item.get("mediaTitle") or item.get("title") or ""
-                            ))
-                            for item in retained_results
-                        }),
-                    }
-            for item in payload["results"]:
-                if isinstance(item, dict):
-                    canonical_poster = _canonical_catalogue_poster_url(item)
-                    if canonical_poster:
-                        item["posterUrl"] = canonical_poster
-            return payload
+        sorted_results = _sort_cached_catalogue_results(payload["results"])
+        if sorted_results != payload["results"]:
+            changed = True
+        payload["results"] = sorted_results
+        payload["resultCount"] = len(sorted_results)
+        payload["movieCount"] = len({
+            _normalize_title(str(item.get("catalogueTitle") or item.get("marvelCatalogueTitle") or item.get("mediaTitle") or item.get("title") or ""))
+            for item in sorted_results
+        })
+        for item in payload["results"]:
+            canonical_poster = _canonical_catalogue_poster_url(item)
+            if canonical_poster and item.get("posterUrl") != canonical_poster:
+                item["posterUrl"] = canonical_poster
+                changed = True
+        if changed:
+            _write_extra_catalogue(key, payload)
+        return payload
     except (OSError, ValueError, TypeError, AttributeError):
         pass
     return None
@@ -5436,6 +5553,8 @@ async def _build_extra_catalogue(key: str) -> None:
                     if not isinstance(original, dict):
                         continue
                     item = dict(original)
+                    if _catalogue_row_has_3d_quality(item) or _catalogue_row_is_excluded_franchise_title(item):
+                        continue
                     raw_title = str(item.get("title") or "").strip()
                     if not raw_title:
                         continue

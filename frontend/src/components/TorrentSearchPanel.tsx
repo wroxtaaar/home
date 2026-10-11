@@ -986,6 +986,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
   const runSearch = async (event?: React.FormEvent, searchOverride?: string, searchMode?: 'marvel' | 'marvel-hindi' | 'dc-live-action' | 'dc-live-action-hindi' | 'dc-animated' | 'latest-hollywood' | 'latest-bollywood') => {
     event?.preventDefault();
+    const yearSortedFranchiseModes = new Set(['marvel', 'marvel-hindi', 'dc-live-action', 'dc-live-action-hindi', 'dc-animated']);
+    setReleaseYearSort(searchMode && yearSortedFranchiseModes.has(searchMode) ? 'newest' : null);
     setMovieTorrentSearchError('');
     setMovieTorrentPreviewCatalogueId(null);
     movieTorrentSearchControllerRef.current?.abort();
@@ -1543,6 +1545,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       if (!Number.isFinite(seeders) || seeders <= 0) return false;
       if (size > maxSeedrFriendlySize) return false;
       const releaseText = `${String(result.title || '')} ${String(result.quality || '')}`;
+      const qualityText = `${String(result.quality || '')} ${String(result.title || '')}`;
+      if (/(?:^|[^a-z0-9])3[ ._-]*d(?:$|[^a-z0-9])/i.test(qualityText)) return false;
       if (lowQualityRelease.test(releaseText)) return false;
       if (resolutionFilter) {
         const quality = torrentQualityDetails(result).label;
