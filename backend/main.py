@@ -48,9 +48,55 @@ TMDB_READ_ACCESS_TOKENS = list(dict.fromkeys(
 ))
 TMDB_READ_ACCESS_TOKEN = TMDB_READ_ACCESS_TOKENS[0] if TMDB_READ_ACCESS_TOKENS else ""
 TMDB_API_BASE = "https://api.themoviedb.org/3"
-WATCHMODE_API_KEY = os.getenv("WATCHMODE_API_KEY", "").strip()
+# Multiple Watchmode keys are accepted for credential resilience. Prefer the plural
+# variable; retain WATCHMODE_API_KEY for existing deployments.
+WATCHMODE_API_KEYS = list(dict.fromkeys(
+    key.strip()
+    for key in (
+        os.getenv("WATCHMODE_API_KEYS", "").replace("\\n", "\n").replace(",", "\n").splitlines()
+        + [os.getenv("WATCHMODE_API_KEY", "").strip()]
+    )
+    if key.strip()
+))
+WATCHMODE_API_KEY = WATCHMODE_API_KEYS[0] if WATCHMODE_API_KEYS else ""
 WATCHMODE_API_BASE = "https://api.watchmode.com/v1"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
+
+
+async def _watchmode_get(path: str, *, params: dict[str, Any] | None = None, timeout: httpx.Timeout | float = 10.0, auth_header: bool = False) -> httpx.Response | None:
+    """Request Watchmode with configured keys; stop on quota/rate-limit responses.
+
+    A second key is only tried for an invalid credential, transport failure, or
+    server error. HTTP 429/403 are returned immediately rather than used to
+    bypass a provider's quota or access restriction.
+    """
+    if not WATCHMODE_API_KEYS:
+        return None
+    request_params = dict(params or {})
+    last_response = None
+    for index, key in enumerate(WATCHMODE_API_KEYS):
+        headers = {"Accept": "application/json"}
+        if auth_header:
+            headers["X-API-Key"] = key
+            current_params = dict(request_params)
+            current_params.pop("apiKey", None)
+        else:
+            current_params = dict(request_params)
+            current_params["apiKey"] = key
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=headers) as client:
+                response = await client.get(f"{WATCHMODE_API_BASE}{path}", params=current_params)
+            last_response = response
+            if response.status_code == 401 or response.status_code >= 500:
+                if index + 1 < len(WATCHMODE_API_KEYS):
+                    continue
+            # Do not rotate keys to work around quota/rate limits or forbidden access.
+            return response
+        except httpx.HTTPError as exc:
+            logger.info("Watchmode request failed for %s using configured key %s/%s: %s", path, index + 1, len(WATCHMODE_API_KEYS), type(exc).__name__)
+            if index + 1 >= len(WATCHMODE_API_KEYS):
+                return last_response
+    return last_response
 # If TMDB API connections are reset before TLS completes, pause new API attempts
 # briefly so catalogue requests fail fast and can fall back to persistent caches.
 TMDB_API_CONNECT_FAILURE_COOLDOWN_SECONDS = max(15, int(os.getenv("TMDB_API_CONNECT_FAILURE_COOLDOWN_SECONDS", "60")))
@@ -5647,20 +5693,19 @@ def _tmdb_watch_provider_rows(payload: Any) -> list[dict[str, Any]]:
 
 async def _watchmode_movie_sources(movie_id: int, region: str) -> list[dict[str, Any]]:
     """Look up legal streaming/rent/buy options by the matching TMDB movie ID."""
-    if not WATCHMODE_API_KEY:
+    if not WATCHMODE_API_KEYS:
         return []
     try:
-        async with httpx.AsyncClient(
+        response = await _watchmode_get(
+            f"/title/movie-{movie_id}/sources/",
+            params={"regions": region},
             timeout=httpx.Timeout(10.0, connect=4.0),
-            follow_redirects=True,
-            headers={"Accept": "application/json", "X-API-Key": WATCHMODE_API_KEY},
-        ) as client:
-            response = await client.get(
-                f"{WATCHMODE_API_BASE}/title/movie-{movie_id}/sources/",
-                params={"regions": region},
-            )
+            auth_header=True,
+        )
+        if response is None:
+            return []
         if response.status_code in {401, 403}:
-            logger.warning("Watchmode rejected WATCHMODE_API_KEY (HTTP %s)", response.status_code)
+            logger.warning("Watchmode rejected configured credentials (HTTP %s)", response.status_code)
             return []
         if response.status_code == 429 or response.status_code >= 500:
             logger.info("Watchmode temporarily unavailable (HTTP %s)", response.status_code)
@@ -6452,80 +6497,85 @@ _WATCHMODE_SEARCH_CACHE_TTL = 6 * 60 * 60
 @app.get("/api/search/availability")
 async def api_search_availability(q: str = Query(..., min_length=2, max_length=160)):
     """Return streaming providers without putting Watchmode on the torrent-search critical path."""
-    query = re.sub(r"\s+", " ", q).strip()
+    query = re.sub(r"\\s+", " ", q).strip()
     cache_key = query.casefold()
     now = time.time()
     cached = _watchmode_search_cache.get(cache_key)
     if cached and now - cached[0] < _WATCHMODE_SEARCH_CACHE_TTL:
         return cached[1]
-    if not WATCHMODE_API_KEY:
+    if not WATCHMODE_API_KEYS:
         return {"status": "unavailable", "query": query, "providers": [], "message": "Watchmode is not configured."}
 
     timeout = httpx.Timeout(10.0, connect=3.0)
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            search_response = await client.get(
-                f"{WATCHMODE_API_BASE}/search/",
-                params={"apiKey": WATCHMODE_API_KEY, "search_field": "name", "search_value": query, "types": "movie,tv_series"},
-            )
-            search_response.raise_for_status()
-            search_data = search_response.json()
-            titles = search_data.get("title_results", []) if isinstance(search_data, dict) else []
-            if not titles:
-                result = {"status": "not_found", "query": query, "providers": []}
-                _watchmode_search_cache[cache_key] = (now, result)
-                return result
-
-            # Prefer an exact normalized title match; otherwise use Watchmode's
-            # highest-ranked search result to avoid unrelated provider badges.
-            def norm_title(value: Any) -> str:
-                return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
-            target = norm_title(query)
-            titles = [x for x in titles if isinstance(x, dict) and x.get("id")]
-            if not titles:
-                return {"status": "not_found", "query": query, "providers": []}
-            titles.sort(key=lambda item: (
-                norm_title(item.get("name")) == target,
-                target in norm_title(item.get("name")),
-            ), reverse=True)
-            title = titles[0]
-            sources_response = await client.get(
-                f"{WATCHMODE_API_BASE}/title/{int(title['id'])}/sources/",
-                params={"apiKey": WATCHMODE_API_KEY, "regions": "IN"},
-            )
-            sources_response.raise_for_status()
-            sources = sources_response.json()
-            providers = []
-            seen = set()
-            if isinstance(sources, list):
-                for source in sources:
-                    if not isinstance(source, dict):
-                        continue
-                    name = str(source.get("name") or source.get("source_name") or "").strip()
-                    if not name:
-                        continue
-                    region = str(source.get("region") or "").upper()
-                    kind = str(source.get("type") or "").lower()
-                    key = (name.casefold(), region, kind)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    providers.append({
-                        "name": name,
-                        "region": region,
-                        "type": kind,
-                        "webUrl": source.get("web_url") or source.get("ios_url") or source.get("android_url") or "",
-                    })
-            result = {
-                "status": "ready" if providers else "not_confirmed",
-                "query": query,
-                "title": str(title.get("name") or query),
-                "year": title.get("year"),
-                "providers": providers[:24],
-                "source": "Watchmode",
-            }
+        search_response = await _watchmode_get(
+            "/search/",
+            params={"search_field": "name", "search_value": query, "types": "movie,tv_series"},
+            timeout=timeout,
+        )
+        if search_response is None:
+            raise httpx.RequestError("No Watchmode credentials or response")
+        search_response.raise_for_status()
+        search_data = search_response.json()
+        titles = search_data.get("title_results", []) if isinstance(search_data, dict) else []
+        if not titles:
+            result = {"status": "not_found", "query": query, "providers": []}
             _watchmode_search_cache[cache_key] = (now, result)
             return result
+
+        # Prefer an exact normalized title match; otherwise use Watchmode's
+        # highest-ranked search result to avoid unrelated provider badges.
+        def norm_title(value: Any) -> str:
+            return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+        target = norm_title(query)
+        titles = [x for x in titles if isinstance(x, dict) and x.get("id")]
+        if not titles:
+            return {"status": "not_found", "query": query, "providers": []}
+        titles.sort(key=lambda item: (
+            norm_title(item.get("name")) == target,
+            target in norm_title(item.get("name")),
+        ), reverse=True)
+        title = titles[0]
+        sources_response = await _watchmode_get(
+            f"/title/{int(title['id'])}/sources/",
+            params={"regions": "IN"},
+            timeout=timeout,
+        )
+        if sources_response is None:
+            raise httpx.RequestError("No Watchmode credentials or response")
+        sources_response.raise_for_status()
+        sources = sources_response.json()
+        providers = []
+        seen = set()
+        if isinstance(sources, list):
+            for source in sources:
+                if not isinstance(source, dict):
+                    continue
+                name = str(source.get("name") or source.get("source_name") or "").strip()
+                if not name:
+                    continue
+                region = str(source.get("region") or "").upper()
+                kind = str(source.get("type") or "").lower()
+                key = (name.casefold(), region, kind)
+                if key in seen:
+                    continue
+                seen.add(key)
+                providers.append({
+                    "name": name,
+                    "region": region,
+                    "type": kind,
+                    "webUrl": source.get("web_url") or source.get("ios_url") or source.get("android_url") or "",
+                })
+        result = {
+            "status": "ready" if providers else "not_confirmed",
+            "query": query,
+            "title": str(title.get("name") or query),
+            "year": title.get("year"),
+            "providers": providers[:24],
+            "source": "Watchmode",
+        }
+        _watchmode_search_cache[cache_key] = (now, result)
+        return result
     except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
         logger.info("Watchmode normal-search availability failed: query=%r error=%s", query, type(exc).__name__)
         return {"status": "unavailable", "query": query, "providers": [], "message": "Streaming availability is temporarily unavailable."}
