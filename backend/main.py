@@ -5854,7 +5854,11 @@ async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None) -> dic
             request_params["api_key"] = credential
 
         rejected_credential = False
-        for attempt in range(3):
+        # Use a fresh AsyncClient for every attempt so DNS is resolved again;
+        # this matters when the CDN has several edge IPs and some reset TLS.
+        # Keep retries bounded to avoid hammering TMDB during a wider outage.
+        max_attempts = 6
+        for attempt in range(max_attempts):
             try:
                 async with httpx.AsyncClient(
                     timeout=httpx.Timeout(12.0, connect=4.0),
@@ -5875,12 +5879,12 @@ async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None) -> dic
                     break
 
                 if response.status_code == 429 or response.status_code >= 500:
-                    if attempt < 2:
+                    if attempt < max_attempts - 1:
                         logger.warning(
-                            "TMDB temporary HTTP %s for %s (attempt %s/3)",
-                            response.status_code, path, attempt + 1,
+                            "TMDB temporary HTTP %s for %s (attempt %s/%s)",
+                            response.status_code, path, attempt + 1, max_attempts,
                         )
-                        await asyncio.sleep(0.5 * (2 ** attempt))
+                        await asyncio.sleep(min(4.0, 0.5 * (2 ** min(attempt, 3))) + secrets.randbelow(501) / 1000)
                         continue
                     if response.status_code == 429:
                         raise HTTPException(
@@ -5902,14 +5906,14 @@ async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None) -> dic
                     exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError)
                 )
                 logger.warning(
-                    "TMDB network request failed for %s (attempt %s/3): %s: %s",
-                    path, attempt + 1, type(exc).__name__, str(exc) or "<no message>",
+                    "TMDB network request failed for %s (attempt %s/%s): %s: %s",
+                    path, attempt + 1, max_attempts, type(exc).__name__, str(exc) or "<no message>",
                 )
 
-                # Credential rotation cannot fix a network failure. Retry this
-                # request first, then open the shared cooldown if still failing.
-                if attempt < 2:
-                    backoff_seconds = (0.5 * (2 ** attempt)) + (secrets.randbelow(251) / 1000)
+                # A new client is created on every iteration to allow DNS to
+                # resolve again. Do not rotate credentials for transport errors.
+                if attempt < max_attempts - 1:
+                    backoff_seconds = min(4.0, 0.5 * (2 ** min(attempt, 3))) + (secrets.randbelow(501) / 1000)
                     await asyncio.sleep(backoff_seconds)
                     continue
 
@@ -5920,7 +5924,7 @@ async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None) -> dic
                     )
                     logger.warning(
                         "TMDB connection failed after %s attempts; opening %ss cooldown",
-                        attempt + 1, TMDB_API_CONNECT_FAILURE_COOLDOWN_SECONDS,
+                        max_attempts, TMDB_API_CONNECT_FAILURE_COOLDOWN_SECONDS,
                     )
                     raise HTTPException(
                         status_code=503,
