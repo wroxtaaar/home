@@ -1256,6 +1256,29 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       // The backend owns low-result TV/season fallback. Keeping that logic
       // server-side avoids launching duplicate season searches from the browser.
 
+      // Cache JSON snapshots are kept newest-year-first, but normalize that order
+      // here too before publishing cards. This makes the cached Marvel/DC views
+      // deterministic even if an older persistent cache or API response is unsorted;
+      // the user never needs to press the Year sort control just to get the default order.
+      if (searchMode && yearSortedFranchiseModes.has(searchMode)) {
+        data = [...data].sort((a, b) => {
+          const aIdentity = torrentMediaIdentity(a);
+          const bIdentity = torrentMediaIdentity(b);
+          const aYear = Number.parseInt(aIdentity.year, 10) || 0;
+          const bYear = Number.parseInt(bIdentity.year, 10) || 0;
+          if (aYear !== bYear) return bYear - aYear;
+
+          const titleOrder = aIdentity.normalized.localeCompare(
+            bIdentity.normalized,
+            undefined,
+            { numeric: true },
+          );
+          if (titleOrder !== 0) return titleOrder;
+
+          return (Number(b.seeders) || 0) - (Number(a.seeders) || 0);
+        });
+      }
+
       // Never let an older request overwrite a newer search. This matters
       // when a slow 1337x fallback finishes after a later click.
       if (generation !== searchGenerationRef.current) return;
