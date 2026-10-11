@@ -1991,17 +1991,17 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   // Search TMDB by show name for episode-shaped torrent titles. A broad search for
   // the episode name (e.g. "Escape Plan") cannot resolve "The Rookie" or "NCIS: New Orleans".
   useEffect(() => {
-    const seriesTitles = Array.from(new Set(groupedResults
+    const discoveredSeriesTitles = Array.from(new Set(groupedResults
       .slice(0, 80)
       .map(group => episodeSeriesTitle(group.title))
       .filter((title): title is string => Boolean(title))))
-      .filter(title => {
-        const key = normalizeSavedOttTitle(title);
-        if (!key || tvMetadataRequestedRef.current.has(key)) return false;
-        tvMetadataRequestedRef.current.add(key);
-        return true;
-      })
       .slice(0, 12);
+    const seriesTitles = discoveredSeriesTitles.filter(title => {
+      const key = normalizeSavedOttTitle(title);
+      if (!key || tvMetadataRequestedRef.current.has(key)) return false;
+      tvMetadataRequestedRef.current.add(key);
+      return true;
+    });
     if (!seriesTitles.length) return;
 
     const controller = new AbortController();
