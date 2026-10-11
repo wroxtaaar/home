@@ -55,24 +55,31 @@ jobs:
 
           APP_DIR="$HOME/home"
           DATA_DIR="$HOME/home-data"
+          CLEAN_SCRIPT="$APP_DIR/scripts/clean_cached_movie_catalogues.py"
           SCRIPT="$APP_DIR/scripts/enrich_catalogue_ott.py"
           LOG="$DATA_DIR/catalogue_ott_enrichment_run.log"
 
+          test -f "$CLEAN_SCRIPT" || { echo "Missing cache cleanup script: $CLEAN_SCRIPT"; exit 1; }
           test -f "$SCRIPT" || { echo "Missing enrichment script: $SCRIPT"; exit 1; }
           test -d "$DATA_DIR" || { echo "Missing persistent data directory: $DATA_DIR"; exit 1; }
           curl -fsS http://127.0.0.1:10000/health
           echo
 
-          if pgrep -af '[e]nrich_catalogue_ott.py' >/dev/null; then
-            echo "OTT catalogue enrichment is already running on the VPS; refusing to start a duplicate."
+          if pgrep -af '[e]nrich_catalogue_ott.py|[r]efresh_franchise_ott.py|[c]lean_cached_movie_catalogues.py' >/dev/null; then
+            echo "OTT catalogue maintenance is already running on the VPS; refusing to start a duplicate."
             exit 0
           fi
 
           cd "$APP_DIR"
-          echo "Starting resumable OTT enrichment of the five persistent Marvel/DC catalogues."
-          echo "The script skips successful entries, backs up each catalogue before editing, and saves progress after each title."
-          echo "A full run log is also written to: $LOG"
+          export HOME_DATA_DIR="$DATA_DIR"
+          echo "Cleaning 3D releases, excluded animated titles, poster mappings, and default catalogue order..."
+          python3 "$CLEAN_SCRIPT" 2>&1 | tee "$DATA_DIR/catalogue_cleanup_run.log"
+
+          echo "Resolving and enriching missing OTT entries in the five persistent Marvel/DC catalogues..."
           python3 "$SCRIPT" 2>&1 | tee "$LOG"
+
+          echo "Refreshing provider lookups for every remaining unique franchise movie without provider data..."
+          docker exec home python /app/refresh_franchise_ott.py --delay 0.75 2>&1 | tee "$DATA_DIR/catalogue_ott_refresh_run.log"
           REMOTE
 
       - name: Sync enriched catalogues back to GitHub cache snapshots
@@ -92,7 +99,9 @@ jobs:
             marvel_hindi_catalogue.json \
             dc_live_action_catalogue.json \
             dc_live_action_hindi_catalogue.json \
-            dc_animated_catalogue.json; do
+            dc_animated_catalogue.json \
+            latest_hollywood_catalogue.json \
+            latest_bollywood_catalogue.json; do
             echo "Downloading enriched $name"
             scp -p -P "$VPS_SSH_PORT" \
               "$VPS_USER@$VPS_HOST:/home/$VPS_USER/home-data/$name" \
