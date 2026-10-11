@@ -1103,7 +1103,34 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               'latest-hollywood',
               'latest-bollywood',
             ].map(key => api.getCatalogue(key, controller.signal)),
-          ]).then(responses => {
+          ].map(request => request.then(response => {
+            // Publish each ready catalogue immediately instead of waiting for all seven.
+            if (generation !== searchGenerationRef.current || response.status !== 'ready') return response;
+            const compactQuery = normalizeGroupTitle(trimmed).replace(/\\s+/g, '');
+            const seen = new Set<string>();
+            const matches = response.results.filter(row => {
+              const titleKey = torrentMediaIdentity(row).normalized.replace(/\\s+/g, '');
+              if (!titleKey.includes(compactQuery) && !compactQuery.includes(titleKey)) return false;
+              const key = torrentResultKey(row);
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            });
+            if (matches.length) {
+              setResults(previous => {
+                const byKey = new Map<string, TorrentSearchResult>();
+                [...matches, ...previous].forEach(row => {
+                  const key = torrentResultKey(row);
+                  if (!byKey.has(key)) byKey.set(key, row);
+                });
+                return Array.from(byKey.values());
+              });
+              setSearched(true);
+              // Keep poster resolution independent of the search response.
+              startPosterBackgroundSearch(matches);
+            }
+            return response;
+          }))).then(responses => {
             const compactQuery = normalizeGroupTitle(trimmed).replace(/\\s+/g, '');
             const cachedRows = responses.flatMap(response =>
               response.status === 'fulfilled' && response.value.status === 'ready'
@@ -1112,8 +1139,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             );
             const seen = new Set<string>();
             return cachedRows.filter(row => {
-              const identity = torrentMediaIdentity(row);
-              const titleKey = identity.normalized.replace(/\\s+/g, '');
+              const titleKey = torrentMediaIdentity(row).normalized.replace(/\\s+/g, '');
               if (!titleKey.includes(compactQuery) && !compactQuery.includes(titleKey)) return false;
               const key = torrentResultKey(row);
               if (seen.has(key)) return false;
