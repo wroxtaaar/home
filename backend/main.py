@@ -5700,7 +5700,6 @@ async def _watchmode_movie_sources(movie_id: int, region: str) -> list[dict[str,
             f"/title/movie-{movie_id}/sources/",
             params={"regions": region},
             timeout=httpx.Timeout(10.0, connect=4.0),
-            auth_header=True,
         )
         if response is None:
             return []
