@@ -51,6 +51,9 @@ STREAMING_AVAILABILITY_API_BASE = "https://api.movieofthenight.com/v4"
 _PROVIDER_KEY_COOLDOWNS: dict[str, float] = {}
 _PROVIDER_KEY_FAILURES: dict[str, int] = {}
 _PROVIDER_KEY_CURSORS: dict[str, int] = {}
+# Reuse TMDB TCP/TLS connections and bound concurrent requests during catalogue backfills.
+_TMDB_HTTP_CLIENT: httpx.AsyncClient | None = None
+_TMDB_REQUEST_SEMAPHORE = asyncio.Semaphore(4)
 _WATCHMODE_RATE_LIMITED_UNTIL = 0.0
 _WATCHMODE_RESOLVED_TITLE_IDS: dict[int, int | None] = {}
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
@@ -7002,8 +7005,28 @@ async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None, *, req
         else:
             request_params["api_key"] = credential
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(request_timeout, connect=min(4.0, request_timeout)), follow_redirects=True, headers=headers) as client:
-                response = await client.get(f"{TMDB_API_BASE}/{path.lstrip('/')}", params=request_params)
+            global _TMDB_HTTP_CLIENT
+            if _TMDB_HTTP_CLIENT is None or _TMDB_HTTP_CLIENT.is_closed:
+                _TMDB_HTTP_CLIENT = httpx.AsyncClient(
+                    timeout=httpx.Timeout(12.0, connect=4.0),
+                    follow_redirects=True,
+                    headers={"Accept": "application/json"},
+                    limits=httpx.Limits(
+                        max_connections=8,
+                        max_keepalive_connections=4,
+                        keepalive_expiry=30.0,
+                    ),
+                )
+            async with _TMDB_REQUEST_SEMAPHORE:
+                response = await _TMDB_HTTP_CLIENT.get(
+                    f"{TMDB_API_BASE}/{path.lstrip('/')}",
+                    params=request_params,
+                    headers=headers,
+                    timeout=httpx.Timeout(
+                        request_timeout,
+                        connect=min(4.0, request_timeout),
+                    ),
+                )
             last_response = response
             if 200 <= response.status_code < 300:
                 _provider_key_success(provider, fingerprint)
@@ -7051,14 +7074,24 @@ async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None, *, req
             payload = await attempt(kind, credential)
             if payload is not None:
                 return payload
-        for kind, credential in retry_credentials:
-            _provider_key_failure(provider, kind + ":" + credential, 30, "failed twice in one request")
+        # Transport failures and upstream 5xx responses do not mean a credential
+        # is invalid. Keep those credentials eligible; only explicit HTTP 401/403/429
+        # responses should trigger credential-specific cooldowns.
     if last_response is not None and last_response.status_code == 429:
         raise HTTPException(status_code=503, detail="All eligible TMDB credentials are rate-limited or cooling down; retry shortly.")
     if last_response is not None and last_response.status_code in {401, 403}:
         raise HTTPException(status_code=503, detail="TMDB credentials were rejected or are cooling down. Check the configured keys.")
     logger.warning("TMDB request exhausted available credentials for %s (%s)", path, type(last_error).__name__ if last_error else "no eligible credential")
     raise HTTPException(status_code=503, detail="TMDB is temporarily unavailable or all credentials are cooling down. Cached catalogues will be used when available.")
+
+
+@app.on_event("shutdown")
+async def _close_tmdb_http_client() -> None:
+    """Close the pooled TMDB client cleanly when the application shuts down."""
+    global _TMDB_HTTP_CLIENT
+    if _TMDB_HTTP_CLIENT is not None and not _TMDB_HTTP_CLIENT.is_closed:
+        await _TMDB_HTTP_CLIENT.aclose()
+    _TMDB_HTTP_CLIENT = None
 
 
 async def _tmdb_discovered_company_ids(franchise: str) -> list[str]:
