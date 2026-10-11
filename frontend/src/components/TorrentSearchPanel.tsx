@@ -1235,8 +1235,31 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         let liveLookupCount = 0;
         const liveLookupLimit = 3;
 
+        // The torrent-search cache and enriched OTT cache are separate files.
+        // Fetch saved OTT entries by title once, so normal text searches can use
+        // Marvel/DC enrichment too instead of starting a provider scan per card.
+        const savedOttByTitle = new Map<string, any>();
+        try {
+          const savedOttResponse = await api.searchSavedOtt(
+            availabilityGroups.map(group => group.title),
+            controller.signal
+          );
+          if (generation === searchGenerationRef.current) {
+            for (const result of savedOttResponse.results || []) {
+              for (const entry of result.entries || []) {
+                const key = normalizeGroupTitle(entry.title || result.query);
+                if (key && entry.ottAvailability && !savedOttByTitle.has(key)) {
+                  savedOttByTitle.set(key, entry);
+                }
+              }
+            }
+          }
+        } catch {
+          // A saved-cache lookup failure must not block torrent preparation.
+        }
+
         for (const group of availabilityGroups) {
-          const cachedRow = group.variants.find(variant => {
+          const cachedTorrentRow = group.variants.find(variant => {
             const row = variant as TorrentSearchResult & {
               ottAvailability?: any;
               streamingProviders?: unknown;
@@ -1258,6 +1281,16 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             catalogueTitle?: string;
             marvelCatalogueTitle?: string;
           }) | undefined;
+          const savedOttRow = savedOttByTitle.get(normalizeGroupTitle(group.title));
+          const cachedRow = cachedTorrentRow || (savedOttRow as (TorrentSearchResult & {
+            tmdbId?: number | string;
+            ottAvailability?: any;
+            streamingProviders?: unknown;
+            rentProviders?: unknown;
+            buyProviders?: unknown;
+            catalogueTitle?: string;
+            marvelCatalogueTitle?: string;
+          }) | undefined);
 
           if (cachedRow) {
             const saved = cachedRow.ottAvailability && typeof cachedRow.ottAvailability === 'object'
