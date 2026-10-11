@@ -54,6 +54,19 @@ export interface MovieCatalogueItem {
   rating?: number;
   genres?: number[];
   source?: string;
+  tmdbId?: number | string;
+  ottAvailability?: {
+    region?: string;
+    status?: string;
+    streamingProviders?: MovieOttProvider[];
+    rentProviders?: MovieOttProvider[];
+    buyProviders?: MovieOttProvider[];
+    providerLink?: string;
+    checkedAt?: string;
+    source?: string;
+    providerAttribution?: string;
+    attribution?: string;
+  };
 }
 
 export interface MovieCataloguePage {
