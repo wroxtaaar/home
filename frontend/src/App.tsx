@@ -1053,6 +1053,7 @@ export default function App() {
       // Do not clear the existing file rows during refresh. React keeps the
       // current visible component intact while fresh internal details arrive.
       // The cache effect above swaps them in as soon as they are available.
+      return result;
     } catch (error: any) {
       const code = String(error?.code || '').trim();
       const message =
@@ -1068,8 +1069,6 @@ export default function App() {
       setSeedrPrefetchLoading(false);
       return null;
     }
-
-    return result;
   }, [seedrConnected, rememberSeedrTorrentName]);
 
   // Keep an opened folder synchronized with the background prefetch cache.
