@@ -5674,14 +5674,8 @@ def _write_tmdb_ott_persistent_cache(cache_key: tuple[int, str], payload: dict[s
             "savedAt": time.time(),
             "payload": payload,
         }
-        # Bound cache growth as users browse many different movie titles.
-        if len(items) > 1500:
-            ordered = sorted(
-                items.items(),
-                key=lambda pair: float((pair[1] or {}).get("savedAt") or 0),
-                reverse=True,
-            )
-            items = dict(ordered[:1500])
+        # Keep every saved OTT lookup permanently. Evicting old entries would
+        # cause repeat provider lookups when a previously viewed film is opened.
         disk["items"] = items
         temp_path = TMDB_OTT_CACHE_FILE.with_name(
             TMDB_OTT_CACHE_FILE.name + "." + uuid.uuid4().hex + ".tmp"
@@ -6311,24 +6305,20 @@ async def api_tmdb_movie_ott_availability(
     cache_key = (movie_id, region)
     now = time.monotonic()
     cached = _tmdb_ott_cache.get(cache_key)
-    if cached and now - cached[0] < TMDB_OTT_CACHE_SECONDS:
+    if cached:
+        # OTT availability is deliberately a permanent snapshot: opening the
+        # same film/region must not trigger another Watchmode/TMDB lookup.
         return cached[1]
 
     persistent = _read_tmdb_ott_persistent_cache(cache_key)
     if persistent:
-        saved_at, persistent_payload = persistent
-        age_seconds = max(0.0, time.time() - saved_at)
-        if age_seconds < TMDB_OTT_CACHE_SECONDS:
-            _tmdb_ott_cache[cache_key] = (time.monotonic() - age_seconds, persistent_payload)
-            return persistent_payload
+        _saved_at, persistent_payload = persistent
+        _tmdb_ott_cache[cache_key] = (time.monotonic(), persistent_payload)
+        return persistent_payload
 
-    # Only use recent stale results during an outage; never retain old availability indefinitely.
-    max_stale_seconds = 14 * 24 * 60 * 60
+    # There is no saved result yet, so perform the first lookup. Once saved,
+    # this result remains available until an explicit cache clear.
     stale_payload = None
-    if cached and now - cached[0] <= max_stale_seconds:
-        stale_payload = cached[1]
-    elif persistent and time.time() - persistent[0] <= max_stale_seconds:
-        stale_payload = persistent[1]
     task = _tmdb_ott_inflight.get(cache_key)
     if task is None or task.done():
         task = asyncio.create_task(_tmdb_fetch_movie_ott_availability(movie_id, region))
