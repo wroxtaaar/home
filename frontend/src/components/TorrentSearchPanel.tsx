@@ -2760,22 +2760,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           <Film className="h-8 w-8" />
                         </div>
                       )}
-                      {Number(result.seeders) > 0 && (
-                        <div className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-md bg-black/80 px-2 py-1 text-[10px] font-bold text-emerald-400">
-                          <Users className="h-3 w-3" />
-                          {Number(result.seeders) || 0}
-                        </div>
-                      )}
-                      {result.indexer && (
-                        <div className="absolute right-2 top-2 max-w-[70%] truncate rounded-md bg-black/75 px-2 py-1 text-[10px] font-medium text-slate-300" title={result.indexer}>
-                          {result.indexer}
-                        </div>
-                      )}
-                      {extractedQuality(result) && (
-                        <div className="absolute bottom-2 left-2 rounded-md border border-cyan-400/30 bg-slate-950/85 px-2 py-1 text-[10px] font-bold text-cyan-300">
-                          {extractedQuality(result)}
-                        </div>
-                      )}
+
                     </div>
 
                     <div className="flex flex-1 flex-col gap-2 p-2.5">
@@ -2790,8 +2775,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] sm:text-xs">
                           {mediaDisplayYear && <span className="text-slate-400">{mediaDisplayYear}</span>}
                           {mediaMetadata?.rating ? <span className="text-amber-300">TMDB {mediaMetadata.rating.toFixed(1)}</span> : null}
-                          <span className="font-semibold text-emerald-400">▲ {Number(result.seeders) || 0} seeders</span>
-                          <span className="font-semibold text-amber-400">▼ {Number(result.leechers) || 0} peers</span>
+
                         </div>
                       </div>
 
@@ -2838,12 +2822,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       )}
 
                       <div className="mt-auto flex items-end justify-between gap-2 pt-1">
-                        <div className="min-w-0">
-                          <div className="font-mono text-[10px] text-slate-300">{formatBytes(Number(result.size) || 0)}</div>
-                          <div className="mt-1 text-[10px] text-slate-500">
-                            {group.variants.length} torrent option{group.variants.length === 1 ? '' : 's'}
-                          </div>
-                        </div>
+
                         <button
                           type="button"
                           onClick={() => setExpandedSearchGroupKey(group.key)}
