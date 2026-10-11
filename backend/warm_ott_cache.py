@@ -101,9 +101,9 @@ async def run() -> int:
         raise SystemExit(
             "No Watchmode key found. Set WATCHMODE_API_KEYS in the container environment."
         )
-    if not (main.TMDB_READ_ACCESS_TOKENS or main.TMDB_API_KEY):
+    if not (main.TMDB_READ_ACCESS_TOKENS or main.TMDB_API_KEYS):
         raise SystemExit(
-            "No TMDB credentials found. Configure TMDB_READ_ACCESS_TOKEN(S) or TMDB_API_KEY."
+            "No TMDB credentials found. Configure TMDB_READ_ACCESS_TOKEN(S) or TMDB_API_KEYS."
         )
 
     logging.basicConfig(
