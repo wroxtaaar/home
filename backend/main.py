@@ -8199,89 +8199,6 @@ async def api_search_availability(q: str = Query(..., min_length=2, max_length=1
         }
 
 
-_TMDB_PROVIDER_LOGO_CACHE: tuple[float, dict[str, str]] | None = None
-_TMDB_PROVIDER_LOGO_CACHE_LOCK = asyncio.Lock()
-_TMDB_PROVIDER_LOGO_CACHE_TTL_SECONDS = 24 * 60 * 60
-
-
-def _provider_logo_lookup_key(value: Any) -> str:
-    key = _availability_normalize_title(str(value or ""))
-    aliases = {
-        "prime video": "amazon prime video",
-        "amazon video": "amazon prime video",
-        "amazon prime": "amazon prime video",
-        "amazon primevideo": "amazon prime video",
-        "jio hotstar": "hotstar",
-        "jiohotstar": "hotstar",
-        "disney hotstar": "hotstar",
-        "zee 5": "zee5",
-        "sony liv": "sonyliv",
-        "apple tv plus": "apple tv",
-        "apple tv channel": "apple tv",
-        "apple tv store": "apple tv",
-    }
-    return aliases.get(key, key)
-
-
-async def _get_tmdb_provider_logo_map() -> dict[str, str]:
-    """Return a process-cached India-wide provider name -> TMDB logo URL map."""
-    global _TMDB_PROVIDER_LOGO_CACHE
-    now = time.monotonic()
-    cached = _TMDB_PROVIDER_LOGO_CACHE
-    if cached and now - cached[0] < _TMDB_PROVIDER_LOGO_CACHE_TTL_SECONDS:
-        return cached[1]
-    if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
-        return {}
-
-    async with _TMDB_PROVIDER_LOGO_CACHE_LOCK:
-        now = time.monotonic()
-        cached = _TMDB_PROVIDER_LOGO_CACHE
-        if cached and now - cached[0] < _TMDB_PROVIDER_LOGO_CACHE_TTL_SECONDS:
-            return cached[1]
-
-        async def fetch_provider_rows(media_type: str) -> list[dict[str, Any]]:
-            try:
-                payload = await _tmdb_get_json(
-                    f"watch/providers/{media_type}",
-                    {"watch_region": "IN", "language": "en-US"},
-                )
-                rows = payload.get("results") if isinstance(payload, dict) else []
-                return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
-            except Exception as exc:
-                logger.info("TMDB provider logo catalogue failed for %s (%s)", media_type, type(exc).__name__)
-                return []
-
-        movie_rows, tv_rows = await asyncio.gather(
-            fetch_provider_rows("movie"),
-            fetch_provider_rows("tv"),
-        )
-        logos: dict[str, str] = {}
-        for row in movie_rows + tv_rows:
-            name = str(row.get("provider_name") or "").strip()
-            logo_path = str(row.get("logo_path") or "").strip()
-            if not name or not logo_path:
-                continue
-            logo_url = (
-                "https://image.tmdb.org/t/p/w92" + logo_path
-                if logo_path.startswith("/")
-                else logo_path
-            )
-            key = _provider_logo_lookup_key(name)
-            logos.setdefault(key, logo_url)
-
-        # Cache failures briefly so a temporary provider endpoint outage cannot
-        # add two extra requests to every title search.
-        _TMDB_PROVIDER_LOGO_CACHE = (
-            time.monotonic(),
-            logos,
-        )
-        if not logos:
-            # Shorten just the empty-result cache without changing the normal
-            # positive-cache TTL.
-            _TMDB_PROVIDER_LOGO_CACHE = (time.monotonic() - _TMDB_PROVIDER_LOGO_CACHE_TTL_SECONDS + 300, logos)
-        return logos
-
-
 async def _api_search_availability_impl(q: str) -> dict[str, Any]:
     """Search Watchmode and TMDB first; use TVmaze/OMDb for metadata only if neither finds a title."""
     query = re.sub(r"\s+", " ", q).strip()
@@ -8475,9 +8392,7 @@ async def _api_search_availability_impl(q: str) -> dict[str, Any]:
                     existing_providers.append(provider)
                     provider_indexes[key] = provider
                     continue
-                # Watchmode may identify the provider first but omit its logo;
-                # enrich that same provider with TMDB's logo rather than dropping it.
-                for field in ("logoUrl", "webUrl", "providerId"):
+                for field in ("webUrl", "providerId"):
                     if not previous_provider.get(field) and provider.get(field):
                         previous_provider[field] = provider[field]
             existing["providers"] = existing_providers
@@ -8511,25 +8426,6 @@ async def _api_search_availability_impl(q: str) -> dict[str, Any]:
         bool(item.get("year")),
     ), reverse=True)
 
-    # Watchmode often returns availability but no artwork. Enrich missing logos
-    # from TMDB's country-wide provider directory, even when a title-specific
-    # source didn't include its own logo_path.
-    if any(
-        not str(provider.get("logoUrl") or "").strip()
-        for match in deduped
-        for provider in (match.get("providers") or [])
-        if isinstance(provider, dict)
-    ):
-        provider_logos = await _get_tmdb_provider_logo_map()
-        if provider_logos:
-            for match in deduped:
-                for provider in (match.get("providers") or []):
-                    if not isinstance(provider, dict) or str(provider.get("logoUrl") or "").strip():
-                        continue
-                    logo_url = provider_logos.get(_provider_logo_lookup_key(provider.get("name")))
-                    if logo_url:
-                        provider["logoUrl"] = logo_url
-
     merged_providers, merged_provider_index = [], {}
     for match in deduped:
         for provider in match.get("providers") or []:
@@ -8541,7 +8437,7 @@ async def _api_search_availability_impl(q: str) -> dict[str, Any]:
                 merged_provider_index[identity] = provider
                 merged_providers.append(provider)
                 continue
-            for field in ("logoUrl", "webUrl", "providerId"):
+            for field in ("webUrl", "providerId"):
                 if not existing_provider.get(field) and provider.get(field):
                     existing_provider[field] = provider[field]
     result = {
