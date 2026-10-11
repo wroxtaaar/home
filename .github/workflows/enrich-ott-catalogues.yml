@@ -1,10 +1,15 @@
 name: Enrich remaining OTT catalogues
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'scripts/OTT_ENRICHMENT_TRIGGER.md'
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: home-ott-catalogue-enrichment
@@ -12,10 +17,14 @@ concurrency:
 
 jobs:
   enrich:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[run-ott-enrichment]')
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Prepare SSH
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
@@ -65,3 +74,44 @@ jobs:
           echo "A full run log is also written to: $LOG"
           python3 "$SCRIPT" 2>&1 | tee "$LOG"
           REMOTE
+
+      - name: Sync enriched catalogues back to GitHub cache snapshots
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_PORT: ${{ secrets.VPS_SSH_PORT || '22' }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER" || { echo "Missing VPS_USER"; exit 1; }
+          git fetch origin main
+          git checkout -B main origin/main
+
+          mkdir -p backend/cache-seed
+          for name in \
+            marvel_catalogue.json \
+            marvel_hindi_catalogue.json \
+            dc_live_action_catalogue.json \
+            dc_live_action_hindi_catalogue.json \
+            dc_animated_catalogue.json; do
+            echo "Downloading enriched $name"
+            scp -p -P "$VPS_SSH_PORT" \
+              "$VPS_USER@$VPS_HOST:/home/$VPS_USER/home-data/$name" \
+              "backend/cache-seed/$name"
+          done
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- \
+            backend/cache-seed/marvel_catalogue.json \
+            backend/cache-seed/marvel_hindi_catalogue.json \
+            backend/cache-seed/dc_live_action_catalogue.json \
+            backend/cache-seed/dc_live_action_hindi_catalogue.json \
+            backend/cache-seed/dc_animated_catalogue.json
+
+          if git diff --cached --quiet; then
+            echo "Bundled cache snapshots already match the enriched VPS files."
+            exit 0
+          fi
+
+          git commit -m "Refresh bundled Marvel and DC OTT-enriched catalogues"
+          git push origin HEAD:main

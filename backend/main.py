@@ -5110,6 +5110,7 @@ _CACHE_SEED_DIR = Path(os.getenv("CACHE_SEED_DIR", "/app/cache-seed"))
 _CACHE_SEED_FILES = (
     "dc_animated_catalogue.json",
     "dc_live_action_catalogue.json",
+    "dc_live_action_hindi_catalogue.json",
     "latest_bollywood_catalogue.json",
     "latest_hollywood_catalogue.json",
     "marvel_catalogue.json",
