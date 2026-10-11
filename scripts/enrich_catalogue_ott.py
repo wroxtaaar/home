@@ -5,6 +5,7 @@ import re
 import sys
 import time
 import shutil
+from difflib import SequenceMatcher
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -91,54 +92,101 @@ def clean_title(row):
     return re.sub(r"\s+", " ", title).strip()
 
 def get_year(row, title):
-    year = row.get("year")
-    try:
-        year = int(year)
-        if 1880 <= year <= 2100:
-            return year
-    except (ValueError, TypeError):
-        pass
-    match = re.search(r"\b(19\d{2}|20\d{2})\b", title)
-    return int(match.group(1)) if match else None
+    # Check likely title fields before any release-year cleanup.
+    for value in (row.get("year"), row.get("mediaTitle"),
+                  row.get("marvelCatalogueTitle"), row.get("catalogueTitle"),
+                  row.get("title"), title):
+        try:
+            year = int(value)
+            if 1880 <= year <= 2100:
+                return year
+        except (ValueError, TypeError):
+            pass
+        match = re.search(r"\b(19\d{2}|20\d{2})\b", str(value or ""))
+        if match:
+            return int(match.group(1))
+    return None
 
 def resolve_movie(title, year, tokens):
+    """Resolve cautiously: exact/alternate titles first, then very close matches."""
     if not title:
         return None, "empty_title"
 
-    params = {"query": title, "include_adult": "false"}
-    if year:
-        params["year"] = str(year)
-    url = "https://api.themoviedb.org/3/search/movie?" + urllib.parse.urlencode(params)
+    wanted = norm(title)
+    if not wanted:
+        return None, "empty_title"
+
     errors = []
+    saw_successful_search = False
+    candidates_by_id = {}
 
-    for token in tokens:
-        try:
-            result = request_json(url, token=token)
-            candidates = result.get("results") or []
-            wanted = norm(title)
-            exact = []
-            for candidate in candidates:
-                candidate_title = candidate.get("title") or candidate.get("original_title") or ""
+    # Year-constrained search first; retry without year for regional year differences.
+    queries = [title]
+    if " (film)" not in title.lower():
+        queries.append(title + " (film)")
+
+    for query in queries:
+        params = {"query": query, "include_adult": "false"}
+        if year:
+            params["year"] = str(year)
+        urls = ["https://api.themoviedb.org/3/search/movie?" + urllib.parse.urlencode(params)]
+        if year:
+            params_without_year = dict(params)
+            params_without_year.pop("year", None)
+            urls.append("https://api.themoviedb.org/3/search/movie?" +
+                        urllib.parse.urlencode(params_without_year))
+
+        for url in urls:
+            result = None
+            for token in tokens:
+                try:
+                    result = request_json(url, token=token)
+                    saw_successful_search = True
+                    break
+                except urllib.error.HTTPError as exc:
+                    errors.append(f"HTTP_{exc.code}")
+                    if exc.code not in (401, 403, 429, 500, 502, 503, 504):
+                        break
+                except Exception as exc:
+                    errors.append(type(exc).__name__)
+            if result is None:
+                continue
+
+            for candidate in result.get("results") or []:
+                if not candidate.get("id"):
+                    continue
                 candidate_year = (candidate.get("release_date") or "")[:4]
-                if norm(candidate_title) == wanted:
-                    if year and candidate_year and candidate_year.isdigit() and int(candidate_year) != year:
-                        continue
-                    exact.append(candidate)
-            if exact:
-                # Prefer matching release year when available.
-                exact.sort(key=lambda c: (
-                    0 if year and (c.get("release_date") or "")[:4] == str(year) else 1,
-                    -(float(c.get("popularity") or 0))
-                ))
-                return int(exact[0]["id"]), "exact_title_match"
-            return None, "no_exact_tmdb_match"
-        except urllib.error.HTTPError as e:
-            errors.append(f"HTTP_{e.code}")
-            if e.code not in (401, 403, 429):
-                break
-        except Exception as e:
-            errors.append(type(e).__name__)
+                if year and candidate_year.isdigit() and abs(int(candidate_year) - year) > 1:
+                    continue
 
+                titles = {
+                    norm(candidate.get("title") or ""),
+                    norm(candidate.get("original_title") or ""),
+                }
+                titles.discard("")
+                exact = wanted in titles
+                similarity = max((SequenceMatcher(None, wanted, value).ratio()
+                                  for value in titles), default=0.0)
+                # Keep fuzzy matching conservative to avoid wrong movie/provider matches.
+                if exact or similarity >= 0.92:
+                    candidate_id = int(candidate["id"])
+                    score = (
+                        1 if exact else 0,
+                        1 if year and candidate_year == str(year) else 0,
+                        similarity,
+                        float(candidate.get("popularity") or 0),
+                    )
+                    previous = candidates_by_id.get(candidate_id)
+                    if previous is None or score > previous[0]:
+                        candidates_by_id[candidate_id] = (score, candidate)
+
+    if candidates_by_id:
+        best = max(candidates_by_id.values(), key=lambda item: item[0])[1]
+        exact = wanted in {norm(best.get("title") or ""), norm(best.get("original_title") or "")}
+        return int(best["id"]), "exact_title_match" if exact else "close_title_match"
+
+    if saw_successful_search:
+        return None, "no_confident_tmdb_match"
     return None, "tmdb_search_failed:" + ",".join(errors or ["unknown"])
 
 def main():
@@ -178,6 +226,9 @@ def main():
     counts = {}
     total = sum(len(data["results"]) for _, _, data in catalogues)
     processed = 0
+    # Share work between duplicate releases in the same run.
+    resolution_cache = {}
+    availability_cache = {}
 
     for filename, path, data in catalogues:
         changed = False
@@ -209,8 +260,11 @@ def main():
                 continue
 
             tmdb_id = state.get("resolved", {}).get(identity)
+            if not tmdb_id and identity in resolution_cache:
+                tmdb_id = resolution_cache[identity]
             if not tmdb_id:
                 tmdb_id, resolution = resolve_movie(title, year, tokens)
+                resolution_cache[identity] = tmdb_id
                 if tmdb_id:
                     state.setdefault("resolved", {})[identity] = tmdb_id
                     save_state(state)
@@ -221,10 +275,16 @@ def main():
                     continue
 
             try:
-                payload = request_json(
-                    f"{API_BASE}/api/movies/ott/{tmdb_id}?region={REGION}",
-                    timeout=30,
-                )
+                if tmdb_id in availability_cache:
+                    payload = availability_cache[tmdb_id]
+                else:
+                    payload = request_json(
+                        f"{API_BASE}/api/movies/ott/{tmdb_id}?region={REGION}",
+                        timeout=30,
+                    )
+                    if not isinstance(payload, dict) or payload.get("movieId") is None:
+                        raise ValueError("Unexpected OTT API response")
+                    availability_cache[tmdb_id] = payload
                 if not isinstance(payload, dict) or payload.get("movieId") is None:
                     raise ValueError("Unexpected OTT API response")
 
