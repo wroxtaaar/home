@@ -107,6 +107,16 @@ def get_year(row, title):
             return int(match.group(1))
     return None
 
+# Explicit TMDB ID overrides for documented alternate display titles that do not
+# pass the conservative search-title matcher. Keys include the release year to
+# avoid confusing remakes and sequels.
+TMDB_ID_OVERRIDES = {
+    ("the fantastic four first steps", 2025): 617126,  # TMDB title: The Fantastic 4: First Steps
+    ("x2 x men united", 2003): 36658,                # TMDB title: X2
+    ("superman the movie", 1978): 1924,              # TMDB title: Superman
+}
+
+
 def resolve_movie(title, year, tokens):
     """Resolve cautiously: exact/alternate titles first, then very close matches."""
     if not title:
@@ -115,6 +125,10 @@ def resolve_movie(title, year, tokens):
     wanted = norm(title)
     if not wanted:
         return None, "empty_title"
+
+    override_id = TMDB_ID_OVERRIDES.get((wanted, year))
+    if override_id:
+        return override_id, "verified_tmdb_id_override"
 
     errors = []
     saw_successful_search = False
