@@ -54,6 +54,14 @@ Movie catalogue cards check India (`IN`) streaming availability in the backgroun
 
 The backend endpoint is `GET /api/movies/ott/{movie_id}?region=IN`. When `WATCHMODE_API_KEY` is configured, it first checks Watchmode legal streaming, rental and purchase sources for India using the TMDB movie ID. TMDB/JustWatch is retained as a fallback and supplies regional release-date metadata. Requests are coalesced and cached for 24 hours in `/app/data/tmdb_ott_availability_cache.json` (override with `TMDB_OTT_CACHE_FILE` or `TMDB_OTT_CACHE_SECONDS`). Keep `WATCHMODE_API_KEY` server-side only; never expose it in frontend environment variables or commit it. Provider attribution is returned by the API, while TMDB attribution remains required as described above.
 
+## Automatic movie and TV-show availability search
+
+`GET /api/search/availability?q=<title>` automatically searches both movies and TV series without requiring a media-type parameter. Watchmode is queried for film and TV title types, and TMDB independently searches both its movie and TV catalogues and requests the matching regional provider list for India. Matching provider entries from the primary sources are merged and de-duplicated.
+
+TVmaze is queried only when Watchmode and TMDB return no matching title. If TVmaze has no matching series, OMDb is the final metadata fallback when `OMDB_API_KEY` or `OMDB_API_KEYS` is configured. TVmaze and OMDb can help identify a title, but neither fallback is treated as proof of streaming availability; the API returns an unconfirmed result when no primary provider listing is available. The fallback metadata response includes a source label so the UI can distinguish it from confirmed availability.
+
+Keep OMDb credentials on the backend only. Multiple keys may be comma- or newline-separated in `OMDB_API_KEYS`; the legacy `OMDB_API_KEY` variable is also supported.
+
 ## Vercel
 
 Set the project Root Directory to `frontend`.
