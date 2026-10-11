@@ -1124,6 +1124,21 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       }
       setCatalogueBuildProgress('');
 
+      // Start TMDB metadata immediately and let it load alongside cached/live torrent
+      // search. The first cards and Seedr preparation do not wait for this request.
+      if (!searchMode && trimmed.length >= 2) {
+        setSearchMetadataStatus('loading');
+        void api.searchMediaMetadata(trimmed, controller.signal).then(metadataResponse => {
+          if (generation !== searchGenerationRef.current) return;
+          setSearchMetadata(Array.isArray(metadataResponse.results) ? metadataResponse.results : []);
+          setSearchMetadataStatus(metadataResponse.status || 'unavailable');
+        }).catch(() => {
+          if (generation !== searchGenerationRef.current) return;
+          setSearchMetadata([]);
+          setSearchMetadataStatus('unavailable');
+        });
+      }
+
       // Search the persistent torrent catalogues in parallel with live indexers.
       // Cached matches are shown as soon as they arrive; live results are merged in later.
       const cachedSearchPromise: Promise<TorrentSearchResult[]> = searchMode
@@ -1256,21 +1271,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       });
       setSearched(true);
       startPosterBackgroundSearch(data);
-
-      // Enrich the visible movie cards from TMDB without blocking torrent results,
-      // torrent metadata prefetch, or the Get -> quality -> Seedr flow.
-      if (!searchMode && trimmed.length >= 2) {
-        setSearchMetadataStatus('loading');
-        void api.searchMediaMetadata(trimmed, controller.signal).then(metadataResponse => {
-          if (generation !== searchGenerationRef.current) return;
-          setSearchMetadata(Array.isArray(metadataResponse.results) ? metadataResponse.results : []);
-          setSearchMetadataStatus(metadataResponse.status || 'unavailable');
-        }).catch(() => {
-          if (generation !== searchGenerationRef.current) return;
-          setSearchMetadata([]);
-          setSearchMetadataStatus('unavailable');
-        });
-      }
 
       // Use OTT data already embedded in enriched catalogue rows before scheduling any API lookups.
       // Do not gate this on searchMode: catalogue presets can be invoked through different UI paths.
