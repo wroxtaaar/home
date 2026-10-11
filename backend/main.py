@@ -4349,7 +4349,12 @@ async def _cinemeta_poster_lookup(title: str, year: str = "") -> str | None:
 
 
 async def _tmdb_poster_lookup(title: str, year: str = "") -> str | None:
-    """Resolve a movie poster through the shared rotating TMDB credential pool."""
+    """Resolve an exact-title poster from TMDB movies or TV series.
+
+    Torrent releases often include episode numbers, while the poster belongs to
+    the parent series. Search both media types and only accept normalized exact
+    title matches; this avoids returning artwork for a loosely related title.
+    """
     if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
         return None
 
@@ -4358,47 +4363,68 @@ async def _tmdb_poster_lookup(title: str, year: str = "") -> str | None:
     if not clean_title:
         return None
 
-    aliases = _poster_title_aliases(clean_title, clean_year)
+    # Strip common season/episode suffixes so "Lanterns S01E08" resolves to
+    # the series "Lanterns", not a movie with a similar name.
+    search_title = re.sub(
+        r"\\s+(?:s\\d{1,2}e\\d{1,3}|season\\s+\\d{1,2}(?:\\s+episode\\s+\\d{1,3})?|\\d{1,2}x\\d{1,3})\\b.*$",
+        "",
+        clean_title,
+        flags=re.IGNORECASE,
+    ).strip() or clean_title
+    aliases = _poster_title_aliases(search_title, clean_year)
     wanted_titles = {_poster_normalize_title(alias) for alias in aliases if alias}
     params_base: dict[str, Any] = {"include_adult": "false", "language": "en-US", "page": 1}
-    if clean_year.isdigit() and len(clean_year) == 4:
-        params_base["year"] = clean_year
+
+    async def search_media(media_type: str, alias: str) -> list[tuple[float, str]]:
+        params = dict(params_base)
+        params["query"] = alias
+        if clean_year.isdigit() and len(clean_year) == 4:
+            params["year" if media_type == "movie" else "first_air_date_year"] = clean_year
+        try:
+            data = await _tmdb_get_json(f"search/{media_type}", params)
+        except Exception as exc:
+            logger.debug("TMDB %s poster search failed for '%s': %s", media_type, alias, type(exc).__name__)
+            return []
+
+        candidates: list[tuple[float, str]] = []
+        title_keys = ("title", "original_title") if media_type == "movie" else ("name", "original_name")
+        date_key = "release_date" if media_type == "movie" else "first_air_date"
+        for row in data.get("results") or []:
+            if not isinstance(row, dict):
+                continue
+            name = next((str(row.get(key) or "").strip() for key in title_keys if row.get(key)), "")
+            normalized = _poster_normalize_title(name)
+            date_value = str(row.get(date_key) or "").strip()
+            candidate_year = date_value[:4] if re.match(r"^\\d{4}-\\d{2}-\\d{2}$", date_value) else ""
+            poster_path = str(row.get("poster_path") or "").strip()
+            if not name or not poster_path or normalized not in wanted_titles:
+                continue
+            if clean_year and candidate_year and candidate_year != clean_year:
+                continue
+            score = 100.0
+            if normalized == _poster_normalize_title(search_title):
+                score += 100
+            if clean_year and candidate_year == clean_year:
+                score += 100
+            score += float(row.get("vote_average") or 0)
+            score += min(float(row.get("vote_count") or 0), 10000) / 1000
+            candidates.append((score, poster_path))
+        return candidates
 
     try:
         for alias in aliases[:4]:
-            try:
-                data = await _tmdb_get_json("search/movie", {**params_base, "query": alias})
-            except Exception as exc:
-                logger.debug("TMDB poster search failed for alias '%s': %s", alias, type(exc).__name__)
-                continue
-
-            candidates: list[tuple[float, str]] = []
-            for row in data.get("results") or []:
-                if not isinstance(row, dict):
-                    continue
-                name = str(row.get("title") or row.get("original_title") or "").strip()
-                normalized = _poster_normalize_title(name)
-                release_date = str(row.get("release_date") or "").strip()
-                candidate_year = release_date[:4] if re.match(r"^\d{4}-\d{2}-\d{2}$", release_date) else ""
-                poster_path = str(row.get("poster_path") or "").strip()
-                if not name or not poster_path or normalized not in wanted_titles:
-                    continue
-                if clean_year and candidate_year != clean_year:
-                    continue
-                score = 100.0
-                if clean_year and candidate_year == clean_year:
-                    score += 100
-                score += float(row.get("vote_average") or 0)
-                score += min(float(row.get("vote_count") or 0), 10000) / 1000
-                candidates.append((score, poster_path))
-
+            # Both endpoints are independent and fast to query concurrently.
+            movie_candidates, tv_candidates = await asyncio.gather(
+                search_media("movie", alias),
+                search_media("tv", alias),
+            )
+            candidates = movie_candidates + tv_candidates
             if candidates:
                 candidates.sort(key=lambda item: item[0], reverse=True)
                 return TMDB_IMAGE_BASE + candidates[0][1]
     except Exception as exc:
         logger.debug("TMDB poster lookup failed for '%s (%s)': %s", clean_title, clean_year, type(exc).__name__)
     return None
-
 
 async def _poster_lookup_uncached(clean_title: str, clean_year: str, cache_key: str) -> str | None:
     now = time.time()
