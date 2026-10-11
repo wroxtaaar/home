@@ -417,7 +417,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     let changed = false;
     for (const movie of movies) {
       const movieId = String(movie.id);
-      if (!/^\\d+$/.test(movieId) || ottQueuedIdsRef.current.has(movieId)) continue;
+      if (!/^\d+$/.test(movieId) || ottQueuedIdsRef.current.has(movieId)) continue;
       const existing = next[movieId];
       if (existing && !(retryErrors && existing.status === 'error')) continue;
 
