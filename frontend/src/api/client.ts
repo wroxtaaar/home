@@ -248,6 +248,15 @@ export const api = {
     query: string;
     title?: string;
     year?: number | string;
+    matches?: Array<{
+      id: string;
+      title: string;
+      year?: number | string;
+      type?: string;
+      tmdbId?: number | string;
+      status: 'ready' | 'not_found' | 'not_confirmed' | 'unavailable';
+      providers: Array<{ name: string; region: string; type: string; webUrl?: string }>;
+    }>;
     providers: Array<{ name: string; region: string; type: string; webUrl?: string }>;
     message?: string;
   }> {
