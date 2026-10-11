@@ -1171,7 +1171,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           setSearchMetadataStatus(metadataResponse.status || 'unavailable');
         }).catch(() => {
           if (generation !== searchGenerationRef.current) return;
-          setSearchMetadata([]);
+          // The VPS catalogue lookup may already have supplied saved synopses.
+          // A failed live TMDB request must not erase those successful cache hits.
           setSearchMetadataStatus('unavailable');
         });
       }
