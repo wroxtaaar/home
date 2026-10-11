@@ -1,7 +1,7 @@
-"""Experimental NexStream resolver used only by the isolated test page.
+"""Experimental NexStream resolver and title search used by the isolated test page.
 
-The API key stays on the server. Only approved HTTPS EmbedMaster player URLs
-are returned to the browser; no direct media URLs are exposed by this adapter.
+Provider credentials stay on the server. Only approved HTTPS EmbedMaster player
+URLs are returned to the browser; no direct media URLs are exposed by this adapter.
 """
 import os
 from urllib.parse import urlsplit
@@ -11,7 +11,88 @@ from fastapi import APIRouter, HTTPException, Query
 
 router = APIRouter()
 NEXSTREAM_API_BASE = "https://api.codespecters.com"
+TMDB_API_BASE = "https://api.themoviedb.org/3"
 ALLOWED_EMBED_HOSTS = {"embedmaster.link", "www.embedmaster.link"}
+
+
+def _env_values(*names: str) -> list[str]:
+    values: list[str] = []
+    for name in names:
+        raw = os.getenv(name, "")
+        for item in raw.replace("\\n", "\n").replace(",", "\n").splitlines():
+            item = item.strip()
+            if item and item not in values:
+                values.append(item)
+    return values
+
+
+@router.get("/api/nexstream/search")
+async def search_titles(
+    query: str = Query(..., min_length=2, max_length=120),
+    media_type: str = Query("movie", alias="type", pattern="^(movie|tv)$"),
+):
+    """Search TMDB by title so testers don't need to know TMDB IDs."""
+    api_keys = _env_values("TMDB_API_KEYS", "TMDB_API_KEY")
+    bearer_tokens = _env_values("TMDB_READ_ACCESS_TOKENS", "TMDB_READ_ACCESS_TOKEN", "TMDB_BEARER_TOKEN")
+    if not api_keys and not bearer_tokens:
+        raise HTTPException(
+            status_code=503,
+            detail="TMDB credentials are not configured on the test server.",
+        )
+
+    endpoint = "movie" if media_type == "movie" else "tv"
+    params = {"query": query.strip(), "include_adult": "false", "page": "1"}
+    payload = None
+    last_status = None
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(12.0), follow_redirects=True) as client:
+            for key in api_keys:
+                response = await client.get(
+                    f"{TMDB_API_BASE}/search/{endpoint}",
+                    params={**params, "api_key": key},
+                    headers={"Accept": "application/json"},
+                )
+                last_status = response.status_code
+                if response.status_code == 200:
+                    payload = response.json()
+                    break
+                if response.status_code == 429:
+                    raise HTTPException(status_code=429, detail="TMDB search rate limit reached. Try again shortly.")
+            if payload is None:
+                for token in bearer_tokens:
+                    response = await client.get(
+                        f"{TMDB_API_BASE}/search/{endpoint}",
+                        params=params,
+                        headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
+                    )
+                    last_status = response.status_code
+                    if response.status_code == 200:
+                        payload = response.json()
+                        break
+                    if response.status_code == 429:
+                        raise HTTPException(status_code=429, detail="TMDB search rate limit reached. Try again shortly.")
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail="Could not connect to TMDB title search.") from exc
+
+    if payload is None:
+        if last_status in (401, 403):
+            raise HTTPException(status_code=502, detail="TMDB rejected the configured credentials.")
+        raise HTTPException(status_code=502, detail="TMDB title search failed.")
+
+    results = []
+    for item in payload.get("results", [])[:12]:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        title = item.get("title") if media_type == "movie" else item.get("name")
+        results.append({
+            "id": int(item["id"]),
+            "title": str(title or "Untitled"),
+            "date": str(item.get("release_date") if media_type == "movie" else item.get("first_air_date") or ""),
+            "overview": str(item.get("overview") or "")[:400],
+            "poster": f"https://image.tmdb.org/t/p/w185{item['poster_path']}" if item.get("poster_path") else None,
+            "type": media_type,
+        })
+    return {"success": True, "type": media_type, "results": results}
 
 
 @router.get("/api/nexstream/resolve")
