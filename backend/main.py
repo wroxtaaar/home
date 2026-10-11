@@ -7420,19 +7420,12 @@ async def api_search_metadata(q: str = Query(..., min_length=2, max_length=160))
         media_type = str(item.get("media_type") or "").lower()
         if media_type not in {"movie", "tv"} or not item.get("id"):
             continue
-        title = str(item.get("title") if media_type == "movie" else item.get("name") or "").strip()
-        if not title:
-            title = str(item.get("name") or item.get("title") or "").strip()
+        title = str((item.get("title") if media_type == "movie" else item.get("name")) or "").strip()
         if not title or not _availability_title_is_relevant(query, title):
             continue
         release_date = str(
-            item.get("release_date") if media_type == "movie" else item.get("first_air_date") or ""
+            (item.get("release_date") if media_type == "movie" else item.get("first_air_date")) or ""
         ).strip()
-        # Parentheses matter here: both media types use the corresponding release field.
-        if media_type == "movie":
-            release_date = str(item.get("release_date") or "").strip()
-        else:
-            release_date = str(item.get("first_air_date") or "").strip()
         year_match = re.match(r"^(\d{4})", release_date)
         poster_path = str(item.get("poster_path") or "").strip()
         backdrop_path = str(item.get("backdrop_path") or "").strip()
