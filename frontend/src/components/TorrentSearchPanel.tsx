@@ -2947,8 +2947,23 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[10px] sm:text-xs">
                               <span className="font-semibold text-emerald-400">▲ {Number(result.seeders) || 0} seeders</span>
                               <span className="font-semibold text-amber-400">▼ {Number(result.leechers) || 0} peers</span>
-                              {group.year && <span className="text-slate-500">{group.year}</span>}
+                              {(mediaMetadata?.year || group.year) && <span className="text-slate-500">{mediaMetadata?.year || group.year}</span>}
+                              {mediaMetadata?.rating ? <span className="text-amber-300">TMDB {mediaMetadata.rating.toFixed(1)}</span> : null}
                             </div>
+
+                            <p className="mt-2 line-clamp-3 text-[10px] leading-relaxed text-slate-400">
+                              {mediaMetadata?.overview ||
+                                (searchMetadataStatus === 'loading'
+                                  ? 'Loading synopsis from TMDB…'
+                                  : searchMetadataStatus === 'unavailable'
+                                    ? 'TMDB synopsis is temporarily unavailable.'
+                                    : 'No synopsis available from TMDB for this title.')}
+                            </p>
+                            {mediaMetadata?.tmdbUrl && (
+                              <a href={mediaMetadata.tmdbUrl} target="_blank" rel="noreferrer" className="mt-1 inline-flex items-center gap-1 text-[10px] text-cyan-300 hover:text-cyan-200">
+                                TMDB details <ExternalLink className="h-3 w-3" />
+                              </a>
+                            )}
 
                             {(() => {
                               const availability = searchAvailabilityByGroup[group.key];
