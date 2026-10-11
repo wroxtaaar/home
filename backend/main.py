@@ -6353,61 +6353,66 @@ def _marvel_ott_normalize_title(value: Any) -> str:
 
 
 async def _resolve_marvel_tmdb_movie_id(title: str, year: int) -> tuple[int | None, str]:
-    """Resolve a curated Marvel title only when TMDB's title match is unambiguous."""
-    try:
-        payload = await _tmdb_get_json("search/movie", {
-            "query": title,
-            "year": year,
-            "include_adult": "false",
-            "language": "en-US",
-            "page": 1,
-        })
-    except Exception as exc:
-        logger.warning("Marvel OTT ID lookup failed for %s (%s): %s", title, year, type(exc).__name__)
-        return None, "lookup_failed"
-
+    """Resolve a curated Marvel title from the saved review manifest, then TMDB search."""
     expected = _marvel_ott_normalize_title(title)
-    candidates = []
-    for row in payload.get("results") or []:
-        if not isinstance(row, dict) or not isinstance(row.get("id"), int):
-            continue
-        names = {
-            _marvel_ott_normalize_title(row.get("title")),
-            _marvel_ott_normalize_title(row.get("original_title")),
-        }
-        release_year = str(row.get("release_date") or "")[:4]
-        if expected in names and (not release_year or release_year == str(year)):
-            candidates.append(row)
-    if len(candidates) == 1:
-        return int(candidates[0]["id"]), "exact_match"
-    if len(candidates) > 1:
-        return None, "ambiguous_exact_match"
 
-    # Retry without a year in case TMDB's release year differs from the curated
-    # theatrical year, but still require an exact normalized title match.
+    # Reuse the user's manually reviewed manifest when it is mounted in /app/data.
+    # This avoids wasting TMDB search calls for IDs that have already been resolved.
+    manifest_path = Path(os.getenv(
+        "MARVEL_TMDB_ID_REVIEW_PATH",
+        "/app/data/marvel_tmdb_id_review.json",
+    ))
     try:
-        payload = await _tmdb_get_json("search/movie", {
-            "query": title,
-            "include_adult": "false",
-            "language": "en-US",
-            "page": 1,
-        })
-    except Exception as exc:
-        logger.warning("Marvel OTT fallback ID lookup failed for %s: %s", title, type(exc).__name__)
-        return None, "lookup_failed"
-    candidates = []
-    for row in payload.get("results") or []:
-        if not isinstance(row, dict) or not isinstance(row.get("id"), int):
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        rows = manifest.get("movies", []) if isinstance(manifest, dict) else []
+        matches = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            row_title = str(row.get("title") or row.get("movieTitle") or row.get("searchTitle") or "")
+            row_year = row.get("year")
+            row_id = row.get("tmdbId", row.get("movieId", row.get("id")))
+            if _marvel_ott_normalize_title(row_title) == expected and (not row_year or int(row_year) == year):
+                if isinstance(row_id, int) and row_id > 0:
+                    matches.append(row_id)
+        if len(set(matches)) == 1:
+            return matches[0], "saved_manifest"
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+
+    errors = []
+    for params in (
+        {"query": title, "year": year, "include_adult": "false", "language": "en-US", "page": 1},
+        {"query": title, "include_adult": "false", "language": "en-US", "page": 1},
+    ):
+        try:
+            payload = await _tmdb_get_json("search/movie", params)
+        except Exception as exc:
+            errors.append(str(getattr(exc, "detail", "") or type(exc).__name__))
+            await asyncio.sleep(0.5)
             continue
-        names = {
-            _marvel_ott_normalize_title(row.get("title")),
-            _marvel_ott_normalize_title(row.get("original_title")),
-        }
-        if expected in names:
-            candidates.append(row)
-    if len(candidates) == 1:
-        return int(candidates[0]["id"]), "exact_match_year_fallback"
-    return None, "ambiguous_exact_match" if candidates else "no_exact_tmdb_match"
+
+        candidates = []
+        for row in payload.get("results") or []:
+            if not isinstance(row, dict) or not isinstance(row.get("id"), int):
+                continue
+            names = {
+                _marvel_ott_normalize_title(row.get("title")),
+                _marvel_ott_normalize_title(row.get("original_title")),
+            }
+            release_year = str(row.get("release_date") or "")[:4]
+            if expected in names and (not release_year or release_year == str(year) or "year" not in params):
+                candidates.append(row)
+        ids = {int(row["id"]) for row in candidates}
+        if len(ids) == 1:
+            return next(iter(ids)), "exact_match" if "year" in params else "exact_match_year_fallback"
+        if len(ids) > 1:
+            return None, "ambiguous_exact_match"
+
+    if errors:
+        logger.warning("Marvel OTT ID lookup failed for %s (%s): %s", title, year, "; ".join(errors))
+        return None, "lookup_failed: " + errors[-1][:180]
+    return None, "no_exact_tmdb_match"
 
 
 @app.get("/api/movies/ott/backfill/marvel")
