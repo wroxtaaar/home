@@ -4664,7 +4664,11 @@ def _read_marvel_catalogue() -> dict[str, Any] | None:
         payload = json.loads(MARVEL_CATALOGUE_PATH.read_text(encoding="utf-8"))
         if (
             isinstance(payload, dict)
-            and payload.get("version") == MARVEL_CATALOGUE_VERSION
+            # Reuse the previous curated snapshot across catalogue-version
+            # changes. A version bump must not discard thousands of usable
+            # cached torrent rows and trigger a full provider crawl.
+            and isinstance(payload.get("version"), int)
+            and payload.get("version") <= MARVEL_CATALOGUE_VERSION
             and isinstance(payload.get("results"), list)
             and payload["results"]
         ):
