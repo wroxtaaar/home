@@ -1165,11 +1165,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         setCatalogueBuildProgress(catalogue.refreshing ? 'Showing cached results while the monthly refresh runs in the background.' : '');
       } else {
         const livePromise = api.searchTorrents(trimmed, 50, controller.signal);
-        const [liveResults, cachedResults] = await Promise.all([
-          livePromise,
-          cachedSearchPromise,
-        ]);
-        data = [...cachedResults, ...liveResults];
+        // Do not make live torrent results wait for the seven catalogue lookups.
+        // Cached catalogue matches are merged independently as each search completes.
+        const liveResults = await livePromise;
+        data = [...liveResults];
         const unique = new Map<string, TorrentSearchResult>();
         data.forEach(row => {
           const key = torrentResultKey(row);
@@ -1200,7 +1199,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           'marvel', 'marvel-hindi', 'dc-live-action', 'dc-live-action-hindi', 'dc-animated'
         ]);
         let liveLookupCount = 0;
-        const liveLookupLimit = 15;
+        const liveLookupLimit = 3;
 
         for (const group of availabilityGroups) {
           const cachedRow = group.variants.find(variant => {
