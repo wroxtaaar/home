@@ -6201,7 +6201,7 @@ async def _tmdb_fetch_movie_ott_availability(movie_id: int, region: str) -> dict
         "attribution": "This product uses the TMDB API but is not endorsed or certified by TMDB.",
     }
 
-async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None, *, request_timeout: float = 12.0) -> dict[str, Any]:
     credentials = [("bearer", token) for token in TMDB_READ_ACCESS_TOKENS] + [("api_key", key) for key in TMDB_API_KEYS]
     if not credentials:
         raise HTTPException(status_code=503, detail="TMDB credentials are not configured. Set TMDB_API_KEYS and/or TMDB_READ_ACCESS_TOKENS.")
@@ -6227,7 +6227,7 @@ async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None) -> dic
         else:
             request_params["api_key"] = credential
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(12.0, connect=4.0), follow_redirects=True, headers=headers) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(request_timeout, connect=min(4.0, request_timeout)), follow_redirects=True, headers=headers) as client:
                 response = await client.get(f"{TMDB_API_BASE}/{path.lstrip('/')}", params=request_params)
             last_response = response
             if 200 <= response.status_code < 300:
@@ -6246,8 +6246,10 @@ async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None) -> dic
                 _provider_key_failure(provider, fingerprint, 3600, "HTTP 401")
                 return None
             if response.status_code == 403:
+                # A credential may lack permission for this endpoint; cool it down
+                # and try the remaining configured credentials before failing.
                 _provider_key_failure(provider, fingerprint, 3600, "HTTP 403")
-                raise HTTPException(status_code=503, detail="TMDB denied access for this request; check the account's API permissions and plan.")
+                return None
             if response.status_code >= 500:
                 transient_failed.append((kind, credential))
                 return None
@@ -7410,14 +7412,16 @@ async def api_search_metadata(q: str = Query(..., min_length=2, max_length=160))
         return {"status": "unavailable", "query": query, "source": "TMDB", "results": []}
 
     try:
+        # Give the helper time to try each configured token on key-specific
+        # failures. Use a shorter per-token timeout for this non-blocking UI lookup.
         payload = await asyncio.wait_for(
             _tmdb_get_json("search/multi", {
                 "query": query,
                 "include_adult": "false",
                 "language": "en-US",
                 "page": 1,
-            }),
-            timeout=8.0,
+            }, request_timeout=3.5),
+            timeout=14.0,
         )
     except Exception as exc:
         logger.info("TMDB quick metadata search failed for %r: %s", query, type(exc).__name__)
