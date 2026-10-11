@@ -132,11 +132,26 @@ function normalizeGroupTitle(value: string): string {
 function uniqueOttProviders<T extends { name: string; type?: string; webUrl?: string }>(providers: T[]): T[] {
   const seen = new Set<string>();
   return providers.filter(provider => {
-    const key = String(provider.name || '')
+    let key = String(provider.name || '')
       .toLowerCase()
-      .replace(/\\s*[-·:]\\s*(?:rent|buy|subscription|sub|streaming)\\s*$/i, '')
+      .replace(/\s*[-·:]\s*(?:rent|buy|subscription|sub|streaming)\s*$/i, '')
+      .replace(/\s+with\s+ads?$/i, '')
+      .replace(/\s+(?:channel|add-on)$/i, '')
       .replace(/[^a-z0-9]+/g, ' ')
       .trim();
+
+    // Provider feeds can report one service as a storefront, ad tier, or channel.
+    // Normalize those aliases so each service appears only once on the movie card.
+    if (/^(?:amazon video|amazon prime video|amazon prime video with ads)$/.test(key)) {
+      key = 'amazon prime video';
+    } else if (/^(?:apple tv|apple tv store|apple tv plus|apple tv channel)$/.test(key)) {
+      key = 'apple tv';
+    } else if (key.includes('lionsgate play')) {
+      key = 'lionsgate play';
+    } else if (key.startsWith('sony pictures ') && key.includes('amazon channel')) {
+      key = 'sony pictures amazon channel';
+    }
+
     if (!key || seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -2632,7 +2647,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                   <div className="mt-2 flex flex-wrap gap-1" aria-label={`Streaming services for ${group.title}`}>
                                     {providersToShow.map((provider, providerIndex) => {
                                       const name = String(provider.name || '')
-                                        .replace(/\\s*[-·:]\\s*(?:rent|buy|subscription|sub|streaming)\\s*$/i, '')
+                                        .replace(/\s*[-·:]\s*(?:rent|buy|subscription|sub|streaming)\s*$/i, '')
+                                        .replace(/\s+with\s+ads?$/i, '')
                                         .trim();
                                       return (
                                         <a
