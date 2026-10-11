@@ -129,6 +129,15 @@ function normalizeGroupTitle(value: string): string {
     .replace(/^(?:the|a|an)\s+/, '');
 }
 
+function normalizeSavedOttTitle(value: string): string {
+  // Saved franchise catalogues often store the canonical title without the
+  // release year, while torrent cards include it (for example "(2019)").
+  const withoutTrailingYear = String(value || '')
+    .replace(/\s*\(?((?:19|20)\d{2})\)?\s*$/, '')
+    .trim();
+  return normalizeGroupTitle(withoutTrailingYear);
+}
+
 const PREFERRED_OTT_PROVIDERS = [
   'amazon prime video',
   'netflix',
@@ -339,18 +348,18 @@ function groupTorrentResults(results: TorrentSearchResult[]): TorrentQualityGrou
     }
 
     for (const [year, yearEntries] of yearBuckets) {
-      const bestByQuality = new Map<string, { result: TorrentSearchResult; quality: ReturnType<typeof torrentQualityDetails> }>();
+      // Keep distinct torrent releases even when they share the same resolution
+      // and source label. This lets users choose another encode, size, or swarm,
+      // rather than hiding those options and making the quality selector disappear.
+      const uniqueVariants = new Map<string, { result: TorrentSearchResult; quality: ReturnType<typeof torrentQualityDetails> }>();
       for (const entry of yearEntries) {
-        const quality = torrentQualityDetails(entry.result);
-        const previous = bestByQuality.get(quality.key);
-        if (!previous) {
-          // sortedResults is already ordered by the chosen ranking, so the
-          // first occurrence is the preferred swarm for this quality.
-          bestByQuality.set(quality.key, { result: entry.result, quality });
+        const key = torrentResultKey(entry.result);
+        if (!uniqueVariants.has(key)) {
+          uniqueVariants.set(key, { result: entry.result, quality: torrentQualityDetails(entry.result) });
         }
       }
 
-      const variants = Array.from(bestByQuality.values())
+      const variants = Array.from(uniqueVariants.values())
         .sort((a, b) => {
           const qualityDifference = b.quality.rank - a.quality.rank;
           if (qualityDifference !== 0) return qualityDifference;
@@ -1245,11 +1254,28 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             controller.signal
           );
           if (generation === searchGenerationRef.current) {
+            const savedProviderCount = (candidate: any): number => {
+              const saved = candidate?.ottAvailability || candidate || {};
+              return ['streamingProviders', 'rentProviders', 'buyProviders'].reduce(
+                (total, key) => total + (Array.isArray(saved[key]) ? saved[key].length : 0),
+                0,
+              );
+            };
             for (const result of savedOttResponse.results || []) {
               for (const entry of result.entries || []) {
-                const key = normalizeGroupTitle(entry.title || result.query);
-                if (key && entry.ottAvailability && !savedOttByTitle.has(key)) {
-                  savedOttByTitle.set(key, entry);
+                if (!entry.ottAvailability) continue;
+                // Index by both the canonical saved title and the exact search
+                // query. The latter guarantees a hit even when year/title labels differ.
+                const keys = Array.from(new Set(
+                  [entry.title, result.query]
+                    .map(value => normalizeSavedOttTitle(String(value || '')))
+                    .filter(Boolean)
+                ));
+                for (const key of keys) {
+                  const existing = savedOttByTitle.get(key);
+                  if (!existing || savedProviderCount(entry) > savedProviderCount(existing)) {
+                    savedOttByTitle.set(key, entry);
+                  }
                 }
               }
             }
@@ -1266,11 +1292,13 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               rentProviders?: unknown;
               buyProviders?: unknown;
             };
-            return Boolean(
-              (row.ottAvailability && typeof row.ottAvailability === 'object') ||
-              Array.isArray(row.streamingProviders) ||
-              Array.isArray(row.rentProviders) ||
-              Array.isArray(row.buyProviders)
+            const saved = row.ottAvailability && typeof row.ottAvailability === 'object'
+              ? row.ottAvailability
+              : row;
+            return ['streamingProviders', 'rentProviders', 'buyProviders'].some(key =>
+              Array.isArray((saved as any)[key]) && (saved as any)[key].length > 0
+            ) || ['streamingProviders', 'rentProviders', 'buyProviders'].some(key =>
+              Array.isArray((row as any)[key]) && (row as any)[key].length > 0
             );
           }) as (TorrentSearchResult & {
             tmdbId?: number | string;
@@ -1281,7 +1309,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             catalogueTitle?: string;
             marvelCatalogueTitle?: string;
           }) | undefined;
-          const savedOttRow = savedOttByTitle.get(normalizeGroupTitle(group.title));
+          const savedOttRow = savedOttByTitle.get(normalizeSavedOttTitle(group.title));
           const cachedRow = cachedTorrentRow || (savedOttRow as (TorrentSearchResult & {
             tmdbId?: number | string;
             ottAvailability?: any;
@@ -2777,6 +2805,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               }
                               if (availability.status === 'not_confirmed') {
                                 return <div className="mt-2 text-[10px] text-slate-500">{availability.message || 'No saved streaming details'}</div>;
+                              }
+                              if (availability.status === 'ready') {
+                                return <div className="mt-2 text-[10px] text-slate-500">No streaming providers reported</div>;
                               }
                               return null;
                             })()}
