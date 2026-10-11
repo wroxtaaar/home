@@ -171,7 +171,7 @@ TMDB_COMPANY_CACHE_SECONDS = max(3600, int(os.getenv("TMDB_COMPANY_CACHE_SECONDS
 TMDB_CATALOGUE_CACHE_FILE = Path(os.getenv("TMDB_CATALOGUE_CACHE_FILE", "/app/data/tmdb_movie_catalogue_cache.json"))
 TMDB_SEARCH_METADATA_CACHE_FILE = Path(os.getenv("TMDB_SEARCH_METADATA_CACHE_FILE", "/app/data/tmdb_search_metadata_cache.json"))
 TMDB_SEARCH_METADATA_QUERY_TTL_SECONDS = max(3600, int(os.getenv("TMDB_SEARCH_METADATA_QUERY_TTL_SECONDS", str(30 * 24 * 60 * 60))))
-TMDB_SYNOPSIS_LOOKUP_VERSION = 2
+TMDB_SYNOPSIS_LOOKUP_VERSION = 3
 SYNOPSIS_CACHE_RETRY_INTERVAL_SECONDS = max(300, int(os.getenv("SYNOPSIS_CACHE_RETRY_INTERVAL_SECONDS", "900")))
 TMDB_OTT_CACHE_SECONDS = max(3600, int(os.getenv("TMDB_OTT_CACHE_SECONDS", str(24 * 60 * 60))))
 TMDB_OTT_CACHE_FILE = Path(os.getenv("TMDB_OTT_CACHE_FILE", "/app/data/tmdb_ott_availability_cache.json"))
@@ -5472,11 +5472,85 @@ def _write_synopsis_cache(path: Path, payload: dict[str, Any]) -> None:
                 pass
 
 
-async def _lookup_catalogue_synopsis(title: str, year: int) -> dict[str, Any] | None:
-    """Resolve and return synopsis data, checking movie details when search omits the overview."""
+async def _lookup_catalogue_synopsis(
+    title: str,
+    year: int,
+    tmdb_id: int = 0,
+) -> dict[str, Any] | None:
+    """Resolve synopsis data, preferring a previously saved TMDB ID over title search."""
     query = re.sub(r"\s+", " ", title).strip()
+    if not query and not tmdb_id:
+        return None
+
+    now = int(time.time())
+
+    def details_to_metadata(
+        details: dict[str, Any],
+        resolved_id: int,
+        fallback_title: str,
+        fallback_year: int,
+        fallback_row: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        fallback = fallback_row or {}
+        release_date = str(details.get("release_date") or fallback.get("release_date") or "")
+        year_match = re.match(r"^(\d{4})", release_date)
+        resolved_year = int(year_match.group(1)) if year_match else (fallback_year or None)
+        poster_path = str(details.get("poster_path") or fallback.get("poster_path") or "").strip()
+        backdrop_path = str(details.get("backdrop_path") or fallback.get("backdrop_path") or "").strip()
+        overview = re.sub(r"\s+", " ", str(details.get("overview") or fallback.get("overview") or "")).strip()
+        genres = details.get("genres") or fallback.get("genres") or []
+        if genres and isinstance(genres[0], dict):
+            genres = [str(genre.get("name") or "").strip() for genre in genres if isinstance(genre, dict)]
+            genres = [genre for genre in genres if genre]
+        return {
+            "id": int(details.get("id") or resolved_id),
+            "tmdbId": int(details.get("id") or resolved_id),
+            "title": str(details.get("title") or fallback.get("title") or fallback_title).strip(),
+            "year": resolved_year,
+            "mediaType": "movie",
+            "overview": overview,
+            "posterUrl": TMDB_IMAGE_BASE + poster_path if poster_path else "",
+            "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop_path if backdrop_path else "",
+            "tmdbUrl": f"https://www.themoviedb.org/movie/{int(details.get('id') or resolved_id)}",
+            "releaseDate": release_date,
+            "rating": float(details.get("vote_average") or fallback.get("vote_average") or 0),
+            "genres": genres if isinstance(genres, list) else [],
+            "synopsisCheckedAt": now,
+            "synopsisLookupVersion": TMDB_SYNOPSIS_LOOKUP_VERSION,
+        }
+
+    # Catalogue rows commonly already have a verified TMDB ID. Fetching movie
+    # details directly avoids strict title matching failures for sequels,
+    # punctuation variants, or localized catalogue labels.
+    if tmdb_id > 0:
+        successful_details_response = False
+        details: dict[str, Any] = {}
+        for language in ("en-US", "en"):
+            try:
+                response = await _tmdb_get_json(
+                    f"movie/{tmdb_id}", {"language": language}, request_timeout=6.0
+                )
+            except Exception as exc:
+                logger.info(
+                    "Synopsis details lookup failed for %s (%s): %s",
+                    tmdb_id, language, type(exc).__name__,
+                )
+                continue
+            successful_details_response = True
+            details = response
+            if re.sub(r"\s+", " ", str(details.get("overview") or "")).strip():
+                break
+        if successful_details_response:
+            return details_to_metadata(
+                details, tmdb_id, query or str(details.get("title") or ""), year
+            )
+        # If the ID endpoint failed, leave the row eligible for a later retry.
+        # Do not turn a transport/auth failure into a negative cache entry.
+        return None
+
     if not query:
         return None
+
     params: dict[str, Any] = {
         "query": query, "include_adult": "false", "language": "en-US", "page": 1,
     }
@@ -5485,8 +5559,6 @@ async def _lookup_catalogue_synopsis(title: str, year: int) -> dict[str, Any] | 
     try:
         result = await _tmdb_get_json("search/movie", params, request_timeout=6.0)
     except Exception as exc:
-        # A transport/credential failure is not a completed lookup. Leave the row
-        # eligible for the background retry worker.
         logger.info("Synopsis cache lookup failed for %r (%s): %s", query, year, type(exc).__name__)
         return None
 
@@ -5506,7 +5578,6 @@ async def _lookup_catalogue_synopsis(title: str, year: int) -> dict[str, Any] | 
             continue
         candidates.append((0 if year and candidate_year == year else 1, -int(row.get("vote_count") or 0), row))
 
-    now = int(time.time())
     if not candidates:
         # TMDB answered successfully but has no exact title/year match. Record the
         # lookup version so we don't retry this negative result on every startup.
@@ -5514,52 +5585,40 @@ async def _lookup_catalogue_synopsis(title: str, year: int) -> dict[str, Any] | 
 
     candidates.sort(key=lambda candidate: (candidate[0], candidate[1]))
     row = candidates[0][2]
-    tmdb_id = int(row["id"])
-    release_date = str(row.get("release_date") or "")
-    year_match = re.match(r"^(\d{4})", release_date)
-    candidate_year = int(year_match.group(1)) if year_match else (year or None)
+    resolved_id = int(row["id"])
     details: dict[str, Any] = row
     overview = re.sub(r"\s+", " ", str(row.get("overview") or "")).strip()
 
-    # Search/list endpoints frequently omit the overview even when the canonical
-    # movie-details endpoint has it. Do not mark the row as checked until details
-    # has answered successfully; a network failure should remain retryable.
+    # Search/list endpoints can omit the overview even when the details endpoint
+    # contains it. Do not mark a row checked if every details request fails.
     if not overview:
         successful_details_response = False
         for language in ("en-US", "en"):
             try:
-                details = await _tmdb_get_json(
-                    f"movie/{tmdb_id}", {"language": language}, request_timeout=6.0
+                response = await _tmdb_get_json(
+                    f"movie/{resolved_id}", {"language": language}, request_timeout=6.0
                 )
-                successful_details_response = True
             except Exception as exc:
-                logger.info("Synopsis details lookup failed for %s (%s): %s",
-                    tmdb_id, language, type(exc).__name__)
+                logger.info(
+                    "Synopsis details lookup failed for %s (%s): %s",
+                    resolved_id, language, type(exc).__name__,
+                )
                 continue
+            details = response
+            successful_details_response = True
             overview = re.sub(r"\s+", " ", str(details.get("overview") or "")).strip()
             if overview:
                 break
         if not successful_details_response:
             return None
 
-    poster_path = str(details.get("poster_path") or row.get("poster_path") or "").strip()
-    backdrop_path = str(details.get("backdrop_path") or row.get("backdrop_path") or "").strip()
-    details_release_date = str(details.get("release_date") or release_date)
-    return {
-        "id": tmdb_id,
-        "tmdbId": tmdb_id,
-        "title": str(details.get("title") or row.get("title") or query).strip(),
-        "year": candidate_year,
-        "mediaType": "movie",
-        "overview": overview,
-        "posterUrl": TMDB_IMAGE_BASE + poster_path if poster_path else "",
-        "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop_path if backdrop_path else "",
-        "tmdbUrl": f"https://www.themoviedb.org/movie/{tmdb_id}",
-        "releaseDate": details_release_date,
-        "rating": float(details.get("vote_average") or row.get("vote_average") or 0),
-        "synopsisCheckedAt": now,
-        "synopsisLookupVersion": TMDB_SYNOPSIS_LOOKUP_VERSION,
-    }
+    return details_to_metadata(
+        details,
+        resolved_id,
+        str(row.get("title") or row.get("original_title") or query).strip(),
+        year,
+        fallback_row=row,
+    )
 
 
 async def _enrich_catalogue_synopses() -> None:
@@ -5576,7 +5635,7 @@ async def _enrich_catalogue_synopses() -> None:
 
     # First collect unique missing-synopsis titles across every cache. Repeated torrent
     # releases for the same film share one TMDB request and one metadata result.
-    jobs: dict[tuple[str, int], tuple[str, int]] = {}
+    jobs: dict[tuple[str, int], tuple[str, int, int]] = {}
     file_rows: list[tuple[str, Path, dict[str, Any]]] = []
     now = int(time.time())
     for name, path in paths:
@@ -5615,14 +5674,17 @@ async def _enrich_catalogue_synopses() -> None:
                 item.get("catalogueTitle") or item.get("marvelCatalogueTitle")
                 or item.get("mediaTitle") or item.get("title") or ""
             ).strip()
-            jobs.setdefault(identity, (title, identity[1]))
+            tmdb_id = _catalogue_metadata_tmdb_id(item)
+            existing_job = jobs.get(identity)
+            if existing_job is None or (not existing_job[2] and tmdb_id):
+                jobs[identity] = (title, identity[1], tmdb_id)
 
     state["titlesTotal"] = len(jobs)
     metadata_by_identity: dict[tuple[str, int], dict[str, Any]] = {}
     # Conservative pacing avoids a burst against TMDB. Rate-limit responses are
     # respected by _tmdb_get_json and are not bypassed by trying other accounts.
-    for identity, (title, year) in jobs.items():
-        metadata = await _lookup_catalogue_synopsis(title, year)
+    for identity, (title, year, tmdb_id) in jobs.items():
+        metadata = await _lookup_catalogue_synopsis(title, year, tmdb_id)
         if metadata:
             metadata_by_identity[identity] = metadata
         state["titlesCompleted"] += 1
