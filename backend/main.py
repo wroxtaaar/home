@@ -8264,8 +8264,24 @@ async def _api_search_availability_impl(q: str) -> dict[str, Any]:
                         if identity in seen_sources:
                             continue
                         seen_sources.add(identity)
-                        providers.append({"name": name, "region": region, "type": provider_type,
-                            "webUrl": source.get("web_url") or source.get("ios_url") or source.get("android_url") or ""})
+                        logo_url = str(
+                            source.get("logo_url") or source.get("logoUrl") or source.get("logo")
+                            or source.get("image_url") or source.get("image") or ""
+                        ).strip()
+                        logo_path = str(source.get("logo_path") or "").strip()
+                        if not logo_url and logo_path:
+                            logo_url = (
+                                "https://image.tmdb.org/t/p/w92" + logo_path
+                                if logo_path.startswith("/") else logo_path
+                            )
+                        providers.append({
+                            "providerId": source.get("source_id", source.get("id")),
+                            "name": name,
+                            "region": region,
+                            "type": provider_type,
+                            "webUrl": source.get("web_url") or source.get("ios_url") or source.get("android_url") or "",
+                            "logoUrl": logo_url,
+                        })
                     return {"id": wid, "title": str(item.get("name") or query), "year": item.get("year"),
                         "type": kind or "unknown", "tmdbId": item.get("tmdb_id"), "providers": providers[:24],
                         "status": "ready" if providers else "not_confirmed", "source": "Watchmode"}
@@ -8326,8 +8342,15 @@ async def _api_search_availability_impl(q: str) -> dict[str, Any]:
                 for provider in region_data.get(category) or []:
                     name = str(provider.get("provider_name") or "").strip()
                     if name:
-                        providers.append({"name": name, "region": "IN", "type": kind,
-                            "webUrl": region_data.get("link") or ""})
+                        logo_path = str(provider.get("logo_path") or "").strip()
+                        providers.append({
+                            "providerId": provider.get("provider_id"),
+                            "name": name,
+                            "region": "IN",
+                            "type": kind,
+                            "webUrl": region_data.get("link") or "",
+                            "logoUrl": "https://image.tmdb.org/t/p/w92" + logo_path if logo_path else "",
+                        })
             return {
                 "id": str(tmdb_id), "title": str(row.get(title_key) or query),
                 "year": str(row.get(date_key) or "")[:4] or None,
