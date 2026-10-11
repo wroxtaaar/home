@@ -65,23 +65,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def catalogue_payload(key: str, page: int, released_only: bool) -> dict:
-    cache_key = (
-        key + ("|released-v4" if released_only else "|upcoming-v3"),
-        page,
-    )
-    cached = main._read_tmdb_persistent_cache(cache_key)
-    ttl = 30 * 60 if key.startswith("trending-") else main.TMDB_CATALOGUE_CACHE_SECONDS
-    if cached:
-        saved_at, payload = cached
-        if time.time() - saved_at < ttl:
-            return payload
-
-    payload = asyncio.run(main._tmdb_fetch_movie_catalogue(key, page, released_only))
-    main._write_tmdb_persistent_cache(cache_key, payload)
-    return payload
-
-
 async def load_catalogue_page(key: str, page: int, released_only: bool) -> dict:
     cache_key = (
         key + ("|released-v4" if released_only else "|upcoming-v3"),
@@ -91,7 +74,15 @@ async def load_catalogue_page(key: str, page: int, released_only: bool) -> dict:
     ttl = 30 * 60 if key.startswith("trending-") else main.TMDB_CATALOGUE_CACHE_SECONDS
     if cached and time.time() - cached[0] < ttl:
         return cached[1]
-    payload = await main._tmdb_fetch_movie_catalogue(key, page, released_only)
+    try:
+        payload = await main._tmdb_fetch_movie_catalogue(key, page, released_only)
+    except Exception:
+        # Match the app's resilience: use an expired persistent catalogue as a
+        # best-effort fallback if TMDB is unreachable during a manual warm-up.
+        if cached:
+            print(f"[stale catalogue] Using saved {key} page {page} because TMDB failed.")
+            return cached[1]
+        raise
     main._write_tmdb_persistent_cache(cache_key, payload)
     return payload
 
