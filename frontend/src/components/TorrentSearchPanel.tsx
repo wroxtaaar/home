@@ -864,6 +864,24 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
 
 
+  const cancelSearch = () => {
+    // Invalidate the active request before aborting so late responses cannot update the UI.
+    searchGenerationRef.current += 1;
+    searchRequestRef.current?.abort();
+    searchRequestRef.current = null;
+    movieTorrentSearchGenerationRef.current += 1;
+    movieTorrentSearchControllerRef.current?.abort();
+    movieTorrentSearchControllerRef.current = null;
+    setIsSearching(false);
+    setCatalogueBuildProgress('');
+    setError('');
+    setShowRecentSearches(false);
+    setMovieCatalogue(null);
+    setResults([]);
+    setSearchAvailabilityByGroup({});
+    setSearched(false);
+  };
+
   const runSearch = async (event?: React.FormEvent, searchOverride?: string, searchMode?: 'marvel' | 'marvel-hindi' | 'dc-live-action' | 'dc-live-action-hindi' | 'dc-animated' | 'latest-hollywood' | 'latest-bollywood') => {
     event?.preventDefault();
     setMovieTorrentSearchError('');
@@ -903,7 +921,13 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       posterBackgroundQueuedRef.current.clear();
       posterBackgroundAttemptsRef.current.clear();
       posterBackgroundGenerationRef.current += 1;
-      saveRecentSearch(trimmed);
+      // Preset catalogue searches are actions, not user-entered queries.
+      // Keep the input empty and never add these labels to local or server history.
+      if (searchMode) {
+        setQuery('');
+      } else {
+        saveRecentSearch(trimmed);
+      }
       setCatalogueBuildProgress('');
 
       let data: TorrentSearchResult[];
@@ -1246,7 +1270,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       setCatalogueBuildProgress('Loading the ' + searchText.replace(/Movies?$/i, '').trim() + ' movie catalogue…');
       setMovieCatalogueSearchText(searchText);
       setShowRecentSearches(false);
-      setQuery(searchText);
+      setQuery('');
       setError('');
       setResults([]);
       setSelectedQualityByGroup({});
@@ -1526,14 +1550,21 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           </div>
 
           <button
-            type="submit"
-            disabled={isSearching}
-            className="w-10 sm:w-auto px-2 sm:px-4 py-2 rounded-lg sm:rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 disabled:cursor-not-allowed text-slate-950 text-xs font-bold flex items-center justify-center gap-2 transition"
+            type={isSearching ? 'button' : 'submit'}
+            onClick={isSearching ? cancelSearch : undefined}
+            aria-label={isSearching ? 'Cancel search' : 'Search'}
+            title={isSearching ? 'Cancel search' : 'Search'}
+            className={[
+              'w-10 sm:w-auto px-2 sm:px-4 py-2 rounded-lg sm:rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition',
+              isSearching
+                ? 'bg-rose-500 hover:bg-rose-400 text-white'
+                : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950'
+            ].join(' ')}
           >
             {isSearching ? (
               <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span className="hidden sm:inline">Searching...</span>
+                <X className="w-4 h-4" />
+                <span className="hidden sm:inline">Cancel</span>
               </>
             ) : (
               <>
