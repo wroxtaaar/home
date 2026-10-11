@@ -122,3 +122,16 @@ Then set `VITE_API_URL=http://127.0.0.1:8000` for the frontend.
 - `GET /api/seedr/files/:id/download`
 
 The repository also contains compatibility endpoints used by the existing UI. They do not start a qBittorrent process or create shared local torrent storage.
+
+
+## Watchmode streaming availability
+
+Configure the backend environment variable `WATCHMODE_API_KEYS` with Watchmode API keys separated by commas or newlines. Keep the keys in your hosting provider's environment settings; do not commit real keys to GitHub. The legacy single-key variable `WATCHMODE_API_KEY` remains supported.
+
+Example using placeholders only:
+
+```env
+WATCHMODE_API_KEYS=your_first_key,your_second_key,your_third_key
+```
+
+The backend tries another configured key after an authentication failure, server error, or transport failure. It does not switch keys on HTTP 429 rate-limit/quota responses or HTTP 403 access restrictions. Multiple keys should only be used in accordance with Watchmode's terms and each account's plan; this code does not treat keys as a way to bypass quotas. Watchmode source lookups send the key using the documented `apiKey` query parameter.
