@@ -138,12 +138,24 @@ function normalizeSavedOttTitle(value: string): string {
   return normalizeGroupTitle(withoutTrailingYear);
 }
 
-function imdbRatingKey(title: string, year?: number | string | null): string {
+function episodeSeriesTitle(value: string): string | null {
+  // Episode torrents usually contain the show name followed by SxxExx or 1x01.
+  const raw = String(value || '').trim();
+  const match = raw.match(/^(.*?)\s+(?:S\d{1,2}E\d{1,3}|\d{1,2}x\d{1,3})(?=$|[\s._-])/i);
+  const title = String(match?.[1] || '').replace(/[._]+/g, ' ').trim();
+  return title.length >= 2 ? title : null;
+}
+
+function imdbRatingKey(
+  title: string,
+  year?: number | string | null,
+  mediaType: 'movie' | 'tv' = 'movie',
+): string {
   const raw = String(title || '').trim();
   const embeddedYear = raw.match(/\s*\(?((?:19|20)\d{2})\)?\s*$/)?.[1] || '';
   const resolvedYear = String(year || embeddedYear || '');
   const normalizedTitle = normalizeSavedOttTitle(raw).replace(/\bfour\b/g, '4');
-  return normalizedTitle + '|' + resolvedYear;
+  return (mediaType === 'tv' ? 'tv|' : 'movie|') + normalizedTitle + '|' + resolvedYear;
 }
 
 function imdbRatingQueryTitle(title: string, year?: number | string | null): string {
@@ -159,7 +171,18 @@ function searchMetadataForGroup(
   items: SearchMediaMetadata[],
 ): SearchMediaMetadata | undefined {
   const key = normalizeSavedOttTitle(group.title);
-  const candidates = items.filter(item => normalizeSavedOttTitle(item.title) === key);
+  let candidates = items.filter(item => normalizeSavedOttTitle(item.title) === key);
+  if (!candidates.length) {
+    // TV torrent card names include episode titles (e.g. "The Rookie S06E10 Escape Plan").
+    // Match the series title separately so show synopsis and TMDB rating appear on the card.
+    const seriesTitle = episodeSeriesTitle(group.title);
+    if (seriesTitle) {
+      const seriesKey = normalizeSavedOttTitle(seriesTitle);
+      candidates = items.filter(item =>
+        item.mediaType === 'tv' && normalizeSavedOttTitle(item.title) === seriesKey
+      );
+    }
+  }
   if (!candidates.length) return undefined;
 
   const year = String(group.year || '');
@@ -458,6 +481,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [searchMetadataStatus, setSearchMetadataStatus] = useState<'idle' | 'loading' | 'ready' | 'not_found' | 'unavailable'>('idle');
   const [imdbRatingsByKey, setImdbRatingsByKey] = useState<Record<string, ImdbRatingResult>>({});
   const imdbRatingRequestedRef = useRef(new Set<string>());
+  const tvMetadataRequestedRef = useRef(new Set<string>());
   const [searchAvailabilityByGroup, setSearchAvailabilityByGroup] = useState<Record<string, {
     status: 'ready' | 'not_found' | 'not_confirmed' | 'unavailable' | 'loading';
     query: string;
@@ -1964,38 +1988,87 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     };
   }, [groupedResults]);
 
-  // IMDb ratings are fetched independently after movie cards have rendered.
-  // The backend persists them, so reopening catalogues does not spend another OMDb request.
+  // Search TMDB by show name for episode-shaped torrent titles. A broad search for
+  // the episode name (e.g. "Escape Plan") cannot resolve "The Rookie" or "NCIS: New Orleans".
+  useEffect(() => {
+    const seriesTitles = Array.from(new Set(groupedResults
+      .slice(0, 80)
+      .map(group => episodeSeriesTitle(group.title))
+      .filter((title): title is string => Boolean(title))))
+      .filter(title => {
+        const key = normalizeSavedOttTitle(title);
+        if (!key || tvMetadataRequestedRef.current.has(key)) return false;
+        tvMetadataRequestedRef.current.add(key);
+        return true;
+      })
+      .slice(0, 12);
+    if (!seriesTitles.length) return;
+
+    const controller = new AbortController();
+    void Promise.all(seriesTitles.map(async title => {
+      try {
+        const response = await api.searchMediaMetadata(title, controller.signal);
+        const normalized = normalizeSavedOttTitle(title);
+        return (response.results || []).filter(item =>
+          item.mediaType === 'tv' && normalizeSavedOttTitle(item.title) === normalized
+        ).slice(0, 1);
+      } catch {
+        // Optional TV metadata must never block or fail torrent search.
+        return [];
+      }
+    })).then(groups => {
+      if (controller.signal.aborted) return;
+      const additions = groups.flat();
+      if (additions.length) {
+        setSearchMetadata(previous => mergeSearchMetadataItems(previous, additions));
+      }
+    });
+
+    return () => controller.abort();
+  }, [groupedResults]);
+
+  // IMDb ratings are fetched independently after cards have rendered.
+  // Movies use OMDb's movie type; show metadata uses OMDb's series type.
   useEffect(() => {
     const candidates = [
       ...(movieCatalogue?.results || []).map(item => ({
         title: String(item.title || '').trim(),
         year: item.year,
-        mediaType: 'movie',
+        mediaType: 'movie' as const,
       })),
-      ...searchMetadata
-        .filter(item => (item.mediaType || 'movie') === 'movie')
-        .map(item => ({ title: String(item.title || '').trim(), year: item.year, mediaType: item.mediaType })),
+      ...searchMetadata.map(item => ({
+        title: String(item.title || '').trim(),
+        year: item.year,
+        mediaType: item.mediaType === 'tv' ? 'tv' as const : 'movie' as const,
+      })),
     ].filter(item => item.title);
 
-    const pending = new Map<string, string>();
+    const pending = new Map<string, { title: string; mediaType: 'movie' | 'tv' }>();
     for (const item of candidates) {
-      const key = imdbRatingKey(item.title, item.year);
-      if (!key.startsWith('|') && !imdbRatingRequestedRef.current.has(key)) {
-        pending.set(key, imdbRatingQueryTitle(item.title, item.year));
+      const key = imdbRatingKey(item.title, item.year, item.mediaType);
+      if (!key.startsWith('movie||') && !key.startsWith('tv||') && !imdbRatingRequestedRef.current.has(key)) {
+        pending.set(key, {
+          title: imdbRatingQueryTitle(item.title, item.year),
+          mediaType: item.mediaType,
+        });
       }
     }
     const requests = [...pending.entries()].slice(0, 80);
     if (!requests.length) return;
     requests.forEach(([key]) => imdbRatingRequestedRef.current.add(key));
 
-    void api.getImdbRatings(requests.map(([, title]) => title)).then(response => {
+    const requestItems = requests.map(([, item]) => item);
+    void api.getImdbRatings(
+      requestItems.map(item => item.title),
+      requestItems.map(item => item.mediaType),
+    ).then(response => {
       const ratings = Array.isArray(response.results) ? response.results : [];
       setImdbRatingsByKey(previous => {
         const next = { ...previous };
         for (const rating of ratings) {
-          const queryKey = imdbRatingKey(rating.query || rating.title, undefined);
-          const canonicalKey = imdbRatingKey(rating.title, rating.year);
+          const mediaType = rating.mediaType === 'tv' ? 'tv' : 'movie';
+          const queryKey = imdbRatingKey(rating.query || rating.title, undefined, mediaType);
+          const canonicalKey = imdbRatingKey(rating.title, rating.year, mediaType);
           next[queryKey] = rating;
           next[canonicalKey] = rating;
         }
@@ -2870,12 +2943,19 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               const selectedKey = selectedQualityByGroup[group.key];
               const result = group.variants.find(variant => torrentResultKey(variant) === selectedKey) || group.variants[0];
               const posterResult = group.posterResult;
+              const seriesTitle = episodeSeriesTitle(group.title);
               const mediaMetadata = searchMetadataForGroup(group, searchMetadata);
-              const mediaDisplayTitle = mediaMetadata?.title || group.title.replace(/\s*\((?:19|20)\d{2}\)\s*$/, '');
-              const mediaDisplayYear = mediaMetadata?.year || group.year;
+              const mediaDisplayTitle = !seriesTitle && mediaMetadata?.title
+                ? mediaMetadata.title
+                : group.title.replace(/\s*\((?:19|20)\d{2}\)\s*$/, '');
+              const mediaDisplayYear = !seriesTitle ? (mediaMetadata?.year || group.year) : group.year;
+              const imdbDisplayTitle = seriesTitle ? (mediaMetadata?.title || seriesTitle) : mediaDisplayTitle;
+              const imdbDisplayYear = seriesTitle ? mediaMetadata?.year : mediaDisplayYear;
+              const imdbDisplayType = seriesTitle ? 'tv' as const : (mediaMetadata?.mediaType === 'tv' ? 'tv' as const : 'movie' as const);
               const displayImdbRating =
-                imdbRatingsByKey[imdbRatingKey(mediaDisplayTitle, mediaDisplayYear)] ||
-                imdbRatingsByKey[imdbRatingKey(group.title, group.year)];
+                imdbRatingsByKey[imdbRatingKey(imdbDisplayTitle, imdbDisplayYear, imdbDisplayType)] ||
+                imdbRatingsByKey[imdbRatingKey(mediaMetadata?.title || imdbDisplayTitle, mediaMetadata?.year || imdbDisplayYear, imdbDisplayType)] ||
+                imdbRatingsByKey[imdbRatingKey(group.title, group.year, imdbDisplayType)];
 
               // Normal searches use the same poster-first, compact card flow as
               // the Popular/Trending catalogues. The full torrent/OTT details and
