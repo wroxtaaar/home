@@ -38,109 +38,25 @@ function isPresetSearchLabel(value: string): boolean {
   ]).has(normalized);
 }
 
-function normalizeProviderLogoUrl(value: unknown): string {
-  const raw = String(value || '').trim();
-  if (!raw) return '';
-  if (/^https?:\/\//i.test(raw)) return raw;
-  if (raw.startsWith('//')) return 'https:' + raw;
-  if (raw.startsWith('/')) return 'https://image.tmdb.org/t/p/w92' + raw;
-  return '';
-}
-
-function fallbackProviderLogoUrl(providerName: string): string {
-  const name = normalizeOttProviderName(providerName).replace(/[^a-z0-9]+/g, ' ').trim();
-  // Only use verified Simple Icons slugs here. Most Indian OTT services
-  // are supplied by TMDB as logo_path values instead of Simple Icons assets.
-  const brands: Array<{ match: RegExp; slug: string; color: string }> = [
-    { match: /\bnetflix\b/, slug: 'netflix', color: 'E50914' },
-    { match: /\bapple tv\b/, slug: 'appletv', color: 'FFFFFF' },
-    { match: /\b(max|hbo max)\b/, slug: 'max', color: '002BE7' },
-    { match: /\bparamount ?\+|paramount plus\b/, slug: 'paramountplus', color: '0064FF' },
-    { match: /\bcrunchyroll\b/, slug: 'crunchyroll', color: 'F47521' },
-    { match: /\byoutube\b/, slug: 'youtube', color: 'FF0000' },
-    { match: /^sony$/, slug: 'sony', color: 'FFFFFF' },
-  ];
-  const brand = brands.find(item => item.match.test(name));
-  return brand ? 'https://cdn.simpleicons.org/' + brand.slug + '/' + brand.color : '';
-}
-
-function providerIcon(
-  provider: { name: string; logoUrl?: string; webUrl?: string },
-  key: string,
-  sizeClass = 'h-7 w-7',
-): React.ReactNode {
-  const name = displayOttProviderName(provider.name);
-  const initials = name
-    .replace(/\b(video|streaming|entertainment|network)\b/gi, '')
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map(part => part[0])
-    .join('')
-    .toUpperCase() || name.slice(0, 1).toUpperCase();
-  const suppliedLogoUrl = normalizeProviderLogoUrl(provider.logoUrl);
-  const fallbackLogoUrl = fallbackProviderLogoUrl(name);
-  const logoUrl = suppliedLogoUrl || fallbackLogoUrl;
-  const icon = (
-    <span
-      className={'relative inline-flex ' + sizeClass + ' shrink-0 items-center justify-center overflow-hidden rounded-md border border-slate-700 bg-slate-950 text-[10px] font-bold text-slate-300'}
-      title={name}
-      aria-label={name}
-    >
-      <span aria-hidden="true">{initials}</span>
-      {logoUrl && (
-        <img
-          src={logoUrl}
-          alt=""
-          loading="lazy"
-          className="absolute inset-0 h-full w-full bg-slate-950 object-contain p-0.5"
-          onError={event => {
-            const image = event.currentTarget;
-            if (
-              suppliedLogoUrl &&
-              fallbackLogoUrl &&
-              suppliedLogoUrl !== fallbackLogoUrl &&
-              image.dataset.brandFallbackAttempted !== 'true'
-            ) {
-              image.dataset.brandFallbackAttempted = 'true';
-              image.src = fallbackLogoUrl;
-              return;
-            }
-            image.style.display = 'none';
-          }}
-        />
-      )}
-    </span>
-  );
-  return provider.webUrl ? (
-    <a
-      key={key}
-      href={provider.webUrl}
-      target="_blank"
-      rel="noreferrer"
-      title={name}
-      aria-label={'Open ' + name}
-      className="inline-flex rounded-md outline-offset-2 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
-    >
-      {icon}
-    </a>
-  ) : <span key={key} className="inline-flex" title={name}>{icon}</span>;
-}
-
 function providerNames(providers: MovieOttProvider[]): React.ReactNode {
   const shown = providers.slice(0, 3);
   return (
-    <span className="inline-flex flex-wrap items-center gap-1.5 align-middle">
-      {shown.map((provider, index) =>
-        providerIcon(provider, String(provider.providerId ?? provider.name) + '-' + index)
-      )}
-      {providers.length > shown.length && (
-        <span className="text-[10px] text-slate-400">+{providers.length - shown.length}</span>
-      )}
-    </span>
+    <>
+      {shown.map((provider, index) => (
+        <React.Fragment key={String(provider.providerId ?? provider.name) + '-' + index}>
+          {index > 0 ? ', ' : ''}
+          {provider.webUrl ? (
+            <a href={provider.webUrl} target="_blank" rel="noreferrer" className="text-cyan-300 underline underline-offset-2 hover:text-cyan-200">
+              {provider.name}
+            </a>
+          ) : provider.name}
+        </React.Fragment>
+      ))}
+      {providers.length > 3 ? ' +' + (providers.length - 3) : ''}
+    </>
   );
 }
+
 
 type SeedrSearchFile = {
   id: string;
@@ -372,36 +288,25 @@ function displayOttProviderName(name: string): string {
     .trim();
 }
 
-function uniqueOttProviders<T extends { name: string; type?: string; webUrl?: string; logoUrl?: string; providerId?: number | string }>(providers: T[]): T[] {
+function uniqueOttProviders<T extends { name: string; type?: string; webUrl?: string; providerId?: number | string }>(providers: T[]): T[] {
   const unique = new Map<string, T>();
   providers.forEach(provider => {
     const key = normalizeOttProviderName(provider.name);
     if (!key) return;
     const existing = unique.get(key);
     if (existing) {
-      const existingLogo = normalizeProviderLogoUrl(existing.logoUrl);
-      const candidateLogo = normalizeProviderLogoUrl(provider.logoUrl);
-      // A Watchmode entry may appear first without artwork while TMDB has the
-      // logo for the same service. Merge, rather than dropping the later row.
       unique.set(key, {
         ...existing,
-        logoUrl: existingLogo || candidateLogo || existing.logoUrl || provider.logoUrl,
         webUrl: existing.webUrl || provider.webUrl,
         providerId: existing.providerId ?? provider.providerId,
       });
       return;
     }
-    unique.set(key, {
-      ...provider,
-      name: displayOttProviderName(provider.name),
-      logoUrl: normalizeProviderLogoUrl(provider.logoUrl) || provider.logoUrl,
-    });
+    unique.set(key, { ...provider, name: displayOttProviderName(provider.name) });
   });
 
   const all = Array.from(unique.entries());
   const preferred = all.filter(([key]) => PREFERRED_OTT_PROVIDERS.includes(key));
-  // If at least one of the six priority services is available, keep the card concise
-  // and show only priority services. Fall back to other providers only when none match.
   return (preferred.length ? preferred : all).map(([, provider]) => provider);
 }
 
@@ -426,7 +331,7 @@ function normalizeSavedOttProviders(
       region: String(item?.region || fallbackRegion || 'IN'),
       type: String(item?.type || fallbackType || 'streaming'),
       webUrl: item?.webUrl || item?.web_url || item?.url || undefined,
-      logoUrl: normalizeProviderLogoUrl(item?.logoUrl || item?.logo_url || item?.logo_path || item?.logo || item?.image_url) || undefined,
+      logoUrl: item?.logoUrl || item?.logo_url || item?.logo_path || item?.logo || item?.image_url || undefined,
     }];
   });
 }
@@ -3069,6 +2974,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 imdbRatingsByKey[imdbRatingKey(imdbDisplayTitle, imdbDisplayYear, imdbDisplayType)] ||
                 imdbRatingsByKey[imdbRatingKey(mediaMetadata?.title || imdbDisplayTitle, mediaMetadata?.year || imdbDisplayYear, imdbDisplayType)] ||
                 imdbRatingsByKey[imdbRatingKey(group.title, group.year, imdbDisplayType)];
+              const imdbTitleHref = displayImdbRating?.imdbUrl ||
+                ('https://www.imdb.com/find/?q=' + encodeURIComponent(
+                  [imdbDisplayTitle || mediaDisplayTitle, imdbDisplayYear].filter(Boolean).join(' ')
+                ));
               const groupPosterKey = posterKeyFor(posterResult);
               const canonicalPosterUrl = String(mediaMetadata?.posterUrl || '').trim();
               const resolvedPosterUrl = posterMetadataFailedRef.current.has(groupPosterKey)
@@ -3174,11 +3083,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     <div className="flex flex-1 flex-col gap-2 p-2.5">
                       <div>
                         <h3 className="line-clamp-2 text-sm font-bold leading-snug text-slate-100">
-                          {mediaMetadata?.tmdbUrl ? (
-                            <a href={mediaMetadata.tmdbUrl} target="_blank" rel="noreferrer" className="hover:text-cyan-300" title="Open on TMDB">
-                              {mediaDisplayTitle}
-                            </a>
-                          ) : mediaDisplayTitle}
+                          <a href={imdbTitleHref} target="_blank" rel="noreferrer" className="hover:text-cyan-300" title="Open on IMDb">
+                            {mediaDisplayTitle}
+                          </a>
                         </h3>
                         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] sm:text-xs">
                           {mediaDisplayYear && <span className="text-slate-400">{mediaDisplayYear}</span>}
@@ -3210,9 +3117,21 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
                       {compactProviders.length > 0 ? (
                         <div className="flex flex-wrap gap-1" aria-label={'Streaming services for ' + group.title}>
-                          {compactProviders.slice(0, 5).map((provider, providerIndex) =>
-                            providerIcon(provider, String(provider.providerId ?? provider.name ?? providerIndex).toLowerCase())
-                          )}
+                          {compactProviders.slice(0, 5).map((provider, providerIndex) => {
+                            const name = displayOttProviderName(provider.name);
+                            return (
+                              <a
+                                key={String(provider.providerId ?? name ?? providerIndex).toLowerCase()}
+                                href={provider.webUrl || undefined}
+                                target={provider.webUrl ? '_blank' : undefined}
+                                rel={provider.webUrl ? 'noreferrer' : undefined}
+                                title={name}
+                                className="rounded-full border border-cyan-900/70 bg-cyan-950/40 px-1.5 py-0.5 text-[10px] leading-4 text-cyan-200 hover:border-cyan-600"
+                              >
+                                {name}
+                              </a>
+                            );
+                          })}
                         </div>
                       ) : (
                         <div className="text-[10px] leading-relaxed text-slate-500">
@@ -3343,21 +3262,15 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           </div>
                           <div className="relative min-w-0 flex-1 z-10">
                             <div className="flex items-start gap-1.5">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const fullTitle = fullTorrentTitleFor(result);
-                                  showFullTorrentTitleBubble({
-                                    ...result,
-                                    title: fullTitle || result.title
-                                  });
-                                }}
-                                className="block min-w-0 flex-1 text-left text-[11px] leading-4 sm:text-sm font-semibold text-slate-100 line-clamp-2 hover:text-cyan-300 transition cursor-pointer"
-                                title="Click to view full torrent name"
-                                aria-label="View full torrent name"
+                              <a
+                                href={imdbTitleHref}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="block min-w-0 flex-1 text-left text-[11px] leading-4 sm:text-sm font-semibold text-slate-100 line-clamp-2 hover:text-cyan-300 transition"
+                                title="Open on IMDb"
                               >
-                                {group.title}
-                              </button>
+                                {mediaDisplayTitle}
+                              </a>
                               <button
                                 type="button"
                                 onClick={() => setExpandedSearchGroupKey(null)}
@@ -3420,9 +3333,21 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               if (providersToShow.length > 0 && (matchingTitles.length > 0 || availability.status === 'ready')) {
                                 return (
                                   <div className="mt-2 flex flex-wrap gap-1" aria-label={`Streaming services for ${group.title}`}>
-                                    {providersToShow.map((provider, providerIndex) =>
-                                      providerIcon(provider, String(provider.providerId ?? provider.name ?? providerIndex).toLowerCase())
-                                    )}
+                                    {providersToShow.map((provider, providerIndex) => {
+                                      const name = displayOttProviderName(provider.name);
+                                      return (
+                                        <a
+                                          key={String(provider.providerId ?? name ?? providerIndex).toLowerCase()}
+                                          href={provider.webUrl || undefined}
+                                          target={provider.webUrl ? '_blank' : undefined}
+                                          rel={provider.webUrl ? 'noreferrer' : undefined}
+                                          title={name}
+                                          className="rounded-full border border-cyan-900/70 bg-cyan-950/40 px-1.5 py-0.5 text-[10px] leading-4 text-cyan-200 hover:border-cyan-600"
+                                        >
+                                          {name}
+                                        </a>
+                                      );
+                                    })}
                                   </div>
                                 );
                               }
