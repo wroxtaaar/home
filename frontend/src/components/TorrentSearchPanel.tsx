@@ -14,7 +14,7 @@ import {
   SlidersHorizontal,
   Film
 } from 'lucide-react';
-import { api, API_BASE, MovieCatalogueItem, MovieCatalogueKey, MovieCataloguePage, MovieOttAvailability, MovieOttProvider, TorrentSearchResult } from '../api/client.ts';
+import { api, API_BASE, MovieCatalogueItem, MovieCatalogueKey, MovieCataloguePage, MovieOttAvailability, MovieOttProvider, SearchMediaMetadata, TorrentSearchResult } from '../api/client.ts';
 import { formatBytes } from '../utils/formatters.ts';
 import searchLimits from '../../search_limits.json';
 
@@ -136,6 +136,24 @@ function normalizeSavedOttTitle(value: string): string {
     .replace(/\s*\(?((?:19|20)\d{2})\)?\s*$/, '')
     .trim();
   return normalizeGroupTitle(withoutTrailingYear);
+}
+
+function searchMetadataForGroup(
+  group: TorrentQualityGroup,
+  items: SearchMediaMetadata[],
+): SearchMediaMetadata | undefined {
+  const key = normalizeSavedOttTitle(group.title);
+  const candidates = items.filter(item => normalizeSavedOttTitle(item.title) === key);
+  if (!candidates.length) return undefined;
+
+  const year = String(group.year || '');
+  if (year) {
+    const sameYear = candidates.find(item => String(item.year || '') === year);
+    if (sameYear) return sameYear;
+  }
+  const noYear = candidates.filter(item => !item.year);
+  if (noYear.length === 1) return noYear[0];
+  return candidates.length === 1 ? candidates[0] : undefined;
 }
 
 const PREFERRED_OTT_PROVIDERS = [
@@ -386,6 +404,8 @@ function groupTorrentResults(results: TorrentSearchResult[]): TorrentQualityGrou
 export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepare, onCancelPrepare, onOpenProgress, seedrFiles = [], seedrDeletedFolderIds = [], onPlaySeedrFile }) => {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<TorrentSearchResult[]>([]);
+  const [searchMetadata, setSearchMetadata] = useState<SearchMediaMetadata[]>([]);
+  const [searchMetadataStatus, setSearchMetadataStatus] = useState<'idle' | 'loading' | 'ready' | 'not_found' | 'unavailable'>('idle');
   const [searchAvailabilityByGroup, setSearchAvailabilityByGroup] = useState<Record<string, {
     status: 'ready' | 'not_found' | 'not_confirmed' | 'unavailable' | 'loading';
     query: string;
@@ -1083,6 +1103,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       setShowRecentSearches(false);
       setError('');
       setResults([]);
+      setSearchMetadata([]);
+      setSearchMetadataStatus('idle');
       setSearchAvailabilityByGroup({});
       setSelectedQualityByGroup({});
       setExpandedSearchGroupKey(null);
@@ -1234,6 +1256,21 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       });
       setSearched(true);
       startPosterBackgroundSearch(data);
+
+      // Enrich the visible movie cards from TMDB without blocking torrent results,
+      // torrent metadata prefetch, or the Get -> quality -> Seedr flow.
+      if (!searchMode && trimmed.length >= 2) {
+        setSearchMetadataStatus('loading');
+        void api.searchMediaMetadata(trimmed, controller.signal).then(metadataResponse => {
+          if (generation !== searchGenerationRef.current) return;
+          setSearchMetadata(Array.isArray(metadataResponse.results) ? metadataResponse.results : []);
+          setSearchMetadataStatus(metadataResponse.status || 'unavailable');
+        }).catch(() => {
+          if (generation !== searchGenerationRef.current) return;
+          setSearchMetadata([]);
+          setSearchMetadataStatus('unavailable');
+        });
+      }
 
       // Use OTT data already embedded in enriched catalogue rows before scheduling any API lookups.
       // Do not gate this on searchMode: catalogue presets can be invoked through different UI paths.
