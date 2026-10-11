@@ -28,13 +28,26 @@ def normalize(value: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", str(value or "").casefold()))
 
 
-async def resolve_one(title: str, year: int) -> dict[str, Any]:
-    try:
-        payload = await main._tmdb_get_json(
-            "/search/movie",
-            {"query": title, "year": year, "include_adult": "false", "language": "en-US", "page": 1},
-        )
-    except Exception as exc:
+async def resolve_one(title: str, year: int, retries: int = 4) -> dict[str, Any]:
+    params = {"query": title, "year": year, "include_adult": "false", "language": "en-US", "page": 1}
+    last_exc: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            payload = await main._tmdb_get_json("/search/movie", params)
+            break
+        except Exception as exc:
+            last_exc = exc
+            # main._tmdb_get_json places transiently failing credentials into a
+            # 30-second cooldown. Wait for that cooldown instead of immediately
+            # marking every remaining title as a lookup error.
+            if attempt < retries:
+                logging.warning(
+                    "TMDB lookup failed for %s (%s); retry %d/%d in 31 seconds",
+                    title, type(exc).__name__, attempt + 1, retries,
+                )
+                await asyncio.sleep(31)
+    else:
+        exc = last_exc or RuntimeError("TMDB lookup failed")
         return {
             "title": title, "year": year, "status": "lookup_error",
             "tmdbId": None, "matchedTitle": None, "releaseDate": None,
@@ -100,13 +113,51 @@ async def run() -> int:
         raise SystemExit("No TMDB credentials configured in the Home container.")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    output = Path(args.output)
+    previous: dict[tuple[str, int], dict[str, Any]] = {}
+    if output.exists():
+        try:
+            saved = json.loads(output.read_text(encoding="utf-8"))
+            for item in saved.get("movies", []):
+                if isinstance(item, dict) and item.get("title") and item.get("year"):
+                    previous[(str(item["title"]), int(item["year"]))] = item
+            logging.info("Loaded %d existing rows from %s", len(previous), output)
+        except (OSError, ValueError, TypeError) as exc:
+            logging.warning("Could not read existing report; starting fresh: %s", type(exc).__name__)
+
     rows = []
     total = len(main.MARVEL_MOVIE_SEARCHES)
     for index, (title, year) in enumerate(main.MARVEL_MOVIE_SEARCHES, 1):
-        row = await resolve_one(title, year)
+        saved_row = previous.get((title, year))
+        if saved_row and saved_row.get("status") != "lookup_error":
+            row = saved_row
+            logging.info("[%d/%d] %s (%s): preserved %s", index, total, title, year, row.get("status"))
+        else:
+            row = await resolve_one(title, year)
+            logging.info("[%d/%d] %s (%s): %s%s", index, total, title, year,
+                         row["status"], f" -> {row['tmdbId']}" if row.get("tmdbId") else "")
         rows.append(row)
-        logging.info("[%d/%d] %s (%s): %s%s", index, total, title, year,
-                     row["status"], f" -> {row['tmdbId']}" if row.get("tmdbId") else "")
+        # Save after each title so interruption never loses completed work.
+        output.parent.mkdir(parents=True, exist_ok=True)
+        partial = {
+            "schemaVersion": 1,
+            "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "source": "main.MARVEL_MOVIE_SEARCHES",
+            "sourceCount": total,
+            "regionForLaterAvailability": "IN",
+            "summary": {
+                "exactMatches": sum(r.get("status") == "exact_match" for r in rows),
+                "needsReview": sum(r.get("status") == "needs_review" for r in rows),
+                "noMatch": sum(r.get("status") == "no_match" for r in rows),
+                "lookupErrors": sum(r.get("status") == "lookup_error" for r in rows),
+            },
+            "note": "Review this manifest before running any Watchmode availability refresh. This script never modifies the OTT cache.",
+            "movies": rows + [
+                previous[(t, y)] for t, y in main.MARVEL_MOVIE_SEARCHES[index:]
+                if (t, y) in previous and (t, y) not in {(r.get("title"), r.get("year")) for r in rows}
+            ],
+        }
+        output.write_text(json.dumps(partial, ensure_ascii=False, indent=2) + "\\n", encoding="utf-8")
         if index < total and args.delay:
             await asyncio.sleep(args.delay)
 
