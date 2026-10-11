@@ -7289,13 +7289,16 @@ async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None, *, req
 @app.on_event("shutdown")
 async def _close_tmdb_http_client() -> None:
     """Close pooled metadata clients cleanly when the application shuts down."""
-    global _TMDB_HTTP_CLIENT, _WATCHMODE_HTTP_CLIENT
+    global _TMDB_HTTP_CLIENT, _WATCHMODE_HTTP_CLIENT, _OMDB_HTTP_CLIENT
     if _TMDB_HTTP_CLIENT is not None and not _TMDB_HTTP_CLIENT.is_closed:
         await _TMDB_HTTP_CLIENT.aclose()
     _TMDB_HTTP_CLIENT = None
     if _WATCHMODE_HTTP_CLIENT is not None and not _WATCHMODE_HTTP_CLIENT.is_closed:
         await _WATCHMODE_HTTP_CLIENT.aclose()
     _WATCHMODE_HTTP_CLIENT = None
+    if _OMDB_HTTP_CLIENT is not None and not _OMDB_HTTP_CLIENT.is_closed:
+        await _OMDB_HTTP_CLIENT.aclose()
+    _OMDB_HTTP_CLIENT = None
 
 
 async def _tmdb_discovered_company_ids(franchise: str) -> list[str]:
