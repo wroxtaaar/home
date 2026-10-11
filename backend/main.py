@@ -6387,6 +6387,92 @@ async def _warm_marvel_catalogue_on_startup() -> None:
 app.router.add_event_handler("startup", _warm_marvel_catalogue_on_startup)
 
 
+_watchmode_search_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_WATCHMODE_SEARCH_CACHE_TTL = 6 * 60 * 60
+
+
+@app.get("/api/search/availability")
+async def api_search_availability(q: str = Query(..., min_length=2, max_length=160)):
+    """Return streaming providers without putting Watchmode on the torrent-search critical path."""
+    query = re.sub(r"\\s+", " ", q).strip()
+    cache_key = query.casefold()
+    now = time.time()
+    cached = _watchmode_search_cache.get(cache_key)
+    if cached and now - cached[0] < _WATCHMODE_SEARCH_CACHE_TTL:
+        return cached[1]
+    if not WATCHMODE_API_KEY:
+        return {"status": "unavailable", "query": query, "providers": [], "message": "Watchmode is not configured."}
+
+    timeout = httpx.Timeout(4.0, connect=1.5)
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            search_response = await client.get(
+                f"{WATCHMODE_API_BASE}/search/",
+                params={"apiKey": WATCHMODE_API_KEY, "search_field": "name", "search_value": query, "types": "movie,tv_series"},
+            )
+            search_response.raise_for_status()
+            search_data = search_response.json()
+            titles = search_data.get("title_results", []) if isinstance(search_data, dict) else []
+            if not titles:
+                result = {"status": "not_found", "query": query, "providers": []}
+                _watchmode_search_cache[cache_key] = (now, result)
+                return result
+
+            # Prefer an exact normalized title match; otherwise use Watchmode's
+            # highest-ranked search result to avoid unrelated provider badges.
+            def norm_title(value: Any) -> str:
+                return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+            target = norm_title(query)
+            titles = [x for x in titles if isinstance(x, dict) and x.get("id")]
+            if not titles:
+                return {"status": "not_found", "query": query, "providers": []}
+            titles.sort(key=lambda item: (
+                norm_title(item.get("name")) == target,
+                target in norm_title(item.get("name")),
+            ), reverse=True)
+            title = titles[0]
+            sources_response = await client.get(
+                f"{WATCHMODE_API_BASE}/title/{int(title['id'])}/sources/",
+                params={"apiKey": WATCHMODE_API_KEY, "regions": "US,IN"},
+            )
+            sources_response.raise_for_status()
+            sources = sources_response.json()
+            providers = []
+            seen = set()
+            if isinstance(sources, list):
+                for source in sources:
+                    if not isinstance(source, dict):
+                        continue
+                    name = str(source.get("name") or source.get("source_name") or "").strip()
+                    if not name:
+                        continue
+                    region = str(source.get("region") or "").upper()
+                    kind = str(source.get("type") or "").lower()
+                    key = (name.casefold(), region, kind)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    providers.append({
+                        "name": name,
+                        "region": region,
+                        "type": kind,
+                        "webUrl": source.get("web_url") or source.get("ios_url") or source.get("android_url") or "",
+                    })
+            result = {
+                "status": "ready" if providers else "not_confirmed",
+                "query": query,
+                "title": str(title.get("name") or query),
+                "year": title.get("year"),
+                "providers": providers[:24],
+                "source": "Watchmode",
+            }
+            _watchmode_search_cache[cache_key] = (now, result)
+            return result
+    except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+        logger.info("Watchmode normal-search availability failed: query=%r error=%s", query, type(exc).__name__)
+        return {"status": "unavailable", "query": query, "providers": [], "message": "Streaming availability is temporarily unavailable."}
+
+
 @app.get("/api/search")
 async def api_search(q: str = Query(..., min_length=1), limit: int = Query(50, ge=1, le=50)):
     return await search_1337x(q, limit)
