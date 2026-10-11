@@ -243,6 +243,25 @@ export const api = {
     return data as MovieOttAvailability;
   },
 
+  async searchAvailability(query: string, signal?: AbortSignal): Promise<{
+    status: 'ready' | 'not_found' | 'not_confirmed' | 'unavailable';
+    query: string;
+    title?: string;
+    year?: number | string;
+    providers: Array<{ name: string; region: string; type: string; webUrl?: string }>;
+    message?: string;
+  }> {
+    const params = new URLSearchParams({ q: query });
+    const res = await fetch(API_BASE + '/api/search/availability?' + params.toString(), {
+      signal, credentials: 'include', cache: 'no-store',
+    });
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch {}
+    if (!res.ok) throw new Error(data?.detail || data?.message || body || ('Availability lookup failed (HTTP ' + res.status + ')'));
+    return data;
+  },
+
   // Torrents (qBittorrent WebAPI)
   async searchTorrents(query: string, limit = 50, signal?: AbortSignal): Promise<TorrentSearchResult[]> {
     const params = new URLSearchParams({
