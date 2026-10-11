@@ -5501,7 +5501,6 @@ def _initialize_catalogue_caches() -> None:
 
 app.router.add_event_handler("startup", _initialize_catalogue_caches)
 app.router.add_event_handler("startup", _start_catalogue_synopsis_enrichment)
-app.router.add_event_handler("startup", _start_tmdb_catalogue_synopsis_enrichment)
 _extra_catalogue_tasks: dict[str, asyncio.Task | None] = {key: None for key in _EXTRA_CATALOGUES}
 _extra_catalogue_retry_after: dict[str, float] = {}
 _extra_catalogue_states: dict[str, dict[str, Any]] = {
@@ -6190,10 +6189,18 @@ async def _enrich_tmdb_persistent_catalogue_synopses() -> None:
                     item["overview"] = metadata["overview"]
                     state["updatedRows"] += 1
                     changed = True
-                for field in ("tmdbId", "tmdbUrl", "synopsisCheckedAt"):
+                for field in ("tmdbId", "tmdbUrl"):
                     if metadata.get(field) and not item.get(field):
                         item[field] = metadata[field]
                         changed = True
+                try:
+                    old_checked_at = int(item.get("synopsisCheckedAt") or 0)
+                    new_checked_at = int(metadata.get("synopsisCheckedAt") or 0)
+                except (TypeError, ValueError):
+                    old_checked_at, new_checked_at = 0, 0
+                if new_checked_at > old_checked_at:
+                    item["synopsisCheckedAt"] = new_checked_at
+                    changed = True
             if changed:
                 _write_tmdb_persistent_cache(cache_key, payload)
                 _tmdb_movie_catalogue_cache[cache_key] = (time.monotonic(), payload)
@@ -6237,6 +6244,10 @@ async def _start_tmdb_catalogue_synopsis_enrichment() -> None:
     # Registered after cache initialization; launch the backfill without holding
     # application startup open while hundreds of TMDB details are fetched.
     _schedule_tmdb_catalogue_synopsis_enrichment()
+
+# Register only after the callback above exists; earlier startup hooks are defined
+# further up the module and must not reference this function prematurely.
+app.router.add_event_handler("startup", _start_tmdb_catalogue_synopsis_enrichment)
 
 
 @app.get("/api/movies/catalogue-cache/synopsis-enrichment")
