@@ -21,7 +21,7 @@ import searchLimits from '../../search_limits.json';
 type MovieOttCardState = MovieOttAvailability | { status: 'loading' | 'error'; message?: string };
 
 function isPresetSearchLabel(value: string): boolean {
-  const normalized = String(value || '').trim().toLowerCase().replace(/\\s+/g, ' ');
+  const normalized = String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
   return new Set([
     'popular bollywood movies',
     'bollywood movies',
