@@ -2696,6 +2696,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               const selectedKey = selectedQualityByGroup[group.key];
               const result = group.variants.find(variant => torrentResultKey(variant) === selectedKey) || group.variants[0];
               const posterResult = group.posterResult;
+              const mediaMetadata = searchMetadataForGroup(group, searchMetadata);
+              const mediaDisplayTitle = mediaMetadata?.title || group.title.replace(/\s*\((?:19|20)\d{2}\)\s*$/, '');
+              const mediaDisplayYear = mediaMetadata?.year || group.year;
 
               // Normal searches use the same poster-first, compact card flow as
               // the Popular/Trending catalogues. The full torrent/OTT details and
@@ -2713,7 +2716,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     ? matchingSavedTitles.flatMap(match => match.providers)
                     : (availability?.providers || [])
                 );
-                const compactPosterUrl = posterUrlFor(posterResult);
+                const compactPosterUrl = mediaMetadata?.posterUrl || posterUrlFor(posterResult);
 
                 return (
                   <article
@@ -2724,7 +2727,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       {compactPosterUrl ? (
                         <img
                           src={compactPosterUrl}
-                          alt={group.title}
+                          alt={mediaDisplayTitle}
                           loading="lazy"
                           className="h-full w-full object-cover"
                           onError={event => { event.currentTarget.style.display = 'none'; }}
@@ -2754,15 +2757,37 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
                     <div className="flex flex-1 flex-col gap-2 p-2.5">
                       <div>
-                        <h3 className="line-clamp-2 text-sm font-bold leading-snug text-slate-100">{group.title}</h3>
+                        <h3 className="line-clamp-2 text-sm font-bold leading-snug text-slate-100">
+                          {mediaMetadata?.tmdbUrl ? (
+                            <a href={mediaMetadata.tmdbUrl} target="_blank" rel="noreferrer" className="hover:text-cyan-300" title="Open on TMDB">
+                              {mediaDisplayTitle}
+                            </a>
+                          ) : mediaDisplayTitle}
+                        </h3>
                         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] sm:text-xs">
+                          {mediaDisplayYear && <span className="text-slate-400">{mediaDisplayYear}</span>}
+                          {mediaMetadata?.rating ? <span className="text-amber-300">TMDB {mediaMetadata.rating.toFixed(1)}</span> : null}
                           <span className="font-semibold text-emerald-400">▲ {Number(result.seeders) || 0} seeders</span>
                           <span className="font-semibold text-amber-400">▼ {Number(result.leechers) || 0} peers</span>
-                          {group.year && <span className="text-slate-500">{group.year}</span>}
                         </div>
                       </div>
 
-                      {compactProviders.length > 0 && (
+                      <p className="line-clamp-3 text-[10px] leading-relaxed text-slate-400">
+                        {mediaMetadata?.overview ||
+                          (searchMetadataStatus === 'loading'
+                            ? 'Loading synopsis from TMDB…'
+                            : searchMetadataStatus === 'unavailable'
+                              ? 'TMDB synopsis is temporarily unavailable.'
+                              : 'No synopsis available from TMDB for this title.')}
+                      </p>
+
+                      {mediaMetadata?.tmdbUrl && (
+                        <a href={mediaMetadata.tmdbUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[10px] text-cyan-300 hover:text-cyan-200">
+                          TMDB details <ExternalLink className="h-3 w-3" />
+                        </a>
+                      )}
+
+                      {compactProviders.length > 0 ? (
                         <div className="flex flex-wrap gap-1" aria-label={'Streaming services for ' + group.title}>
                           {compactProviders.slice(0, 5).map((provider, providerIndex) => (
                             <span
@@ -2772,6 +2797,20 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               {displayOttProviderName(provider.name)}
                             </span>
                           ))}
+                        </div>
+                      ) : (
+                        <div className="text-[10px] leading-relaxed text-slate-500">
+                          {availability?.status === 'loading'
+                            ? 'Checking streaming services…'
+                            : availability?.status === 'unavailable'
+                              ? 'Streaming availability temporarily unavailable'
+                              : availability?.status === 'not_confirmed'
+                                ? 'Streaming providers not confirmed'
+                                : availability?.status === 'ready'
+                                  ? 'No streaming providers reported'
+                                  : searchMetadataStatus === 'loading'
+                                    ? 'Checking streaming availability…'
+                                    : 'Streaming providers not listed'}
                         </div>
                       )}
 
