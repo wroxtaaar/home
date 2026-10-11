@@ -143,6 +143,32 @@ function uniqueOttProviders<T extends { name: string; type?: string; webUrl?: st
   });
 }
 
+function normalizeSavedOttProviders(
+  items: unknown,
+  fallbackType = 'streaming',
+  fallbackRegion = 'IN',
+): Array<MovieOttProvider & { region: string; type: string }> {
+  if (!Array.isArray(items)) return [];
+  return items.flatMap((raw: any) => {
+    const item = typeof raw === 'string'
+      ? { name: raw }
+      : raw && typeof raw === 'object'
+        ? raw
+        : null;
+    const name = String(
+      item?.name || item?.provider_name || item?.providerName || item?.provider || item?.title || ''
+    ).trim();
+    if (!name) return [];
+    return [{
+      name,
+      region: String(item?.region || fallbackRegion || 'IN'),
+      type: String(item?.type || fallbackType || 'streaming'),
+      webUrl: item?.webUrl || item?.web_url || item?.url || undefined,
+      logoUrl: item?.logoUrl || item?.logo_url || item?.logo_path || undefined,
+    }];
+  });
+}
+
 function torrentMediaIdentity(result: TorrentSearchResult): { title: string; normalized: string; year: string } {
   const source = String(result.mediaTitle || result.title || '').trim();
   const embeddedYears: Array<{ year: string; index: number }> = [];
@@ -425,20 +451,26 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       // these cards. Render it immediately and never queue a redundant OTT scan.
       const saved = movie.ottAvailability;
       if (saved && typeof saved === 'object') {
-        const savedStatus = String(saved.status || '');
-        const mapProviders = (items: MovieOttProvider[] | undefined) =>
-          (Array.isArray(items) ? items : []).filter(provider => provider && provider.name);
+        const savedStatus = String(saved.status || '').toLowerCase();
+        const region = String(saved.region || 'IN');
+        const streamingProviders = normalizeSavedOttProviders(saved.streamingProviders, 'streaming', region);
+        const rentProviders = normalizeSavedOttProviders(saved.rentProviders, 'rent', region);
+        const buyProviders = normalizeSavedOttProviders(saved.buyProviders, 'buy', region);
         next[movieId] = {
           movieId: Number(movie.tmdbId || movie.id),
-          region: String(saved.region || 'IN'),
-          status: (savedStatus === 'streaming' ? 'streaming'
-            : savedStatus === 'rent_buy' ? 'rent_buy'
+          region,
+          status: (
+            savedStatus === 'streaming' ||
+            savedStatus === 'streaming_info_found' ||
+            streamingProviders.length > 0
+          ) ? 'streaming'
+            : (savedStatus === 'rent_buy' || rentProviders.length > 0 || buyProviders.length > 0) ? 'rent_buy'
             : savedStatus === 'digital_scheduled' ? 'digital_scheduled'
             : savedStatus === 'digital_release_known' ? 'digital_release_known'
-            : 'not_confirmed'),
-          streamingProviders: mapProviders(saved.streamingProviders),
-          rentProviders: mapProviders(saved.rentProviders),
-          buyProviders: mapProviders(saved.buyProviders),
+            : 'not_confirmed',
+          streamingProviders,
+          rentProviders,
+          buyProviders,
           providerLink: String(saved.providerLink || ''),
           checkedAt: String(saved.checkedAt || ''),
           source: String(saved.source || 'saved-catalogue'),
@@ -1046,47 +1078,62 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       // Use OTT data already embedded in enriched catalogue rows before scheduling any API lookups.
       // Do not gate this on searchMode: catalogue presets can be invoked through different UI paths.
       {
-        const availabilityGroups = groupTorrentResults(data).slice(0, 15);
+        // Process every catalogue group so saved enrichment is available even when the
+        // UI reorders results by quality/seeds. Only live lookups remain capped below.
+        const availabilityGroups = groupTorrentResults(data);
         const pendingLiveLookups: typeof availabilityGroups = [];
         const savedOnlyCatalogueModes = new Set([
           'marvel', 'marvel-hindi', 'dc-live-action', 'dc-live-action-hindi', 'dc-animated'
         ]);
+        let liveLookupCount = 0;
+        const liveLookupLimit = 15;
 
         for (const group of availabilityGroups) {
           const cachedRow = group.variants.find(variant => {
-            const row = variant as TorrentSearchResult & { ottAvailability?: any };
-            return Boolean(row.ottAvailability && typeof row.ottAvailability === 'object');
+            const row = variant as TorrentSearchResult & {
+              ottAvailability?: any;
+              streamingProviders?: unknown;
+              rentProviders?: unknown;
+              buyProviders?: unknown;
+            };
+            return Boolean(
+              (row.ottAvailability && typeof row.ottAvailability === 'object') ||
+              Array.isArray(row.streamingProviders) ||
+              Array.isArray(row.rentProviders) ||
+              Array.isArray(row.buyProviders)
+            );
           }) as (TorrentSearchResult & {
             tmdbId?: number | string;
             ottAvailability?: any;
+            streamingProviders?: unknown;
+            rentProviders?: unknown;
+            buyProviders?: unknown;
             catalogueTitle?: string;
             marvelCatalogueTitle?: string;
           }) | undefined;
 
-          if (cachedRow?.ottAvailability) {
-            const saved = cachedRow.ottAvailability;
-            const asProvider = (provider: any, type: string) => ({
-              name: String(provider?.name || provider?.provider_name || '').trim(),
-              region: String(provider?.region || saved.region || 'IN'),
-              type: String(provider?.type || type),
-              webUrl: provider?.webUrl || provider?.web_url || provider?.url || undefined,
-            });
+          if (cachedRow) {
+            const saved = cachedRow.ottAvailability && typeof cachedRow.ottAvailability === 'object'
+              ? cachedRow.ottAvailability
+              : cachedRow;
+            const region = String(saved.region || 'IN');
             const providers = [
-              ...(Array.isArray(saved.streamingProviders) ? saved.streamingProviders.map((p: any) => asProvider(p, 'streaming')) : []),
-              ...(Array.isArray(saved.rentProviders) ? saved.rentProviders.map((p: any) => asProvider(p, 'rent')) : []),
-              ...(Array.isArray(saved.buyProviders) ? saved.buyProviders.map((p: any) => asProvider(p, 'buy')) : []),
-            ].filter(provider => provider.name);
+              ...normalizeSavedOttProviders(saved.streamingProviders, 'streaming', region),
+              ...normalizeSavedOttProviders(saved.rentProviders, 'rent', region),
+              ...normalizeSavedOttProviders(saved.buyProviders, 'buy', region),
+            ];
             const title = String(cachedRow.catalogueTitle || cachedRow.marvelCatalogueTitle || cachedRow.mediaTitle || group.title)
               .replace(/\s*\(?(?:19|20)\d{2}\)?\s*$/, '').trim();
+            const hasProviders = providers.length > 0;
             setSearchAvailabilityByGroup(previous => ({
               ...previous,
               [group.key]: {
-                status: 'ready',
+                status: hasProviders ? 'ready' : 'not_confirmed',
                 query: title,
                 title,
                 year: group.year,
                 providers,
-                matches: [{
+                matches: hasProviders ? [{
                   id: String(cachedRow.tmdbId || ''),
                   tmdbId: cachedRow.tmdbId,
                   title,
@@ -1094,8 +1141,12 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   type: 'movie',
                   status: 'ready',
                   providers,
-                }],
-                message: saved.status === 'no_providers' ? 'No providers in saved enrichment.' : undefined,
+                }] : [],
+                message: hasProviders ? undefined : (
+                  ['no_providers', 'no_streaming_provider_reported'].includes(String(saved.status || '').toLowerCase())
+                    ? 'No providers were reported in the saved enrichment.'
+                    : 'Saved enrichment has no provider names.'
+                ),
               }
             }));
             continue;
@@ -1119,6 +1170,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             continue;
           }
 
+          // Keep arbitrary live searches bounded so this path cannot fan out
+          // provider queries for the entire result set.
+          if (liveLookupCount >= liveLookupLimit) continue;
+          liveLookupCount += 1;
           setSearchAvailabilityByGroup(previous => ({
             ...previous,
             [group.key]: { status: 'loading', query: group.title, providers: [] }
@@ -2541,7 +2596,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                 return <div className="mt-2 text-[10px] text-slate-500">Streaming info unavailable</div>;
                               }
                               if (availability.status === 'not_confirmed') {
-                                return <div className="mt-2 text-[10px] text-slate-500">No saved streaming details</div>;
+                                return <div className="mt-2 text-[10px] text-slate-500">{availability.message || 'No saved streaming details'}</div>;
                               }
                               return null;
                             })()}
