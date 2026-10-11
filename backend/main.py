@@ -5259,6 +5259,236 @@ def _seed_bundled_catalogue_caches() -> None:
             logger.warning("Could not seed catalogue cache %s: %s", filename, exc)
 
 
+_CATALOGUE_SYNOPSIS_ENRICHMENT_STATE: dict[str, Any] = {
+    "status": "idle", "filesCompleted": 0, "filesTotal": 0,
+    "titlesCompleted": 0, "titlesTotal": 0, "updatedRows": 0, "error": "",
+}
+_catalogue_synopsis_enrichment_task: asyncio.Task | None = None
+_CATALOGUE_SYNOPSIS_RECHECK_SECONDS = 30 * 24 * 60 * 60
+
+
+def _synopsis_cache_paths() -> list[tuple[str, Path]]:
+    paths = [("marvel", MARVEL_CATALOGUE_PATH)]
+    paths.extend((key, path) for key, path in _EXTRA_CATALOGUE_PATHS.items())
+    # De-duplicate aliases that may intentionally point to the same configured path.
+    seen: set[str] = set()
+    unique: list[tuple[str, Path]] = []
+    for name, path in paths:
+        identity = str(path.resolve())
+        if identity not in seen:
+            seen.add(identity)
+            unique.append((name, path))
+    return unique
+
+
+def _synopsis_row_identity(item: dict[str, Any]) -> tuple[str, int]:
+    title = str(
+        item.get("catalogueTitle") or item.get("marvelCatalogueTitle")
+        or item.get("mediaTitle") or item.get("title") or ""
+    ).strip()
+    year_value = item.get("year")
+    try:
+        year = int(year_value) if year_value else 0
+    except (TypeError, ValueError):
+        year = 0
+    if not year:
+        match = re.search(r"\b(19\d{2}|20\d{2})\b", title)
+        if match:
+            year = int(match.group(1))
+    return _normalize_title(title), year
+
+
+def _write_synopsis_cache(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", prefix=path.stem + "-synopsis-",
+            suffix=".tmp", dir=str(path.parent), delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None and temporary.exists():
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+
+
+async def _lookup_catalogue_synopsis(title: str, year: int) -> dict[str, Any] | None:
+    query = re.sub(r"\s+", " ", title).strip()
+    if not query:
+        return None
+    params: dict[str, Any] = {
+        "query": query, "include_adult": "false", "language": "en-US", "page": 1,
+    }
+    if 1870 <= year <= 2100:
+        params["year"] = year
+    try:
+        result = await _tmdb_get_json("search/movie", params, request_timeout=6.0)
+    except Exception as exc:
+        logger.info("Synopsis cache lookup failed for %r (%s): %s", query, year, type(exc).__name__)
+        return None
+
+    rows = [row for row in (result.get("results") or []) if isinstance(row, dict) and row.get("id")]
+    target = _normalize_title(query)
+    candidates: list[tuple[int, int, dict[str, Any]]] = []
+    for row in rows:
+        candidate_title = str(row.get("title") or row.get("original_title") or "").strip()
+        if _normalize_title(candidate_title) != target:
+            continue
+        release_date = str(row.get("release_date") or "")
+        try:
+            candidate_year = int(release_date[:4])
+        except (TypeError, ValueError):
+            candidate_year = 0
+        if year and candidate_year and candidate_year != year:
+            continue
+        candidates.append((0 if year and candidate_year == year else 1, -int(row.get("vote_count") or 0), row))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda candidate: (candidate[0], candidate[1]))
+    row = candidates[0][2]
+    overview = re.sub(r"\s+", " ", str(row.get("overview") or "")).strip()
+    if not overview:
+        return {
+            "tmdbId": int(row["id"]),
+            "tmdbUrl": f"https://www.themoviedb.org/movie/{int(row['id'])}",
+            "synopsisCheckedAt": int(time.time()),
+        }
+    return {
+        "overview": overview,
+        "tmdbId": int(row["id"]),
+        "tmdbUrl": f"https://www.themoviedb.org/movie/{int(row['id'])}",
+        "releaseDate": str(row.get("release_date") or ""),
+        "rating": float(row.get("vote_average") or 0),
+        "synopsisCheckedAt": int(time.time()),
+    }
+
+
+async def _enrich_catalogue_synopses() -> None:
+    """Fill synopsis metadata into every persistent movie-catalogue JSON without rebuilding torrent rows."""
+    state = _CATALOGUE_SYNOPSIS_ENRICHMENT_STATE
+    paths = _synopsis_cache_paths()
+    state.update({
+        "status": "running", "filesCompleted": 0, "filesTotal": len(paths),
+        "titlesCompleted": 0, "titlesTotal": 0, "updatedRows": 0, "error": "",
+    })
+    if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
+        state.update({"status": "waiting_for_credentials", "error": "TMDB credentials are not configured"})
+        return
+
+    # First collect unique missing-synopsis titles across every cache. Repeated torrent
+    # releases for the same film share one TMDB request and one metadata result.
+    jobs: dict[tuple[str, int], tuple[str, int]] = {}
+    file_rows: list[tuple[str, Path, dict[str, Any]]] = []
+    now = int(time.time())
+    for name, path in paths:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            state["filesCompleted"] += 1
+            continue
+        if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+            state["filesCompleted"] += 1
+            continue
+        file_rows.append((name, path, payload))
+        for item in payload["results"]:
+            if not isinstance(item, dict) or str(item.get("overview") or "").strip():
+                continue
+            checked_at = item.get("synopsisCheckedAt")
+            try:
+                checked_at = int(checked_at or 0)
+            except (TypeError, ValueError):
+                checked_at = 0
+            if checked_at and now - checked_at < _CATALOGUE_SYNOPSIS_RECHECK_SECONDS:
+                continue
+            identity = _synopsis_row_identity(item)
+            normalized_title = identity[0]
+            if not normalized_title:
+                continue
+            title = str(
+                item.get("catalogueTitle") or item.get("marvelCatalogueTitle")
+                or item.get("mediaTitle") or item.get("title") or ""
+            ).strip()
+            jobs.setdefault(identity, (title, identity[1]))
+
+    state["titlesTotal"] = len(jobs)
+    metadata_by_identity: dict[tuple[str, int], dict[str, Any]] = {}
+    # Conservative pacing avoids a burst against TMDB. Rate-limit responses are
+    # respected by _tmdb_get_json and are not bypassed by trying other accounts.
+    for identity, (title, year) in jobs.items():
+        metadata = await _lookup_catalogue_synopsis(title, year)
+        if metadata:
+            metadata_by_identity[identity] = metadata
+        state["titlesCompleted"] += 1
+        if state["titlesCompleted"] % 25 == 0:
+            logger.info("Catalogue synopsis enrichment: %d/%d titles processed",
+                state["titlesCompleted"], state["titlesTotal"])
+        await asyncio.sleep(0.25)
+
+    # Re-read each file before writing, so a catalogue rebuilt during enrichment
+    # keeps its fresh torrent rows. Only synopsis fields are merged into matching rows.
+    for name, path, _initial_payload in file_rows:
+        try:
+            current = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            state["filesCompleted"] += 1
+            continue
+        if not isinstance(current, dict) or not isinstance(current.get("results"), list):
+            state["filesCompleted"] += 1
+            continue
+        changed = False
+        for item in current["results"]:
+            if not isinstance(item, dict):
+                continue
+            identity = _synopsis_row_identity(item)
+            metadata = metadata_by_identity.get(identity)
+            if not metadata:
+                continue
+            # Never overwrite a synopsis that another process has already supplied.
+            if not str(item.get("overview") or "").strip() and metadata.get("overview"):
+                item["overview"] = metadata["overview"]
+                changed = True
+                state["updatedRows"] += 1
+            for field in ("tmdbId", "tmdbUrl", "releaseDate", "rating", "synopsisCheckedAt"):
+                if field in metadata and not item.get(field):
+                    item[field] = metadata[field]
+                    changed = True
+        if changed:
+            try:
+                _write_synopsis_cache(path, current)
+                logger.info("Saved synopsis enrichment for catalogue cache %s", path.name)
+            except OSError as exc:
+                logger.warning("Could not save synopsis-enriched cache %s: %s", path.name, exc)
+        state["filesCompleted"] += 1
+
+    state["status"] = "completed"
+    logger.info(
+        "Catalogue synopsis enrichment completed: %d unique titles checked, %d rows enriched across %d caches",
+        state["titlesCompleted"], state["updatedRows"], state["filesCompleted"],
+    )
+
+
+async def _start_catalogue_synopsis_enrichment() -> None:
+    global _catalogue_synopsis_enrichment_task
+    # Let normal startup/catalogue initialization finish first; enrichment is
+    # deliberately background work and never delays the health check or UI.
+    await asyncio.sleep(10)
+    if _catalogue_synopsis_enrichment_task is None or _catalogue_synopsis_enrichment_task.done():
+        _catalogue_synopsis_enrichment_task = asyncio.create_task(_enrich_catalogue_synopses())
+
+
+@app.get("/api/catalogue/synopsis-enrichment")
+async def api_catalogue_synopsis_enrichment_status():
+    """Expose progress for the background synopsis fill across persistent catalogue JSON files."""
+    return dict(_CATALOGUE_SYNOPSIS_ENRICHMENT_STATE)
+
+
 def _initialize_catalogue_caches() -> None:
     # Seed missing files first, then normalize the real persistent VPS JSON files
     # before the API starts serving catalogue requests. The readers write sorted
@@ -5270,6 +5500,7 @@ def _initialize_catalogue_caches() -> None:
 
 
 app.router.add_event_handler("startup", _initialize_catalogue_caches)
+app.router.add_event_handler("startup", _start_catalogue_synopsis_enrichment)
 _extra_catalogue_tasks: dict[str, asyncio.Task | None] = {key: None for key in _EXTRA_CATALOGUES}
 _extra_catalogue_retry_after: dict[str, float] = {}
 _extra_catalogue_states: dict[str, dict[str, Any]] = {
