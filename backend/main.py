@@ -4295,7 +4295,7 @@ async def _tmdb_poster_lookup(title: str, year: str = "") -> str | None:
                 name = str(row.get("title") or row.get("original_title") or "").strip()
                 normalized = _poster_normalize_title(name)
                 release_date = str(row.get("release_date") or "").strip()
-                candidate_year = release_date[:4] if re.match(r"^\\d{4}-\\d{2}-\\d{2}$", release_date) else ""
+                candidate_year = release_date[:4] if re.match(r"^\d{4}-\d{2}-\d{2}$", release_date) else ""
                 poster_path = str(row.get("poster_path") or "").strip()
                 if not name or not poster_path or normalized not in wanted_titles:
                     continue
@@ -6539,7 +6539,7 @@ async def api_search_availability(q: str = Query(..., min_length=2, max_length=1
         return {"status": "unavailable", "query": query, "matches": [], "providers": [], "message": "Streaming availability is temporarily unavailable."}
 
 
-@app.get("/api/search")@app.get("/api/search")
+@app.get("/api/search")
 async def api_search(q: str = Query(..., min_length=1), limit: int = Query(50, ge=1, le=50)):
     return await search_1337x(q, limit)
 
