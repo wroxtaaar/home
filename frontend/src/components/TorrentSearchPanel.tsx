@@ -762,10 +762,13 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   };
 
   const preparedByKeyRef = useRef(new Map<string, { files: SeedrSearchFile[] }>());
+  // Recent searches belong to this Home deployment. Use the same-origin API
+  // base as every other Home request; a hard-coded Render URL causes browser CORS
+  // failures when Home is opened from the Oracle VPS.
   const apiFetchRecent = (input: RequestInfo | URL, init?: RequestInit) => {
-    const base = (String(import.meta.env.VITE_API_URL || '').trim() || 'https://torrent-studio-vercel-render-seedr-26fd.onrender.com').replace(/\/+$/, '');
     const value = String(input);
-    return fetch(value.startsWith('/') ? base + value : value, init);
+    const url = value.startsWith('/') ? API_BASE + value : value;
+    return fetch(url, { ...init, credentials: 'include' });
   };
 
   const [recentSearches, setRecentSearches] = useState<string[]>(() => {
