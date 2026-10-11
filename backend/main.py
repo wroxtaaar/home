@@ -6864,7 +6864,7 @@ async def api_search_availability(q: str = Query(..., min_length=2, max_length=1
     if WATCHMODE_API_KEYS:
         try:
             response = await _watchmode_get("/search/", params={
-                "search_field": "name", "search_value": query, "types": "movie,tv"
+                "search_field": "name", "search_value": query, "types": "movie,tv_series,tv_miniseries,tv_movie"
             }, timeout=timeout)
             if response is not None and response.status_code < 400:
                 data = response.json()
