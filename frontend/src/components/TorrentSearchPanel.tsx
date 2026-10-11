@@ -156,6 +156,40 @@ function searchMetadataForGroup(
   return candidates.length === 1 ? candidates[0] : undefined;
 }
 
+function mergeSearchMetadataItems(
+  current: SearchMediaMetadata[],
+  incoming: SearchMediaMetadata[],
+): SearchMediaMetadata[] {
+  const merged = [...current];
+  for (const candidate of incoming) {
+    const candidateTitle = normalizeSavedOttTitle(candidate.title);
+    const candidateYear = String(candidate.year || '');
+    const candidateType = candidate.mediaType || 'movie';
+    const index = merged.findIndex(item =>
+      normalizeSavedOttTitle(item.title) === candidateTitle &&
+      String(item.year || '') === candidateYear &&
+      (item.mediaType || 'movie') === candidateType
+    );
+    if (index < 0) {
+      merged.push(candidate);
+      continue;
+    }
+
+    const previous = merged[index];
+    merged[index] = {
+      ...previous,
+      ...candidate,
+      overview: String(candidate.overview || '').trim() || previous.overview,
+      posterUrl: candidate.posterUrl || previous.posterUrl,
+      backdropUrl: candidate.backdropUrl || previous.backdropUrl,
+      tmdbUrl: candidate.tmdbUrl || previous.tmdbUrl,
+      rating: candidate.rating || previous.rating,
+      tmdbId: candidate.tmdbId || previous.tmdbId || previous.id,
+    };
+  }
+  return merged;
+}
+
 const PREFERRED_OTT_PROVIDERS = [
   'amazon prime video',
   'netflix',
@@ -1130,7 +1164,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         setSearchMetadataStatus('loading');
         void api.searchMediaMetadata(trimmed, controller.signal).then(metadataResponse => {
           if (generation !== searchGenerationRef.current) return;
-          setSearchMetadata(Array.isArray(metadataResponse.results) ? metadataResponse.results : []);
+          setSearchMetadata(previous => mergeSearchMetadataItems(
+            previous,
+            Array.isArray(metadataResponse.results) ? metadataResponse.results : [],
+          ));
           setSearchMetadataStatus(metadataResponse.status || 'unavailable');
         }).catch(() => {
           if (generation !== searchGenerationRef.current) return;
@@ -1869,6 +1906,41 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       return normalizeGroupTitle(a.title).localeCompare(normalizeGroupTitle(b.title), undefined, { numeric: true });
     });
   }, [sortedResults, releaseYearSort]);
+
+  // Search cards can come from the prebuilt Marvel/DC/Bollywood/Hollywood
+  // catalogues and therefore aren't necessarily related to the text the user
+  // typed. Merge their per-title metadata from the persistent VPS JSON rather
+  // than relying only on a single broad TMDB search for the original query.
+  useEffect(() => {
+    const titles = Array.from(new Set(groupedResults
+      .slice(0, 80)
+      .map(group => {
+        const title = String(group.title || '').trim();
+        const year = String(group.year || '').trim();
+        return title ? title + (year ? ' (' + year + ')' : '') : '';
+      })
+      .filter(Boolean)));
+    if (!titles.length) return;
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void api.searchMediaMetadataBatch(titles, controller.signal).then(response => {
+        if (controller.signal.aborted) return;
+        const additions = Array.isArray(response.results) ? response.results : [];
+        if (additions.length) {
+          setSearchMetadata(previous => mergeSearchMetadataItems(previous, additions));
+        }
+      }).catch(() => {
+        // This is a supplementary local-cache lookup; keep the live TMDB metadata
+        // response and torrent results working if a VPS cache file is unavailable.
+      });
+    }, 250);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [groupedResults]);
 
   const clearTmdbCacheAndReload = async () => {
     const currentCatalogue = movieCatalogue;
