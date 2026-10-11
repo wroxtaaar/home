@@ -33,10 +33,20 @@ logger = logging.getLogger("torrent-studio")
 # TMDB provides dynamic, paginated movie discovery. Credentials stay server-side;
 # use a free developer key for non-commercial use or the API Read Access Token.
 TMDB_API_KEY = os.getenv("TMDB_API_KEY", "").strip()
-TMDB_READ_ACCESS_TOKEN = (
-    os.getenv("TMDB_READ_ACCESS_TOKEN", "").strip()
-    or os.getenv("TMDB_BEARER_TOKEN", "").strip()
-)
+# Accept a comma- or newline-separated list of bearer tokens while preserving
+# the legacy single-token variables for existing deployments.
+TMDB_READ_ACCESS_TOKENS = list(dict.fromkeys(
+    token.strip()
+    for token in (
+        os.getenv("TMDB_READ_ACCESS_TOKENS", "").replace("\\n", "\n").replace(",", "\n").splitlines()
+        + [
+            os.getenv("TMDB_READ_ACCESS_TOKEN", "").strip(),
+            os.getenv("TMDB_BEARER_TOKEN", "").strip(),
+        ]
+    )
+    if token.strip()
+))
+TMDB_READ_ACCESS_TOKEN = TMDB_READ_ACCESS_TOKENS[0] if TMDB_READ_ACCESS_TOKENS else ""
 TMDB_API_BASE = "https://api.themoviedb.org/3"
 WATCHMODE_API_KEY = os.getenv("WATCHMODE_API_KEY", "").strip()
 WATCHMODE_API_BASE = "https://api.watchmode.com/v1"
@@ -5806,12 +5816,14 @@ async def _tmdb_fetch_movie_ott_availability(movie_id: int, region: str) -> dict
 async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     global _tmdb_api_connect_failure_until
 
-    if not TMDB_READ_ACCESS_TOKEN and not TMDB_API_KEY:
+    read_tokens = TMDB_READ_ACCESS_TOKENS
+    if not read_tokens and not TMDB_API_KEY:
         raise HTTPException(
             status_code=503,
             detail=(
-                "TMDB API credentials are not configured. Add TMDB_READ_ACCESS_TOKEN "
-                "or TMDB_API_KEY to the server environment to enable paginated movie discovery."
+                "TMDB API credentials are not configured. Add TMDB_READ_ACCESS_TOKEN, "
+                "TMDB_READ_ACCESS_TOKENS, or TMDB_API_KEY to the server environment "
+                "to enable paginated movie discovery."
             ),
         )
 
@@ -5824,87 +5836,117 @@ async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None) -> dic
         )
 
     query = dict(params or {})
-    headers = {"Accept": "application/json"}
-    if TMDB_READ_ACCESS_TOKEN:
-        headers["Authorization"] = "Bearer " + TMDB_READ_ACCESS_TOKEN
-    else:
-        query["api_key"] = TMDB_API_KEY
-
+    # Try bearer tokens in order. The API-key query parameter remains a legacy
+    # fallback only when no bearer token is configured.
+    credentials: list[tuple[str, str]] = (
+        [("bearer", token) for token in read_tokens]
+        if read_tokens
+        else [("api_key", TMDB_API_KEY)]
+    )
     last_error: Exception | None = None
-    for attempt in range(3):
-        try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(12.0, connect=4.0),
-                follow_redirects=True,
-                headers=headers,
-            ) as client:
-                response = await client.get(f"{TMDB_API_BASE}/{path.lstrip('/')}", params=query)
 
-            if response.status_code in {401, 403}:
-                raise HTTPException(
-                    status_code=503,
-                    detail="TMDB rejected the configured credentials. Check TMDB_API_KEY or TMDB_READ_ACCESS_TOKEN.",
-                )
-            if response.status_code == 429 or response.status_code >= 500:
-                if attempt < 2:
+    for credential_index, (credential_type, credential) in enumerate(credentials):
+        headers = {"Accept": "application/json"}
+        request_params = dict(query)
+        if credential_type == "bearer":
+            headers["Authorization"] = "Bearer " + credential
+        else:
+            request_params["api_key"] = credential
+
+        rejected_credential = False
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(12.0, connect=4.0),
+                    follow_redirects=True,
+                    headers=headers,
+                ) as client:
+                    response = await client.get(
+                        f"{TMDB_API_BASE}/{path.lstrip('/')}",
+                        params=request_params,
+                    )
+
+                if response.status_code in {401, 403}:
+                    rejected_credential = True
                     logger.warning(
-                        "TMDB temporary HTTP %s for %s (attempt %s/3)",
-                        response.status_code, path, attempt + 1,
+                        "TMDB rejected credential %s/%s with HTTP %s for %s; trying the next configured credential",
+                        credential_index + 1, len(credentials), response.status_code, path,
                     )
-                    await asyncio.sleep(0.5 * (2 ** attempt))
-                    continue
-                if response.status_code == 429:
-                    raise HTTPException(
-                        status_code=503,
-                        detail="TMDB rate-limited this request after retries. Please wait briefly and try again.",
-                    )
-            response.raise_for_status()
-            payload = response.json()
-            if not isinstance(payload, dict):
-                raise HTTPException(status_code=502, detail="TMDB returned an unexpected response.")
-            return payload
-        except HTTPException:
-            raise
-        except httpx.RequestError as exc:
-            last_error = exc
-            is_transient_connection_error = isinstance(
-                exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError)
-            )
-            logger.warning(
-                "TMDB network request failed for %s (attempt %s/3): %s: %s",
-                path, attempt + 1, type(exc).__name__, str(exc) or "<no message>",
-            )
+                    break
 
-            # A single reset is common with the currently flaky route to TMDB.
-            # Retry before opening the shared cooldown so one bad edge connection
-            # does not suppress an otherwise successful follow-up attempt.
-            if attempt < 2:
-                backoff_seconds = (0.5 * (2 ** attempt)) + (secrets.randbelow(251) / 1000)
-                await asyncio.sleep(backoff_seconds)
-                continue
+                if response.status_code == 429 or response.status_code >= 500:
+                    if attempt < 2:
+                        logger.warning(
+                            "TMDB temporary HTTP %s for %s (attempt %s/3)",
+                            response.status_code, path, attempt + 1,
+                        )
+                        await asyncio.sleep(0.5 * (2 ** attempt))
+                        continue
+                    if response.status_code == 429:
+                        raise HTTPException(
+                            status_code=503,
+                            detail="TMDB rate-limited this request after retries. Please wait briefly and try again.",
+                        )
 
-            if is_transient_connection_error:
-                _tmdb_api_connect_failure_until = max(
-                    _tmdb_api_connect_failure_until,
-                    time.monotonic() + TMDB_API_CONNECT_FAILURE_COOLDOWN_SECONDS,
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise HTTPException(status_code=502, detail="TMDB returned an unexpected response.")
+                return payload
+
+            except HTTPException:
+                raise
+            except httpx.RequestError as exc:
+                last_error = exc
+                is_transient_connection_error = isinstance(
+                    exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError)
                 )
                 logger.warning(
-                    "TMDB connection failed after %s attempts; opening %ss cooldown",
-                    attempt + 1, TMDB_API_CONNECT_FAILURE_COOLDOWN_SECONDS,
+                    "TMDB network request failed for %s (attempt %s/3): %s: %s",
+                    path, attempt + 1, type(exc).__name__, str(exc) or "<no message>",
                 )
-                raise HTTPException(
-                    status_code=503,
-                    detail=(
-                        "TMDB API connections failed after retries. "
-                        "Requests are paused briefly; cached catalogues will be used when available."
-                    ),
-                ) from exc
-        except httpx.HTTPStatusError as exc:
-            logger.warning("TMDB returned HTTP %s for %s", exc.response.status_code, path)
-            raise HTTPException(status_code=502, detail=f"TMDB returned HTTP {exc.response.status_code}.") from exc
-        except ValueError as exc:
-            logger.warning("TMDB returned invalid JSON for %s: %s", path, exc)
-            raise HTTPException(status_code=502, detail="TMDB returned an invalid response. Try again shortly.") from exc
+
+                # Credential rotation cannot fix a network failure. Retry this
+                # request first, then open the shared cooldown if still failing.
+                if attempt < 2:
+                    backoff_seconds = (0.5 * (2 ** attempt)) + (secrets.randbelow(251) / 1000)
+                    await asyncio.sleep(backoff_seconds)
+                    continue
+
+                if is_transient_connection_error:
+                    _tmdb_api_connect_failure_until = max(
+                        _tmdb_api_connect_failure_until,
+                        time.monotonic() + TMDB_API_CONNECT_FAILURE_COOLDOWN_SECONDS,
+                    )
+                    logger.warning(
+                        "TMDB connection failed after %s attempts; opening %ss cooldown",
+                        attempt + 1, TMDB_API_CONNECT_FAILURE_COOLDOWN_SECONDS,
+                    )
+                    raise HTTPException(
+                        status_code=503,
+                        detail=(
+                            "TMDB API connections failed after retries. "
+                            "Requests are paused briefly; cached catalogues will be used when available."
+                        ),
+                    ) from exc
+            except httpx.HTTPStatusError as exc:
+                logger.warning("TMDB returned HTTP %s for %s", exc.response.status_code, path)
+                raise HTTPException(status_code=502, detail=f"TMDB returned HTTP {exc.response.status_code}.") from exc
+            except ValueError as exc:
+                logger.warning("TMDB returned invalid JSON for %s: %s", path, exc)
+                raise HTTPException(status_code=502, detail="TMDB returned an invalid response. Try again shortly.") from exc
+
+        if not rejected_credential:
+            # The retry loop should either return a response or raise. Keep a
+            # defensive error rather than silently continuing with bad state.
+            break
+
+    if read_tokens:
+        logger.warning("All configured TMDB bearer tokens were rejected for %s", path)
+        raise HTTPException(
+            status_code=503,
+            detail="TMDB rejected all configured read-access tokens. Check TMDB_READ_ACCESS_TOKENS and TMDB_READ_ACCESS_TOKEN.",
+        )
 
     logger.warning(
         "TMDB request exhausted retries for %s: %s",
