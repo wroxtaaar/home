@@ -5501,6 +5501,7 @@ def _initialize_catalogue_caches() -> None:
 
 app.router.add_event_handler("startup", _initialize_catalogue_caches)
 app.router.add_event_handler("startup", _start_catalogue_synopsis_enrichment)
+app.router.add_event_handler("startup", _start_tmdb_catalogue_synopsis_enrichment)
 _extra_catalogue_tasks: dict[str, asyncio.Task | None] = {key: None for key in _EXTRA_CATALOGUES}
 _extra_catalogue_retry_after: dict[str, float] = {}
 _extra_catalogue_states: dict[str, dict[str, Any]] = {
@@ -6034,6 +6035,206 @@ def _write_tmdb_persistent_cache(cache_key: tuple[str, int], payload: dict[str, 
     except (OSError, ValueError, TypeError) as exc:
         # Caching is best-effort; it must never turn a successful API response into a failure.
         logger.info("Could not write TMDB persistent cache: %s", exc)
+
+
+# The seven franchise snapshots above are separate from the dynamic Popular/Trending/
+# Latest catalogues. Those catalogues are persisted in TMDB_CATALOGUE_CACHE_FILE, so
+# backfill their missing overviews there too; otherwise the movie cards never see them.
+_TMDB_CATALOGUE_SYNOPSIS_RECHECK_SECONDS = 30 * 24 * 60 * 60
+_TMDB_CATALOGUE_SYNOPSIS_ENRICHMENT_STATE: dict[str, Any] = {
+    "status": "idle", "entriesCompleted": 0, "entriesTotal": 0,
+    "titlesCompleted": 0, "titlesTotal": 0, "updatedRows": 0, "error": "",
+}
+_tmdb_catalogue_synopsis_enrichment_task: asyncio.Task | None = None
+_TMDB_CATALOGUE_SYNOPSIS_RESCAN_REQUESTED = False
+
+
+def _tmdb_payload_needs_synopsis(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+        return False
+    now = int(time.time())
+    for item in payload["results"]:
+        if not isinstance(item, dict) or str(item.get("overview") or "").strip():
+            continue
+        try:
+            checked_at = int(item.get("synopsisCheckedAt") or 0)
+        except (TypeError, ValueError):
+            checked_at = 0
+        if not checked_at or now - checked_at >= _TMDB_CATALOGUE_SYNOPSIS_RECHECK_SECONDS:
+            return True
+    return False
+
+
+async def _lookup_tmdb_catalogue_synopsis_by_id(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Use TMDB movie details by ID; list/discover results may omit an overview."""
+    try:
+        tmdb_id = int(item.get("tmdbId") or item.get("id") or 0)
+    except (TypeError, ValueError):
+        tmdb_id = 0
+    if tmdb_id < 1:
+        return None
+
+    successful_response = False
+    for language in ("en-US", "en"):
+        try:
+            details = await _tmdb_get_json(
+                f"movie/{tmdb_id}", {"language": language}, request_timeout=6.0
+            )
+            successful_response = True
+        except Exception as exc:
+            logger.info("TMDB details synopsis lookup failed for ID %s (%s): %s",
+                tmdb_id, language, type(exc).__name__)
+            continue
+
+        overview = re.sub(r"\s+", " ", str(details.get("overview") or "")).strip()
+        if overview:
+            return {
+                "overview": overview,
+                "tmdbId": tmdb_id,
+                "tmdbUrl": f"https://www.themoviedb.org/movie/{tmdb_id}",
+                "synopsisCheckedAt": int(time.time()),
+            }
+
+    # Mark a successful empty response to avoid repeatedly spending API calls on
+    # titles for which TMDB has not published an English synopsis yet.
+    if successful_response:
+        return {
+            "tmdbId": tmdb_id,
+            "tmdbUrl": f"https://www.themoviedb.org/movie/{tmdb_id}",
+            "synopsisCheckedAt": int(time.time()),
+        }
+    return None
+
+
+async def _enrich_tmdb_persistent_catalogue_synopses() -> None:
+    state = _TMDB_CATALOGUE_SYNOPSIS_ENRICHMENT_STATE
+    if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
+        state.update({"status": "waiting_for_credentials",
+            "error": "TMDB credentials are not configured"})
+        return
+
+    state.update({
+        "status": "running", "entriesCompleted": 0, "entriesTotal": 0,
+        "titlesCompleted": 0, "titlesTotal": 0, "updatedRows": 0, "error": "",
+    })
+    try:
+        try:
+            disk = json.loads(TMDB_CATALOGUE_CACHE_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            disk = {}
+        catalogues = disk.get("catalogues", {}) if isinstance(disk, dict) else {}
+        if not isinstance(catalogues, dict):
+            catalogues = {}
+
+        cache_entries: list[tuple[tuple[str, int], dict[str, Any]]] = []
+        jobs: dict[int, dict[str, Any]] = {}
+        now = int(time.time())
+        for disk_key, envelope in catalogues.items():
+            if not isinstance(envelope, dict) or not isinstance(envelope.get("payload"), dict):
+                continue
+            try:
+                variant_and_page, page_text = str(disk_key).rsplit(":", 1)
+                page = int(page_text)
+            except (ValueError, TypeError):
+                continue
+            cache_key = (variant_and_page, page)
+            payload = envelope["payload"]
+            if not isinstance(payload.get("results"), list):
+                continue
+            cache_entries.append((cache_key, payload))
+            for item in payload["results"]:
+                if not isinstance(item, dict) or str(item.get("overview") or "").strip():
+                    continue
+                try:
+                    checked_at = int(item.get("synopsisCheckedAt") or 0)
+                    tmdb_id = int(item.get("tmdbId") or item.get("id") or 0)
+                except (TypeError, ValueError):
+                    checked_at, tmdb_id = 0, 0
+                if checked_at and now - checked_at < _TMDB_CATALOGUE_SYNOPSIS_RECHECK_SECONDS:
+                    continue
+                if tmdb_id > 0:
+                    jobs.setdefault(tmdb_id, item)
+
+        state["entriesTotal"] = len(cache_entries)
+        state["titlesTotal"] = len(jobs)
+        metadata_by_id: dict[int, dict[str, Any]] = {}
+        for tmdb_id, item in jobs.items():
+            metadata = await _lookup_tmdb_catalogue_synopsis_by_id(item)
+            if metadata:
+                metadata_by_id[tmdb_id] = metadata
+            state["titlesCompleted"] += 1
+            if state["titlesCompleted"] % 25 == 0:
+                logger.info("TMDB persistent catalogue synopsis enrichment: %d/%d titles",
+                    state["titlesCompleted"], state["titlesTotal"])
+            await asyncio.sleep(0.2)
+
+        # Re-read every entry before merging, preserving any newer catalogue rows
+        # written while the metadata lookups were running.
+        for cache_key, initial_payload in cache_entries:
+            current_entry = _read_tmdb_persistent_cache(cache_key)
+            payload = current_entry[1] if current_entry else initial_payload
+            changed = False
+            rows = payload.get("results", []) if isinstance(payload, dict) else []
+            for item in rows if isinstance(rows, list) else []:
+                if not isinstance(item, dict) or str(item.get("overview") or "").strip():
+                    continue
+                try:
+                    tmdb_id = int(item.get("tmdbId") or item.get("id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                metadata = metadata_by_id.get(tmdb_id)
+                if not metadata:
+                    continue
+                if metadata.get("overview") and not str(item.get("overview") or "").strip():
+                    item["overview"] = metadata["overview"]
+                    state["updatedRows"] += 1
+                    changed = True
+                for field in ("tmdbId", "tmdbUrl", "synopsisCheckedAt"):
+                    if metadata.get(field) and not item.get(field):
+                        item[field] = metadata[field]
+                        changed = True
+            if changed:
+                _write_tmdb_persistent_cache(cache_key, payload)
+                _tmdb_movie_catalogue_cache[cache_key] = (time.monotonic(), payload)
+            state["entriesCompleted"] += 1
+
+        state.update({"status": "completed", "error": ""})
+        logger.info("TMDB persistent catalogue synopsis enrichment completed: %d titles, %d rows updated",
+            state["titlesCompleted"], state["updatedRows"])
+    except Exception as exc:
+        logger.exception("TMDB persistent catalogue synopsis enrichment failed")
+        state.update({"status": "failed", "error": type(exc).__name__ + ": " + str(exc)[:300]})
+
+
+def _schedule_tmdb_catalogue_synopsis_enrichment(payload: dict[str, Any] | None = None) -> None:
+    global _tmdb_catalogue_synopsis_enrichment_task, _TMDB_CATALOGUE_SYNOPSIS_RESCAN_REQUESTED
+    if payload is not None and not _tmdb_payload_needs_synopsis(payload):
+        return
+    if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
+        _TMDB_CATALOGUE_SYNOPSIS_ENRICHMENT_STATE.update({
+            "status": "waiting_for_credentials", "error": "TMDB credentials are not configured"})
+        return
+    if (_tmdb_catalogue_synopsis_enrichment_task is not None
+            and not _tmdb_catalogue_synopsis_enrichment_task.done()):
+        _TMDB_CATALOGUE_SYNOPSIS_RESCAN_REQUESTED = True
+        return
+    _TMDB_CATALOGUE_SYNOPSIS_RESCAN_REQUESTED = False
+    _tmdb_catalogue_synopsis_enrichment_task = asyncio.create_task(
+        _enrich_tmdb_persistent_catalogue_synopses()
+    )
+
+
+async def _start_tmdb_catalogue_synopsis_enrichment() -> None:
+    # Wait for initialization and the franchise-cache warm-up before scanning the
+    # separate persistent TMDB popular/trending/latest JSON.
+    await asyncio.sleep(12)
+    _schedule_tmdb_catalogue_synopsis_enrichment()
+
+
+@app.get("/api/movies/catalogue-cache/synopsis-enrichment")
+async def api_tmdb_catalogue_synopsis_enrichment_status():
+    """Return progress for TMDB synopsis enrichment in the persistent catalogue JSON."""
+    return dict(_TMDB_CATALOGUE_SYNOPSIS_ENRICHMENT_STATE)
 
 
 def _tmdb_ott_disk_key(cache_key: tuple[int, str]) -> str:
@@ -6894,6 +7095,7 @@ async def api_tmdb_movie_catalogue(
     cache_ttl = 30 * 60 if catalogue_key.startswith("trending-") else TMDB_CATALOGUE_CACHE_SECONDS
     cached = _tmdb_movie_catalogue_cache.get(cache_key)
     if cached and now - cached[0] < cache_ttl:
+        _schedule_tmdb_catalogue_synopsis_enrichment(cached[1])
         return _attach_saved_ott_enrichment(catalogue_key, cached[1])
 
     # A disk cache survives container restarts, unlike the in-memory TTL cache.
@@ -6906,6 +7108,7 @@ async def api_tmdb_movie_catalogue(
                 time.monotonic() - age_seconds,
                 persistent_payload,
             )
+            _schedule_tmdb_catalogue_synopsis_enrichment(persistent_payload)
             return _attach_saved_ott_enrichment(catalogue_key, persistent_payload)
 
     task = _tmdb_movie_catalogue_inflight.get(cache_key)
@@ -6916,6 +7119,7 @@ async def api_tmdb_movie_catalogue(
         payload = await task
         _tmdb_movie_catalogue_cache[cache_key] = (time.monotonic(), payload)
         _write_tmdb_persistent_cache(cache_key, payload)
+        _schedule_tmdb_catalogue_synopsis_enrichment(payload)
         return _attach_saved_ott_enrichment(catalogue_key, payload)
     except HTTPException as exc:
         # Prefer a stale response over an empty screen when TMDB has an outage.
@@ -6925,6 +7129,7 @@ async def api_tmdb_movie_catalogue(
             stale_response["stale"] = True
             stale_response["cacheWarning"] = exc.detail
             logger.warning("Serving stale TMDB catalogue %s page %s after upstream failure", catalogue_key, page)
+            _schedule_tmdb_catalogue_synopsis_enrichment(stale_response)
             return _attach_saved_ott_enrichment(catalogue_key, stale_response)
         raise
     except Exception as exc:
@@ -6934,6 +7139,7 @@ async def api_tmdb_movie_catalogue(
             stale_response = dict(stale_payload)
             stale_response["stale"] = True
             stale_response["cacheWarning"] = "TMDB is temporarily unavailable; showing the last cached catalogue."
+            _schedule_tmdb_catalogue_synopsis_enrichment(stale_response)
             return _attach_saved_ott_enrichment(catalogue_key, stale_response)
         raise HTTPException(status_code=502, detail="Could not load the movie catalogue from TMDB.") from exc
     finally:
