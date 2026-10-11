@@ -6445,7 +6445,7 @@ async def api_search_availability(q: str = Query(..., min_length=2, max_length=1
             title = titles[0]
             sources_response = await client.get(
                 f"{WATCHMODE_API_BASE}/title/{int(title['id'])}/sources/",
-                params={"apiKey": WATCHMODE_API_KEY, "regions": "US,IN"},
+                params={"apiKey": WATCHMODE_API_KEY, "regions": "IN"},
             )
             sources_response.raise_for_status()
             sources = sources_response.json()
