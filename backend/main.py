@@ -51,9 +51,11 @@ STREAMING_AVAILABILITY_API_BASE = "https://api.movieofthenight.com/v4"
 _PROVIDER_KEY_COOLDOWNS: dict[str, float] = {}
 _PROVIDER_KEY_FAILURES: dict[str, int] = {}
 _PROVIDER_KEY_CURSORS: dict[str, int] = {}
-# Reuse TMDB TCP/TLS connections and bound concurrent requests during catalogue backfills.
+# Reuse metadata-provider connections and bound concurrent catalogue backfills.
 _TMDB_HTTP_CLIENT: httpx.AsyncClient | None = None
 _TMDB_REQUEST_SEMAPHORE = asyncio.Semaphore(4)
+_WATCHMODE_HTTP_CLIENT: httpx.AsyncClient | None = None
+_WATCHMODE_REQUEST_SEMAPHORE = asyncio.Semaphore(3)
 _WATCHMODE_RATE_LIMITED_UNTIL = 0.0
 _WATCHMODE_RESOLVED_TITLE_IDS: dict[int, int | None] = {}
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
@@ -115,8 +117,25 @@ async def _watchmode_get(path: str, *, params: dict[str, Any] | None = None,
         else:
             query["apiKey"] = key
         try:
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=headers) as client:
-                response = await client.get(f"{WATCHMODE_API_BASE}{path}", params=query)
+            global _WATCHMODE_HTTP_CLIENT
+            if _WATCHMODE_HTTP_CLIENT is None or _WATCHMODE_HTTP_CLIENT.is_closed:
+                _WATCHMODE_HTTP_CLIENT = httpx.AsyncClient(
+                    timeout=httpx.Timeout(10.0, connect=4.0),
+                    follow_redirects=True,
+                    headers={"Accept": "application/json"},
+                    limits=httpx.Limits(
+                        max_connections=6,
+                        max_keepalive_connections=3,
+                        keepalive_expiry=30.0,
+                    ),
+                )
+            async with _WATCHMODE_REQUEST_SEMAPHORE:
+                response = await _WATCHMODE_HTTP_CLIENT.get(
+                    f"{WATCHMODE_API_BASE}{path}",
+                    params=query,
+                    headers=headers,
+                    timeout=timeout,
+                )
             last_response = response
             if response.status_code < 300:
                 _provider_key_success(provider, key)
@@ -155,9 +174,8 @@ async def _watchmode_get(path: str, *, params: dict[str, Any] | None = None,
             response, terminal = await attempt(key)
             if response is not None and terminal:
                 return response
-        for key in retry_keys:
-            if _provider_key_available(provider, key):
-                _provider_key_failure(provider, key, 30, "failed twice in one request")
+        # Transport failures and HTTP 5xx responses do not prove the key is invalid.
+        # Keep the key eligible; explicit 401/403/429 responses have their own policy.
     if last_response is not None:
         return last_response
     if not eligible:
@@ -174,7 +192,7 @@ TMDB_COMPANY_CACHE_SECONDS = max(3600, int(os.getenv("TMDB_COMPANY_CACHE_SECONDS
 TMDB_CATALOGUE_CACHE_FILE = Path(os.getenv("TMDB_CATALOGUE_CACHE_FILE", "/app/data/tmdb_movie_catalogue_cache.json"))
 TMDB_SEARCH_METADATA_CACHE_FILE = Path(os.getenv("TMDB_SEARCH_METADATA_CACHE_FILE", "/app/data/tmdb_search_metadata_cache.json"))
 TMDB_SEARCH_METADATA_QUERY_TTL_SECONDS = max(3600, int(os.getenv("TMDB_SEARCH_METADATA_QUERY_TTL_SECONDS", str(30 * 24 * 60 * 60))))
-TMDB_SYNOPSIS_LOOKUP_VERSION = 3
+TMDB_SYNOPSIS_LOOKUP_VERSION = 4
 SYNOPSIS_CACHE_RETRY_INTERVAL_SECONDS = max(300, int(os.getenv("SYNOPSIS_CACHE_RETRY_INTERVAL_SECONDS", "900")))
 TMDB_OTT_CACHE_SECONDS = max(3600, int(os.getenv("TMDB_OTT_CACHE_SECONDS", str(24 * 60 * 60))))
 TMDB_OTT_CACHE_FILE = Path(os.getenv("TMDB_OTT_CACHE_FILE", "/app/data/tmdb_ott_availability_cache.json"))
@@ -5317,6 +5335,7 @@ _CATALOGUE_PERSISTENT_METADATA_FIELDS = (
     "genres",
     "synopsisCheckedAt",
     "synopsisLookupVersion",
+    "synopsisSource",
 )
 
 
@@ -5475,12 +5494,155 @@ def _write_synopsis_cache(path: Path, payload: dict[str, Any]) -> None:
                 pass
 
 
+async def _lookup_watchmode_catalogue_synopsis(
+    title: str,
+    year: int,
+    tmdb_id: int = 0,
+) -> tuple[dict[str, Any] | None, bool]:
+    """Fetch Watchmode plot_overview as a fallback; return whether lookup completed."""
+    if not WATCHMODE_API_KEYS:
+        return None, False
+
+    query = re.sub(r"\s+", " ", title or "").strip()
+    completed = False
+    timeout = httpx.Timeout(8.0, connect=3.0)
+
+    def make_metadata(details: dict[str, Any], fallback_tmdb_id: int = 0) -> dict[str, Any] | None:
+        overview = re.sub(
+            r"\s+",
+            " ",
+            str(details.get("plot_overview") or details.get("overview") or ""),
+        ).strip()
+        if not overview:
+            return None
+
+        try:
+            resolved_tmdb_id = int(details.get("tmdb_id") or fallback_tmdb_id or tmdb_id or 0)
+        except (TypeError, ValueError):
+            resolved_tmdb_id = fallback_tmdb_id or tmdb_id or 0
+
+        release_date = str(details.get("release_date") or "").strip()
+        resolved_year = details.get("year") or year or None
+        if release_date:
+            year_match = re.match(r"^(\d{4})", release_date)
+            if year_match:
+                resolved_year = int(year_match.group(1))
+
+        metadata: dict[str, Any] = {
+            "overview": overview,
+            "synopsisSource": "Watchmode",
+            "synopsisCheckedAt": int(time.time()),
+            "synopsisLookupVersion": TMDB_SYNOPSIS_LOOKUP_VERSION,
+        }
+        if resolved_tmdb_id > 0:
+            metadata["tmdbId"] = resolved_tmdb_id
+            metadata["tmdbUrl"] = f"https://www.themoviedb.org/movie/{resolved_tmdb_id}"
+        if release_date:
+            metadata["releaseDate"] = release_date
+        if resolved_year:
+            metadata["year"] = resolved_year
+        return metadata
+
+    async def get_details(identifier: str, fallback_tmdb_id: int = 0) -> tuple[dict[str, Any] | None, bool]:
+        try:
+            response = await _watchmode_get(
+                f"/title/{quote(identifier, safe='')}/details/",
+                params={"language": "en"},
+                timeout=timeout,
+            )
+        except Exception as exc:
+            logger.info("Watchmode synopsis lookup failed for %s: %s", identifier, type(exc).__name__)
+            return None, False
+
+        if response is None or response.status_code >= 400:
+            return None, False
+        try:
+            details = response.json()
+        except (ValueError, TypeError):
+            return None, False
+        if not isinstance(details, dict):
+            return None, False
+
+        metadata = make_metadata(details, fallback_tmdb_id)
+        return metadata, True
+
+    # Watchmode supports TMDB-format IDs (movie-123); this avoids a title search
+    # for the large group of franchise rows that already have a reliable TMDB ID.
+    if tmdb_id > 0:
+        metadata, succeeded = await get_details(f"movie-{tmdb_id}", tmdb_id)
+        if metadata:
+            return metadata, True
+        completed = succeeded
+
+    if not query:
+        return None, completed
+
+    try:
+        response = await _watchmode_get(
+            "/search/",
+            params={
+                "search_field": "name",
+                "search_value": query,
+                "types": "movie,tv_movie,tv_miniseries,tv_special,short_film",
+            },
+            timeout=timeout,
+        )
+    except Exception as exc:
+        logger.info("Watchmode synopsis title search failed for %r: %s", query, type(exc).__name__)
+        return None, False
+
+    if response is None or response.status_code >= 400:
+        return None, False
+
+    try:
+        data = response.json()
+    except (ValueError, TypeError):
+        return None, False
+
+    title_results = data.get("title_results", []) if isinstance(data, dict) else []
+    target = _normalize_title(query)
+    candidates: list[tuple[int, dict[str, Any]]] = []
+    for candidate in title_results if isinstance(title_results, list) else []:
+        if not isinstance(candidate, dict) or not candidate.get("id"):
+            continue
+        candidate_title = str(candidate.get("name") or candidate.get("title") or "").strip()
+        if not candidate_title or _normalize_title(candidate_title) != target:
+            continue
+        try:
+            candidate_year = int(candidate.get("year") or 0)
+        except (TypeError, ValueError):
+            candidate_year = 0
+        if year and candidate_year and candidate_year != year:
+            continue
+        year_rank = 0 if year and candidate_year == year else 1
+        candidates.append((year_rank, candidate))
+
+    candidates.sort(key=lambda pair: pair[0])
+    for _, candidate in candidates[:3]:
+        watchmode_id = str(candidate.get("id") or "").strip()
+        if not watchmode_id:
+            continue
+        fallback_id = 0
+        try:
+            fallback_id = int(candidate.get("tmdb_id") or tmdb_id or 0)
+        except (TypeError, ValueError):
+            fallback_id = tmdb_id or 0
+        metadata, succeeded = await get_details(watchmode_id, fallback_id)
+        completed = completed or succeeded
+        if metadata:
+            return metadata, True
+
+    # A successful search with no exact title/year match is a completed negative
+    # result. Failed detail requests stay eligible for retry in the next worker run.
+    return None, True if not candidates else completed
+
+
 async def _lookup_catalogue_synopsis(
     title: str,
     year: int,
     tmdb_id: int = 0,
 ) -> dict[str, Any] | None:
-    """Resolve synopsis data, preferring a previously saved TMDB ID over title search."""
+    """Resolve a synopsis from TMDB first, then use Watchmode's plot overview."""
     query = re.sub(r"\s+", " ", title).strip()
     if not query and not tmdb_id:
         return None
@@ -5518,13 +5680,14 @@ async def _lookup_catalogue_synopsis(
             "releaseDate": release_date,
             "rating": float(details.get("vote_average") or fallback.get("vote_average") or 0),
             "genres": genres if isinstance(genres, list) else [],
+            "synopsisSource": "TMDB" if overview else "",
             "synopsisCheckedAt": now,
             "synopsisLookupVersion": TMDB_SYNOPSIS_LOOKUP_VERSION,
         }
 
-    # Catalogue rows commonly already have a verified TMDB ID. Fetching movie
-    # details directly avoids strict title matching failures for sequels,
-    # punctuation variants, or localized catalogue labels.
+    async def watchmode_fallback() -> tuple[dict[str, Any] | None, bool]:
+        return await _lookup_watchmode_catalogue_synopsis(query, year, tmdb_id)
+
     if tmdb_id > 0:
         successful_details_response = False
         details: dict[str, Any] = {}
@@ -5543,13 +5706,21 @@ async def _lookup_catalogue_synopsis(
             details = response
             if re.sub(r"\s+", " ", str(details.get("overview") or "")).strip():
                 break
+
         if successful_details_response:
-            return details_to_metadata(
-                details, tmdb_id, query or str(details.get("title") or ""), year
-            )
-        # If the ID endpoint failed, leave the row eligible for a later retry.
-        # Do not turn a transport/auth failure into a negative cache entry.
-        return None
+            metadata = details_to_metadata(details, tmdb_id, query or str(details.get("title") or ""), year)
+            if metadata.get("overview"):
+                return metadata
+            watchmode_metadata, watchmode_completed = await watchmode_fallback()
+            if watchmode_metadata:
+                return watchmode_metadata
+            if WATCHMODE_API_KEYS and not watchmode_completed:
+                # Keep an unresolved record retryable if Watchmode failed transiently.
+                metadata["synopsisLookupVersion"] = 0
+            return metadata
+
+        watchmode_metadata, _ = await watchmode_fallback()
+        return watchmode_metadata
 
     if not query:
         return None
@@ -5563,7 +5734,8 @@ async def _lookup_catalogue_synopsis(
         result = await _tmdb_get_json("search/movie", params, request_timeout=6.0)
     except Exception as exc:
         logger.info("Synopsis cache lookup failed for %r (%s): %s", query, year, type(exc).__name__)
-        return None
+        watchmode_metadata, _ = await watchmode_fallback()
+        return watchmode_metadata
 
     rows = [row for row in (result.get("results") or []) if isinstance(row, dict) and row.get("id")]
     target = _normalize_title(query)
@@ -5582,8 +5754,11 @@ async def _lookup_catalogue_synopsis(
         candidates.append((0 if year and candidate_year == year else 1, -int(row.get("vote_count") or 0), row))
 
     if not candidates:
-        # TMDB answered successfully but has no exact title/year match. Record the
-        # lookup version so we don't retry this negative result on every startup.
+        watchmode_metadata, watchmode_completed = await watchmode_fallback()
+        if watchmode_metadata:
+            return watchmode_metadata
+        if WATCHMODE_API_KEYS and not watchmode_completed:
+            return None
         return {"synopsisCheckedAt": now, "synopsisLookupVersion": TMDB_SYNOPSIS_LOOKUP_VERSION}
 
     candidates.sort(key=lambda candidate: (candidate[0], candidate[1]))
@@ -5592,8 +5767,6 @@ async def _lookup_catalogue_synopsis(
     details: dict[str, Any] = row
     overview = re.sub(r"\s+", " ", str(row.get("overview") or "")).strip()
 
-    # Search/list endpoints can omit the overview even when the details endpoint
-    # contains it. Do not mark a row checked if every details request fails.
     if not overview:
         successful_details_response = False
         for language in ("en-US", "en"):
@@ -5613,15 +5786,25 @@ async def _lookup_catalogue_synopsis(
             if overview:
                 break
         if not successful_details_response:
-            return None
+            watchmode_metadata, _ = await watchmode_fallback()
+            return watchmode_metadata
 
-    return details_to_metadata(
+    metadata = details_to_metadata(
         details,
         resolved_id,
         str(row.get("title") or row.get("original_title") or query).strip(),
         year,
         fallback_row=row,
     )
+    if metadata.get("overview"):
+        return metadata
+
+    watchmode_metadata, watchmode_completed = await watchmode_fallback()
+    if watchmode_metadata:
+        return watchmode_metadata
+    if WATCHMODE_API_KEYS and not watchmode_completed:
+        metadata["synopsisLookupVersion"] = 0
+    return metadata
 
 
 async def _enrich_catalogue_synopses() -> None:
@@ -5720,7 +5903,7 @@ async def _enrich_catalogue_synopses() -> None:
                 item["overview"] = metadata["overview"]
                 changed = True
                 state["updatedRows"] += 1
-            for field in ("tmdbId", "tmdbUrl", "releaseDate", "rating"):
+            for field in ("tmdbId", "tmdbUrl", "releaseDate", "rating", "synopsisSource"):
                 if field in metadata and metadata[field] not in (None, "", 0) and not item.get(field):
                     item[field] = metadata[field]
                     changed = True
@@ -7087,11 +7270,14 @@ async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None, *, req
 
 @app.on_event("shutdown")
 async def _close_tmdb_http_client() -> None:
-    """Close the pooled TMDB client cleanly when the application shuts down."""
-    global _TMDB_HTTP_CLIENT
+    """Close pooled metadata clients cleanly when the application shuts down."""
+    global _TMDB_HTTP_CLIENT, _WATCHMODE_HTTP_CLIENT
     if _TMDB_HTTP_CLIENT is not None and not _TMDB_HTTP_CLIENT.is_closed:
         await _TMDB_HTTP_CLIENT.aclose()
     _TMDB_HTTP_CLIENT = None
+    if _WATCHMODE_HTTP_CLIENT is not None and not _WATCHMODE_HTTP_CLIENT.is_closed:
+        await _WATCHMODE_HTTP_CLIENT.aclose()
+    _WATCHMODE_HTTP_CLIENT = None
 
 
 async def _tmdb_discovered_company_ids(franchise: str) -> list[str]:
