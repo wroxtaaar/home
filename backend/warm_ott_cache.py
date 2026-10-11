@@ -178,7 +178,14 @@ async def run() -> int:
             stats["errors"] += 1
             print(f"[{index}/{total}] ERROR {title[:65]} (TMDB {movie_id}): {type(exc).__name__}: {exc}")
 
-        if args.delay:
+        # If Watchmode signalled HTTP 429, stop sending requests until its
+        # Retry-After window expires. This pause is local to this manual run.
+        cooldown_until = float(getattr(main, "_WATCHMODE_RATE_LIMITED_UNTIL", 0.0) or 0.0)
+        if cooldown_until > time.time():
+            wait_seconds = cooldown_until - time.time()
+            print(f"\n[rate limit] Watchmode asked us to pause; waiting {int(wait_seconds) + 1}s.")
+            await asyncio.sleep(wait_seconds)
+        elif args.delay:
             await asyncio.sleep(args.delay)
 
     elapsed = int(time.monotonic() - started)
