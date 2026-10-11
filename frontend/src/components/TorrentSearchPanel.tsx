@@ -2815,7 +2815,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     ? matchingSavedTitles.flatMap(match => match.providers)
                     : (availability?.providers || [])
                 );
-                const compactPosterUrl = mediaMetadata?.posterUrl || posterUrlFor(posterResult);
+                // Prefer the same poster-resolver URL as the expanded torrent card. It is
+                // backed by the existing poster cache, so switching card modes reuses it
+                // instead of starting with a separate direct TMDB image request.
+                const compactPosterUrl = posterUrlFor(posterResult) || mediaMetadata?.posterUrl || '';
 
                 return (
                   <article
@@ -2824,13 +2827,51 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   >
                     <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
                       {compactPosterUrl ? (
-                        <img
-                          src={compactPosterUrl}
-                          alt={mediaDisplayTitle}
-                          loading="lazy"
-                          className="h-full w-full object-cover"
-                          onError={event => { event.currentTarget.style.display = 'none'; }}
-                        />
+                        <>
+                          <img
+                            src={compactPosterUrl}
+                            alt={mediaDisplayTitle}
+                            loading="lazy"
+                            className="h-full w-full object-cover"
+                            onLoad={event => {
+                              const key = posterKeyFor(posterResult);
+                              posterLoadedRef.current.add(key);
+                              event.currentTarget.style.display = '';
+                              event.currentTarget.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.add('hidden');
+                            }}
+                            onError={event => {
+                              const image = event.currentTarget;
+                              const fallbackUrl = String(mediaMetadata?.posterUrl || '').trim();
+                              // If the shared poster resolver URL fails, give the already-cached
+                              // catalogue image URL one chance before scheduling another resolve.
+                              if (
+                                fallbackUrl &&
+                                fallbackUrl !== compactPosterUrl &&
+                                image.dataset.fallbackAttempted !== 'true'
+                              ) {
+                                image.dataset.fallbackAttempted = 'true';
+                                image.src = fallbackUrl;
+                                return;
+                              }
+
+                              const key = posterKeyFor(posterResult);
+                              posterLoadedRef.current.delete(key);
+                              image.style.display = 'none';
+                              image.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.remove('hidden');
+
+                              // Match the expanded card's retry path; do not leave a blank black poster
+                              // slot just because the first image request failed.
+                              if (!posterBackgroundQueuedRef.current.has(key)) {
+                                posterBackgroundQueuedRef.current.add(key);
+                                posterBackgroundQueueRef.current.unshift({ key, result: posterResult });
+                                startPosterBackgroundWorkers();
+                              }
+                            }}
+                          />
+                          <div data-poster-placeholder="true" className="hidden absolute inset-0 flex items-center justify-center text-slate-600">
+                            <Film className="h-8 w-8" />
+                          </div>
+                        </>
                       ) : (
                         <div className="absolute inset-0 flex items-center justify-center text-slate-600">
                           <Film className="h-8 w-8" />
