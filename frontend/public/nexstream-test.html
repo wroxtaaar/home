@@ -15,6 +15,14 @@
     .muted { color:#93a4bd; line-height:1.55; }
     .panel { margin-top:22px; padding:clamp(16px,3vw,24px); border:1px solid #26354b; border-radius:20px; background:rgba(12,20,34,.92); box-shadow:0 20px 70px #0004; }
     .fields { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; align-items:end; }
+    .search-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; margin-bottom:16px; }
+    .results { display:grid; gap:9px; margin-top:12px; }
+    .result { display:grid; grid-template-columns:54px minmax(0,1fr) auto; gap:12px; align-items:center; padding:10px; border:1px solid #26354b; border-radius:12px; background:#0a1220; }
+    .result img { width:54px; height:78px; object-fit:cover; border-radius:6px; background:#172338; }
+    .result-title { font-size:14px; font-weight:800; }
+    .result-meta { margin-top:4px; color:#93a4bd; font-size:12px; line-height:1.4; }
+    .result button { padding:9px 12px; white-space:nowrap; }
+    @media(max-width:520px) { .result { grid-template-columns:44px minmax(0,1fr); } .result img { width:44px; height:66px; } .result button { grid-column:2; justify-self:start; } .search-row { grid-template-columns:1fr; } }
     label { display:flex; flex-direction:column; gap:7px; color:#aab8cc; font-size:12px; font-weight:700; }
     input,select { width:100%; min-width:0; padding:12px; border:1px solid #35445a; border-radius:10px; background:#0a1220; color:#f4f7fb; font:inherit; }
     button { border:0; border-radius:10px; padding:12px 18px; background:#22d3ee; color:#06121e; font-weight:800; cursor:pointer; }
@@ -39,6 +47,14 @@
   <p class="muted">Test NexStream movie and TV resolution without changing Home's existing Seedr/torrent player. The API key stays on the server; this page receives only an approved player URL.</p>
 
   <section class="panel">
+    <div class="search-row">
+      <label>Search by title
+        <input id="searchQuery" type="search" placeholder="e.g. Titanic or Game of Thrones" autocomplete="off">
+      </label>
+      <button id="searchButton" type="button">Search titles</button>
+    </div>
+    <div id="searchStatus" class="muted" role="status" aria-live="polite">Search for a movie or show by name, then select a result.</div>
+    <div id="searchResults" class="results"></div>
     <div class="fields">
       <label>Content type
         <select id="kind"><option value="movie">Movie</option><option value="tv">TV episode</option></select>
@@ -76,6 +92,7 @@
   const status = $('status');
   const player = $('player');
   const button = $('playButton');
+  const searchButton = $('searchButton');
   const details = $('details');
   const safeText = (element, value) => { element.textContent = String(value || ''); };
   const showError = message => {
@@ -88,6 +105,72 @@
     $('seasonField').classList.toggle('hidden', !isTv);
     $('episodeField').classList.toggle('hidden', !isTv);
     $('tmdbId').value = isTv ? '1399' : '597';
+  });
+
+  async function searchTitles() {
+    const query = $('searchQuery').value.trim();
+    if (query.length < 2) {
+      $('searchStatus').textContent = 'Enter at least two characters to search.';
+      $('searchResults').replaceChildren();
+      return;
+    }
+    searchButton.disabled = true;
+    $('searchStatus').textContent = 'Searching TMDB…';
+    $('searchResults').replaceChildren();
+    try {
+      const params = new URLSearchParams({ query, type: kind.value });
+      const response = await fetch('/api/nexstream/search?' + params.toString(), {
+        headers: { Accept: 'application/json' }, credentials: 'same-origin'
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.success) {
+        throw new Error(data.detail || ('Search failed with HTTP ' + response.status));
+      }
+      const results = Array.isArray(data.results) ? data.results : [];
+      $('searchStatus').textContent = results.length
+        ? 'Found ' + results.length + ' result(s). Select the correct title to load its TMDB ID.'
+        : 'No matches found. Try a different title or switch Movie/TV episode.';
+      for (const item of results) {
+        const row = document.createElement('div');
+        row.className = 'result';
+        const poster = document.createElement('img');
+        poster.alt = '';
+        poster.loading = 'lazy';
+        if (item.poster) poster.src = item.poster;
+        const text = document.createElement('div');
+        const title = document.createElement('div');
+        title.className = 'result-title';
+        title.textContent = item.title;
+        const meta = document.createElement('div');
+        meta.className = 'result-meta';
+        const year = String(item.date || '').slice(0, 4);
+        meta.textContent = (year ? year + ' · ' : '') + 'TMDB ID ' + item.id +
+          (item.overview ? ' — ' + item.overview : '');
+        text.append(title, meta);
+        const choose = document.createElement('button');
+        choose.type = 'button';
+        choose.textContent = 'Use this title';
+        choose.addEventListener('click', () => {
+          $('tmdbId').value = String(item.id);
+          $('kind').value = item.type;
+          kind.dispatchEvent(new Event('change'));
+          $('tmdbId').value = String(item.id);
+          $('searchStatus').textContent = 'Selected ' + item.title + ' (TMDB ' + item.id + '). Click Resolve & play.';
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        });
+        row.append(poster, text, choose);
+        $('searchResults').append(row);
+      }
+    } catch (error) {
+      $('searchStatus').textContent = String(error?.message || error || 'Title search failed.');
+    } finally {
+      searchButton.disabled = false;
+    }
+  }
+
+  searchButton.addEventListener('click', searchTitles);
+  $('searchQuery').addEventListener('keydown', event => {
+    if (event.key === 'Enter') searchTitles();
   });
 
   button.addEventListener('click', async () => {
