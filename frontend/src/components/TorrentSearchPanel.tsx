@@ -265,7 +265,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<TorrentSearchResult[]>([]);
   const [searchAvailabilityByGroup, setSearchAvailabilityByGroup] = useState<Record<string, {
-    status: 'ready' | 'not_found' | 'not_confirmed' | 'unavailable';
+    status: 'ready' | 'not_found' | 'not_confirmed' | 'unavailable' | 'loading';
     query: string;
     title?: string;
     year?: number | string;
@@ -933,7 +933,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         for (const group of availabilityGroups) {
           setSearchAvailabilityByGroup(previous => ({
             ...previous,
-            [group.key]: { status: 'unavailable', query: group.title, providers: [] }
+            [group.key]: { status: 'loading', query: group.title, providers: [] }
           }));
         }
         void Promise.allSettled(availabilityGroups.map(async group => {
@@ -2308,6 +2308,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                     ))}
                                   </div>
                                 );
+                              }
+                              if (availability.status === 'loading') {
+                                return <div className="mt-2 text-[10px] text-slate-500">Checking streaming services…</div>;
                               }
                               if (availability.status === 'unavailable') {
                                 return <div className="mt-2 text-[10px] text-slate-500">Streaming info unavailable</div>;
