@@ -94,6 +94,7 @@ export interface ImdbRatingResult {
   query?: string;
   title: string;
   year?: number | null;
+  mediaType?: 'movie' | 'tv';
   status: 'found' | 'not_found' | 'unavailable' | 'rate_limited';
   imdbRating?: number | null;
   imdbVotes?: string | null;
@@ -235,16 +236,28 @@ export const api = {
     return data;
   },
 
-  async getImdbRatings(titles: string[], signal?: AbortSignal): Promise<{
+  async getImdbRatings(
+    titles: string[],
+    mediaTypes: Array<'movie' | 'tv'> = [],
+    signal?: AbortSignal,
+  ): Promise<{
     status: string;
     requested?: number;
     matched?: number;
     results: ImdbRatingResult[];
   }> {
     const params = new URLSearchParams();
-    [...new Set(titles.map(title => String(title || '').trim()).filter(Boolean))]
-      .slice(0, 80)
-      .forEach(title => params.append('titles', title));
+    const seen = new Set<string>();
+    titles.forEach((rawTitle, index) => {
+      const title = String(rawTitle || '').trim();
+      if (!title) return;
+      const mediaType = mediaTypes[index] === 'tv' ? 'tv' : 'movie';
+      const key = mediaType + '|' + title.toLowerCase();
+      if (seen.has(key) || seen.size >= 80) return;
+      seen.add(key);
+      params.append('titles', title);
+      params.append('media_types', mediaType);
+    });
     const res = await fetch(API_BASE + '/api/catalogue/imdb-ratings?' + params.toString(), {
       signal, credentials: 'include', cache: 'no-store',
     });
