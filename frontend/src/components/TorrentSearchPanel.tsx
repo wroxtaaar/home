@@ -994,22 +994,73 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       setSearched(true);
       startPosterBackgroundSearch(data);
 
-      // Resolve streaming providers per movie card, independently of torrent search.
-      // Keep lookups bounded and asynchronous so provider checks never delay results.
+      // Use OTT data already embedded in enriched catalogue rows before scheduling any API lookups.
+      // Do not gate this on searchMode: catalogue presets can be invoked through different UI paths.
       {
-        // Run the same per-title lookup for normal searches and the cached
-        // Marvel/DC/other franchise catalogues. Watchmode's backend cache lets
-        // later visitors reuse resolved availability instead of starting over.
         const availabilityGroups = groupTorrentResults(data).slice(0, 15);
+        const pendingLiveLookups: typeof availabilityGroups = [];
+
         for (const group of availabilityGroups) {
+          const cachedRow = group.variants.find(variant => {
+            const row = variant as TorrentSearchResult & { ottAvailability?: any };
+            return Boolean(row.ottAvailability && typeof row.ottAvailability === 'object');
+          }) as (TorrentSearchResult & {
+            tmdbId?: number | string;
+            ottAvailability?: any;
+            catalogueTitle?: string;
+            marvelCatalogueTitle?: string;
+          }) | undefined;
+
+          if (cachedRow?.ottAvailability) {
+            const saved = cachedRow.ottAvailability;
+            const asProvider = (provider: any, type: string) => ({
+              name: String(provider?.name || provider?.provider_name || '').trim(),
+              region: String(provider?.region || saved.region || 'IN'),
+              type: String(provider?.type || type),
+              webUrl: provider?.webUrl || provider?.web_url || provider?.url || undefined,
+            });
+            const providers = [
+              ...(Array.isArray(saved.streamingProviders) ? saved.streamingProviders.map((p: any) => asProvider(p, 'streaming')) : []),
+              ...(Array.isArray(saved.rentProviders) ? saved.rentProviders.map((p: any) => asProvider(p, 'rent')) : []),
+              ...(Array.isArray(saved.buyProviders) ? saved.buyProviders.map((p: any) => asProvider(p, 'buy')) : []),
+            ].filter(provider => provider.name);
+            const title = String(cachedRow.catalogueTitle || cachedRow.marvelCatalogueTitle || cachedRow.mediaTitle || group.title)
+              .replace(/\s*\(?(?:19|20)\d{2}\)?\s*$/, '').trim();
+            setSearchAvailabilityByGroup(previous => ({
+              ...previous,
+              [group.key]: {
+                status: 'ready',
+                query: title,
+                title,
+                year: group.year,
+                providers,
+                matches: [{
+                  id: String(cachedRow.tmdbId || ''),
+                  tmdbId: cachedRow.tmdbId,
+                  title,
+                  year: group.year,
+                  type: 'movie',
+                  status: 'ready',
+                  providers,
+                }],
+                message: saved.status === 'no_providers' ? 'No providers in saved enrichment.' : undefined,
+              }
+            }));
+            continue;
+          }
+
           setSearchAvailabilityByGroup(previous => ({
             ...previous,
             [group.key]: { status: 'loading', query: group.title, providers: [] }
           }));
+          pendingLiveLookups.push(group);
         }
-        void Promise.allSettled(availabilityGroups.map(async group => {
+
+        void Promise.allSettled(pendingLiveLookups.map(async group => {
           try {
-            const availabilityQuery = group.year ? group.title.slice(0, group.title.lastIndexOf(' (')).trim() : group.title.trim();
+            const availabilityQuery = group.year
+              ? group.title.slice(0, group.title.lastIndexOf(' (')).trim()
+              : group.title.trim();
             const value = await api.searchAvailability(availabilityQuery);
             if (generation === searchGenerationRef.current) {
               setSearchAvailabilityByGroup(previous => ({ ...previous, [group.key]: value }));
