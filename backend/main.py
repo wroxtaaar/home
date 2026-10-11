@@ -6405,7 +6405,7 @@ async def api_clear_tmdb_movie_caches():
 
 
 def _attach_saved_ott_enrichment(catalogue_key: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """Merge OTT enrichment from persistent Marvel/DC torrent catalogues into TMDB cards."""
+    """Attach saved franchise OTT data; franchise catalogue misses must not trigger live scans."""
     source_paths: list[Path] = []
     if catalogue_key == "marvel":
         source_paths = [MARVEL_CATALOGUE_PATH]
@@ -6447,20 +6447,42 @@ def _attach_saved_ott_enrichment(catalogue_key: str, payload: dict[str, Any]) ->
         if not isinstance(original, dict):
             results.append(original)
             continue
+
         item = dict(original)
-        saved = by_tmdb_id.get(str(item.get("id") or ""))
+        item_id = str(item.get("id") or "").strip()
+        saved = by_tmdb_id.get(item_id)
         if saved is None:
             title = str(item.get("title") or "").strip()
             year = str(item.get("year") or (str(item.get("releaseDate") or "")[:4]))
             normalized = _normalize_title(re.sub(r"\s*\(?((?:19|20)\d{2})\)?\s*$", "", title))
             saved = by_title_year.get((normalized, year)) or by_title_year.get((normalized, ""))
+
         if saved:
-            item["tmdbId"] = saved.get("tmdbId")
+            item["tmdbId"] = saved.get("tmdbId") or item.get("id")
             item["ottAvailability"] = saved.get("ottAvailability")
+        else:
+            # These three TMDB franchise catalogues are expected to use the
+            # already-enriched local catalogue as their OTT source. Emit an
+            # explicit completed state for cache misses so the frontend does
+            # not start a redundant per-card provider scan and spin forever.
+            item["tmdbId"] = item.get("id")
+            item["ottAvailability"] = {
+                "region": "IN",
+                "status": "not_confirmed",
+                "streamingProviders": [],
+                "rentProviders": [],
+                "buyProviders": [],
+                "providerLink": "",
+                "checkedAt": "",
+                "source": "saved-catalogue-miss",
+                "providerAttribution": "",
+                "attribution": "",
+            }
+
         results.append(item)
+
     merged["results"] = results
     return merged
-
 
 @app.get("/api/movies/catalogue/{catalogue_key}")
 async def api_tmdb_movie_catalogue(
