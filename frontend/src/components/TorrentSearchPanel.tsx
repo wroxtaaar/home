@@ -263,6 +263,14 @@ function groupTorrentResults(results: TorrentSearchResult[]): TorrentQualityGrou
 export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepare, onCancelPrepare, onOpenProgress, seedrFiles = [], seedrDeletedFolderIds = [], onPlaySeedrFile }) => {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<TorrentSearchResult[]>([]);
+  const [searchAvailability, setSearchAvailability] = useState<{
+    status: 'ready' | 'not_found' | 'not_confirmed' | 'unavailable';
+    query: string;
+    title?: string;
+    year?: number | string;
+    providers: Array<{ name: string; region: string; type: string; webUrl?: string }>;
+    message?: string;
+  } | null>(null);
   const [selectedQualityByGroup, setSelectedQualityByGroup] = useState<Record<string, string>>({});
   const [movieTorrentPreviewGroup, setMovieTorrentPreviewGroup] = useState<TorrentQualityGroup | null>(null);
   const [movieTorrentPreviewCatalogueId, setMovieTorrentPreviewCatalogueId] = useState<string | null>(null);
@@ -862,6 +870,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       setShowRecentSearches(false);
       setError('');
       setResults([]);
+      setSearchAvailability(null);
       setSelectedQualityByGroup({});
       setSearched(false);
       setPosterOverrides({});
@@ -915,6 +924,19 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       setResults(data);
       setSearched(true);
       startPosterBackgroundSearch(data);
+
+      // Streaming lookup runs independently after torrent results are visible.
+      // Its short server timeout and cache never delay or fail the normal search.
+      if (!searchMode) {
+        const availabilityQuery = trimmed;
+        void api.searchAvailability(availabilityQuery).then(value => {
+          if (generation === searchGenerationRef.current) setSearchAvailability(value);
+        }).catch(() => {
+          if (generation === searchGenerationRef.current) {
+            setSearchAvailability({ status: 'unavailable', query: availabilityQuery, providers: [] });
+          }
+        });
+      }
 
       // Do not wait for metadata before displaying results. Start resolving
       // the first two results immediately, then the next two after that batch
@@ -2141,6 +2163,36 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             </div>
           </div>
 
+          {searchAvailability && searchAvailability.query.toLowerCase() === query.trim().toLowerCase() && (
+            <div className="mb-3 rounded-xl border border-slate-800 bg-slate-900/80 px-3 py-2.5">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="text-xs font-semibold text-slate-200">Streaming availability</span>
+                {searchAvailability.status === 'ready' ? (
+                  <>
+                    <span className="text-[11px] text-slate-500">
+                      {searchAvailability.title}{searchAvailability.year ? ' (' + searchAvailability.year + ')' : ''} · Watchmode
+                    </span>
+                    {searchAvailability.providers.map((provider, index) => (
+                      <a
+                        key={provider.name + provider.region + provider.type + index}
+                        href={provider.webUrl || undefined}
+                        target={provider.webUrl ? '_blank' : undefined}
+                        rel={provider.webUrl ? 'noreferrer' : undefined}
+                        className="rounded-full border border-cyan-900/70 bg-cyan-950/40 px-2 py-0.5 text-[11px] text-cyan-200 hover:border-cyan-600"
+                        title={[provider.region, provider.type].filter(Boolean).join(' · ') || 'Streaming provider'}
+                      >
+                        {provider.name}{provider.region ? ' · ' + provider.region : ''}
+                      </a>
+                    ))}
+                  </>
+                ) : searchAvailability.status === 'unavailable' ? (
+                  <span className="text-[11px] text-slate-500">Availability lookup unavailable; torrent results are unaffected.</span>
+                ) : (
+                  <span className="text-[11px] text-slate-500">No streaming providers confirmed for this title.</span>
+                )}
+              </div>
+            </div>
+          )}
           <div
             className="grid grid-cols-2 gap-2 sm:block sm:rounded-2xl sm:border sm:border-slate-800 sm:overflow-hidden sm:bg-slate-900 sm:divide-y sm:divide-slate-800/80 lg:grid lg:grid-cols-6 lg:gap-[22px] lg:w-full lg:max-w-none lg:mx-0 lg:p-0 lg:border-0 lg:bg-transparent lg:divide-y-0 lg:overflow-visible"
           >
