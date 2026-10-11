@@ -7100,6 +7100,26 @@ async def _fallback_omdb_search(query: str, timeout: httpx.Timeout) -> list[dict
 
 @app.get("/api/search/availability")
 async def api_search_availability(q: str = Query(..., min_length=2, max_length=160)):
+    """Bound streaming lookups so slow provider APIs cannot leave the UI scanning forever."""
+    query = re.sub(r"\s+", " ", q).strip()
+    try:
+        # Upstream providers have their own timeouts and retries; apply one total
+        # budget to the whole lookup so nested retries cannot accumulate indefinitely.
+        return await asyncio.wait_for(_api_search_availability_impl(query), timeout=12.0)
+    except asyncio.TimeoutError:
+        logger.info("Streaming availability lookup timed out for query %r", query)
+        return {
+            "status": "unavailable",
+            "query": query,
+            "title": query,
+            "year": None,
+            "matches": [],
+            "providers": [],
+            "message": "Streaming availability timed out. Torrent results are still available.",
+        }
+
+
+async def _api_search_availability_impl(q: str) -> dict[str, Any]:
     """Search Watchmode and TMDB first; use TVmaze/OMDb for metadata only if neither finds a title."""
     query = re.sub(r"\s+", " ", q).strip()
     cache_key = query.casefold()
