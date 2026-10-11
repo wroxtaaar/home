@@ -6404,6 +6404,64 @@ async def api_clear_tmdb_movie_caches():
     }
 
 
+def _attach_saved_ott_enrichment(catalogue_key: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Merge OTT enrichment from persistent Marvel/DC torrent catalogues into TMDB cards."""
+    source_paths: list[Path] = []
+    if catalogue_key == "marvel":
+        source_paths = [MARVEL_CATALOGUE_PATH]
+    elif catalogue_key == "dc-live-action":
+        source_paths = [
+            _EXTRA_CATALOGUE_PATHS["dc-live-action"],
+            _EXTRA_CATALOGUE_PATHS["dc-live-action-hindi"],
+        ]
+    elif catalogue_key == "dc-animated":
+        source_paths = [_EXTRA_CATALOGUE_PATHS["dc-animated"]]
+    if not source_paths:
+        return payload
+
+    by_tmdb_id: dict[str, dict[str, Any]] = {}
+    by_title_year: dict[tuple[str, str], dict[str, Any]] = {}
+    for source_path in source_paths:
+        try:
+            saved_catalogue = json.loads(source_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        rows = saved_catalogue.get("results", []) if isinstance(saved_catalogue, dict) else []
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("ottAvailability"), dict):
+                continue
+            tmdb_id = str(row.get("tmdbId") or "").strip()
+            title = str(row.get("catalogueTitle") or row.get("mediaTitle") or row.get("title") or "").strip()
+            year_value = str(row.get("year") or "")
+            if tmdb_id:
+                by_tmdb_id.setdefault(tmdb_id, row)
+            normalized = _normalize_title(re.sub(r"\\s*\\(?((?:19|20)\\d{2})\\)?\\s*$", "", title))
+            if normalized:
+                by_title_year.setdefault((normalized, year_value), row)
+
+    merged = dict(payload)
+    results = []
+    for original in payload.get("results", []) if isinstance(payload.get("results"), list) else []:
+        if not isinstance(original, dict):
+            results.append(original)
+            continue
+        item = dict(original)
+        saved = by_tmdb_id.get(str(item.get("id") or ""))
+        if saved is None:
+            title = str(item.get("title") or "").strip()
+            year = str(item.get("year") or (str(item.get("releaseDate") or "")[:4]))
+            normalized = _normalize_title(re.sub(r"\\s*\\(?((?:19|20)\\d{2})\\)?\\s*$", "", title))
+            saved = by_title_year.get((normalized, year)) or by_title_year.get((normalized, ""))
+        if saved:
+            item["tmdbId"] = saved.get("tmdbId")
+            item["ottAvailability"] = saved.get("ottAvailability")
+        results.append(item)
+    merged["results"] = results
+    return merged
+
+
 @app.get("/api/movies/catalogue/{catalogue_key}")
 async def api_tmdb_movie_catalogue(
     catalogue_key: str,
@@ -6425,7 +6483,7 @@ async def api_tmdb_movie_catalogue(
     cache_ttl = 30 * 60 if catalogue_key.startswith("trending-") else TMDB_CATALOGUE_CACHE_SECONDS
     cached = _tmdb_movie_catalogue_cache.get(cache_key)
     if cached and now - cached[0] < cache_ttl:
-        return cached[1]
+        return _attach_saved_ott_enrichment(catalogue_key, cached[1])
 
     # A disk cache survives container restarts, unlike the in-memory TTL cache.
     persistent = _read_tmdb_persistent_cache(cache_key)
@@ -6437,7 +6495,7 @@ async def api_tmdb_movie_catalogue(
                 time.monotonic() - age_seconds,
                 persistent_payload,
             )
-            return persistent_payload
+            return _attach_saved_ott_enrichment(catalogue_key, persistent_payload)
 
     task = _tmdb_movie_catalogue_inflight.get(cache_key)
     if task is None or task.done():
@@ -6447,7 +6505,7 @@ async def api_tmdb_movie_catalogue(
         payload = await task
         _tmdb_movie_catalogue_cache[cache_key] = (time.monotonic(), payload)
         _write_tmdb_persistent_cache(cache_key, payload)
-        return payload
+        return _attach_saved_ott_enrichment(catalogue_key, payload)
     except HTTPException as exc:
         # Prefer a stale response over an empty screen when TMDB has an outage.
         stale_payload = cached[1] if cached else (persistent[1] if persistent else None)
@@ -6456,7 +6514,7 @@ async def api_tmdb_movie_catalogue(
             stale_response["stale"] = True
             stale_response["cacheWarning"] = exc.detail
             logger.warning("Serving stale TMDB catalogue %s page %s after upstream failure", catalogue_key, page)
-            return stale_response
+            return _attach_saved_ott_enrichment(catalogue_key, stale_response)
         raise
     except Exception as exc:
         logger.exception("TMDB movie catalogue failed for %s page %s", catalogue_key, page)
