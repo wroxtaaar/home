@@ -47,6 +47,28 @@ function normalizeProviderLogoUrl(value: unknown): string {
   return '';
 }
 
+function fallbackProviderLogoUrl(providerName: string): string {
+  const name = normalizeOttProviderName(providerName).replace(/[^a-z0-9]+/g, ' ').trim();
+  const brands: Array<{ match: RegExp; slug: string; color: string }> = [
+    { match: /\bnetflix\b/, slug: 'netflix', color: 'E50914' },
+    { match: /\b(prime video|amazon prime|prime)\b/, slug: 'amazonprime', color: '00A8E1' },
+    { match: /\b(hotstar|jiohotstar|disney hotstar)\b/, slug: 'hotstar', color: '0F9D58' },
+    { match: /\bzee ?5\b/, slug: 'zee5', color: '8230C6' },
+    { match: /\bapple tv\b/, slug: 'appletv', color: 'FFFFFF' },
+    { match: /\bdisney ?\+|disney plus\b/, slug: 'disneyplus', color: '113CCF' },
+    { match: /\bsony ?liv\b/, slug: 'sonyliv', color: 'FFFFFF' },
+    { match: /\bhulu\b/, slug: 'hulu', color: '1CE783' },
+    { match: /\b(max|hbo max)\b/, slug: 'max', color: '002BE7' },
+    { match: /\bparamount ?\+|paramount plus\b/, slug: 'paramountplus', color: '0064FF' },
+    { match: /\bpeacock\b/, slug: 'peacock', color: 'FFFFFF' },
+    { match: /\bcrunchyroll\b/, slug: 'crunchyroll', color: 'F47521' },
+    { match: /\byoutube\b/, slug: 'youtube', color: 'FF0000' },
+    { match: /\bjiocinema\b/, slug: 'jiocinema', color: 'D80C8C' },
+  ];
+  const brand = brands.find(item => item.match.test(name));
+  return brand ? 'https://cdn.simpleicons.org/' + brand.slug + '/' + brand.color : '';
+}
+
 function providerIcon(
   provider: { name: string; logoUrl?: string; webUrl?: string },
   key: string,
@@ -62,7 +84,9 @@ function providerIcon(
     .map(part => part[0])
     .join('')
     .toUpperCase() || name.slice(0, 1).toUpperCase();
-  const logoUrl = normalizeProviderLogoUrl(provider.logoUrl);
+  const suppliedLogoUrl = normalizeProviderLogoUrl(provider.logoUrl);
+  const fallbackLogoUrl = fallbackProviderLogoUrl(name);
+  const logoUrl = suppliedLogoUrl || fallbackLogoUrl;
   const icon = (
     <span
       className={'relative inline-flex ' + sizeClass + ' shrink-0 items-center justify-center overflow-hidden rounded-md border border-slate-700 bg-slate-950 text-[10px] font-bold text-slate-300'}
@@ -76,7 +100,20 @@ function providerIcon(
           alt=""
           loading="lazy"
           className="absolute inset-0 h-full w-full bg-slate-950 object-contain p-0.5"
-          onError={event => { event.currentTarget.style.display = 'none'; }}
+          onError={event => {
+            const image = event.currentTarget;
+            if (
+              suppliedLogoUrl &&
+              fallbackLogoUrl &&
+              suppliedLogoUrl !== fallbackLogoUrl &&
+              image.dataset.brandFallbackAttempted !== 'true'
+            ) {
+              image.dataset.brandFallbackAttempted = 'true';
+              image.src = fallbackLogoUrl;
+              return;
+            }
+            image.style.display = 'none';
+          }}
         />
       )}
     </span>
