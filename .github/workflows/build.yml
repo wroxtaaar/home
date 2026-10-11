@@ -17,6 +17,7 @@ jobs:
         with:
           node-version: 22
       - run: npm install
+      - run: cp ../search_limits.json search_limits.json
       - run: npm run build
 
   backend:
