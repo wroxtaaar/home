@@ -7943,6 +7943,179 @@ async def api_search_metadata(q: str = Query(..., min_length=2, max_length=160))
     return response
 
 
+def _search_metadata_cache_candidate(raw: dict[str, Any]) -> dict[str, Any] | None:
+    title = str(
+        raw.get("catalogueTitle") or raw.get("marvelCatalogueTitle")
+        or raw.get("mediaTitle") or raw.get("title") or raw.get("name") or ""
+    ).strip()
+    if not title:
+        return None
+
+    year_value = raw.get("year")
+    release_date = str(raw.get("releaseDate") or raw.get("release_date") or raw.get("first_air_date") or "")
+    try:
+        year = int(year_value) if year_value else 0
+    except (TypeError, ValueError):
+        year = 0
+    if not year and re.match(r"^\d{4}", release_date):
+        year = int(release_date[:4])
+    if not year:
+        year_match = re.search(r"\b((?:19|20)\d{2})\b\s*\)?\s*$", title)
+        if year_match:
+            year = int(year_match.group(1))
+
+    canonical_title = re.sub(r"\s*\(?((?:19|20)\d{2})\)?\s*$", "", title).strip()
+    normalized = _normalize_title(canonical_title)
+    if not normalized:
+        return None
+
+    media_type = str(raw.get("mediaType") or raw.get("media_type") or "movie").lower()
+    if media_type not in {"movie", "tv"}:
+        media_type = "movie"
+    tmdb_id = raw.get("tmdbId") or raw.get("id")
+    try:
+        numeric_id = int(tmdb_id) if tmdb_id else 0
+    except (TypeError, ValueError):
+        numeric_id = 0
+    overview = re.sub(r"\s+", " ", str(raw.get("overview") or "")).strip()
+    # A title with no overview is not useful as a synopsis-cache hit. Let the
+    # original quick TMDB search handle it instead of masking a better result.
+    if not overview:
+        return None
+
+    def _number(value: Any) -> float:
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    poster_url = str(raw.get("posterUrl") or raw.get("poster_url") or "")
+    if not poster_url and str(raw.get("poster_path") or "").strip():
+        poster_url = TMDB_IMAGE_BASE + str(raw["poster_path"]).strip()
+    backdrop_url = str(raw.get("backdropUrl") or raw.get("backdrop_url") or "")
+    if not backdrop_url and str(raw.get("backdrop_path") or "").strip():
+        backdrop_url = "https://image.tmdb.org/t/p/w780" + str(raw["backdrop_path"]).strip()
+    tmdb_url = str(raw.get("tmdbUrl") or raw.get("tmdb_url") or "")
+    if not tmdb_url and numeric_id:
+        tmdb_url = f"https://www.themoviedb.org/{media_type}/{numeric_id}"
+
+    return {
+        "id": numeric_id or ("cached:" + normalized + (":" + str(year) if year else "")),
+        "tmdbId": numeric_id or None,
+        "title": canonical_title,
+        "year": year or None,
+        "mediaType": media_type,
+        "overview": overview,
+        "posterUrl": poster_url,
+        "backdropUrl": backdrop_url,
+        "rating": _number(raw.get("rating") or raw.get("vote_average")),
+        "tmdbUrl": tmdb_url,
+        "source": str(raw.get("source") or "VPS catalogue cache"),
+    }
+
+
+def _read_search_metadata_catalogue_rows() -> list[dict[str, Any]]:
+    """Read metadata from the persistent VPS JSON snapshots used by the catalogues."""
+    candidates: list[dict[str, Any]] = []
+    for _name, path in _synopsis_cache_paths():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        rows = payload.get("results", []) if isinstance(payload, dict) else []
+        if isinstance(rows, list):
+            candidates.extend(row for row in rows if isinstance(row, dict))
+
+    # Popular, Trending and Latest are stored separately from franchise snapshots.
+    try:
+        disk = json.loads(TMDB_CATALOGUE_CACHE_FILE.read_text(encoding="utf-8"))
+        catalogues = disk.get("catalogues", {}) if isinstance(disk, dict) else {}
+        for envelope in catalogues.values() if isinstance(catalogues, dict) else []:
+            payload = envelope.get("payload") if isinstance(envelope, dict) else None
+            rows = payload.get("results", []) if isinstance(payload, dict) else []
+            if isinstance(rows, list):
+                candidates.extend(row for row in rows if isinstance(row, dict))
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return candidates
+
+
+@app.get("/api/search/metadata/batch")
+async def api_search_metadata_batch(
+    titles: list[str] = Query(..., min_length=2, max_length=180),
+):
+    """Resolve search-card metadata from persistent VPS catalogue JSON by exact title/year."""
+    requested = list(dict.fromkeys(
+        re.sub(r"\s+", " ", str(value or "")).strip()
+        for value in titles[:80] if str(value or "").strip()
+    ))
+    if not requested:
+        return {"status": "ready", "source": "VPS catalogue cache", "results": []}
+
+    candidates = []
+    seen_rows: set[tuple[str, int, str, str]] = set()
+    for raw in _read_search_metadata_catalogue_rows():
+        item = _search_metadata_cache_candidate(raw)
+        if not item:
+            continue
+        identity = (
+            _normalize_title(item["title"]),
+            int(item.get("year") or 0),
+            str(item.get("mediaType") or "movie"),
+            str(item.get("tmdbId") or ""),
+        )
+        if identity not in seen_rows:
+            seen_rows.add(identity)
+            candidates.append(item)
+
+    matched: list[dict[str, Any]] = []
+    seen_matches: set[tuple[str, int, str]] = set()
+    for requested_title in requested:
+        year_match = re.search(r"\s*\(?((?:19|20)\d{2})\)?\s*$", requested_title)
+        requested_year = int(year_match.group(1)) if year_match else 0
+        clean_title = re.sub(r"\s*\(?((?:19|20)\d{2})\)?\s*$", "", requested_title).strip()
+        target = _normalize_title(clean_title)
+        if not target:
+            continue
+        options = [item for item in candidates if _normalize_title(item["title"]) == target]
+        same_year = [item for item in options if int(item.get("year") or 0) == requested_year] if requested_year else []
+        unknown_year = [item for item in options if not int(item.get("year") or 0)]
+        if same_year:
+            selected = same_year
+        elif unknown_year:
+            selected = unknown_year if len(unknown_year) == 1 else []
+        elif not requested_year and options:
+            selected = options
+        elif len(options) == 1:
+            selected = options
+        else:
+            selected = []
+        if not selected:
+            continue
+        selected.sort(key=lambda item: (
+            bool(item.get("overview")),
+            bool(item.get("tmdbId")),
+            float(item.get("rating") or 0),
+        ), reverse=True)
+        best = selected[0]
+        match_key = (
+            _normalize_title(best["title"]),
+            int(best.get("year") or 0),
+            str(best.get("mediaType") or "movie"),
+        )
+        if match_key not in seen_matches:
+            seen_matches.add(match_key)
+            matched.append(best)
+
+    return {
+        "status": "ready",
+        "source": "VPS catalogue cache",
+        "requested": len(requested),
+        "matched": len(matched),
+        "results": matched,
+    }
+
+
 @app.get("/api/search")
 async def api_search(q: str = Query(..., min_length=1), limit: int = Query(50, ge=1, le=50)):
     return await search_1337x(q, limit)
