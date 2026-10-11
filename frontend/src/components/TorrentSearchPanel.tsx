@@ -1573,20 +1573,23 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             aria-label={isSearching ? 'Cancel search' : 'Search'}
             title={isSearching ? 'Cancel search' : 'Search'}
             className={[
-              'w-10 sm:w-auto px-2 sm:px-4 py-2 rounded-lg sm:rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition',
+              'group relative isolate overflow-hidden w-10 sm:w-auto min-h-10 px-2.5 sm:px-5 py-2 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-2 transition-all duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 active:scale-[0.97]',
               isSearching
-                ? 'bg-rose-500 hover:bg-rose-400 text-white'
-                : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950'
+                ? 'border border-rose-300/70 bg-rose-500 text-white shadow-[0_0_0_1px_rgba(244,63,94,0.18),0_0_18px_rgba(244,63,94,0.20)] hover:bg-rose-400 hover:shadow-[0_0_24px_rgba(244,63,94,0.34)] focus-visible:ring-rose-300'
+                : 'border border-cyan-300/60 bg-cyan-400 text-slate-950 shadow-[0_0_0_1px_rgba(34,211,238,0.12)] hover:-translate-y-0.5 hover:border-cyan-200 hover:bg-cyan-300 hover:shadow-[0_0_22px_rgba(34,211,238,0.36)] focus-visible:ring-cyan-300'
             ].join(' ')}
           >
+            <span className="pointer-events-none absolute inset-0 -z-10 rounded-xl opacity-0 transition-opacity duration-200 group-hover:opacity-100"
+              style={{ background: isSearching ? 'linear-gradient(110deg, rgba(255,255,255,0.10), transparent 55%)' : 'linear-gradient(110deg, rgba(255,255,255,0.24), transparent 55%)' }}
+            />
             {isSearching ? (
               <>
-                <X className="w-4 h-4" />
+                <X className="h-4 w-4 shrink-0 transition-transform duration-200 group-hover:rotate-90" />
                 <span className="hidden sm:inline">Cancel</span>
               </>
             ) : (
               <>
-                <Search className="w-4 h-4" />
+                <Search className="h-4 w-4 shrink-0 transition-transform duration-200 group-hover:scale-110" />
                 <span className="hidden sm:inline">Search</span>
               </>
             )}
