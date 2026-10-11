@@ -4265,8 +4265,8 @@ async def _cinemeta_poster_lookup(title: str, year: str = "") -> str | None:
 
 
 async def _tmdb_poster_lookup(title: str, year: str = "") -> str | None:
-    """Resolve a movie poster from TMDB using an exact title and release-year match."""
-    if not TMDB_READ_ACCESS_TOKEN and not TMDB_API_KEY:
+    """Resolve a movie poster through the shared rotating TMDB credential pool."""
+    if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
         return None
 
     clean_title = str(title or "").strip()
@@ -4276,59 +4276,43 @@ async def _tmdb_poster_lookup(title: str, year: str = "") -> str | None:
 
     aliases = _poster_title_aliases(clean_title, clean_year)
     wanted_titles = {_poster_normalize_title(alias) for alias in aliases if alias}
-    headers = {"Accept": "application/json"}
-    params_base: dict[str, Any] = {
-        "include_adult": "false",
-        "language": "en-US",
-        "page": 1,
-    }
-    if TMDB_READ_ACCESS_TOKEN:
-        headers["Authorization"] = "Bearer " + TMDB_READ_ACCESS_TOKEN
-    else:
-        params_base["api_key"] = TMDB_API_KEY
+    params_base: dict[str, Any] = {"include_adult": "false", "language": "en-US", "page": 1}
     if clean_year.isdigit() and len(clean_year) == 4:
         params_base["year"] = clean_year
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(4.5, connect=2.5), follow_redirects=True) as client:
-            for alias in aliases[:4]:
-                try:
-                    response = await client.get(
-                        f"{TMDB_API_BASE}/search/movie",
-                        params={**params_base, "query": alias},
-                        headers=headers,
-                    )
-                    if response.status_code != 200:
-                        continue
-                    data = response.json()
-                except (httpx.HTTPError, ValueError):
+        for alias in aliases[:4]:
+            try:
+                data = await _tmdb_get_json("search/movie", {**params_base, "query": alias})
+            except Exception as exc:
+                logger.debug("TMDB poster search failed for alias '%s': %s", alias, type(exc).__name__)
+                continue
+
+            candidates: list[tuple[float, str]] = []
+            for row in data.get("results") or []:
+                if not isinstance(row, dict):
                     continue
+                name = str(row.get("title") or row.get("original_title") or "").strip()
+                normalized = _poster_normalize_title(name)
+                release_date = str(row.get("release_date") or "").strip()
+                candidate_year = release_date[:4] if re.match(r"^\\d{4}-\\d{2}-\\d{2}$", release_date) else ""
+                poster_path = str(row.get("poster_path") or "").strip()
+                if not name or not poster_path or normalized not in wanted_titles:
+                    continue
+                if clean_year and candidate_year != clean_year:
+                    continue
+                score = 100.0
+                if clean_year and candidate_year == clean_year:
+                    score += 100
+                score += float(row.get("vote_average") or 0)
+                score += min(float(row.get("vote_count") or 0), 10000) / 1000
+                candidates.append((score, poster_path))
 
-                candidates: list[tuple[float, str]] = []
-                for row in data.get("results") or []:
-                    if not isinstance(row, dict):
-                        continue
-                    name = str(row.get("title") or row.get("original_title") or "").strip()
-                    normalized = _poster_normalize_title(name)
-                    release_date = str(row.get("release_date") or "").strip()
-                    candidate_year = release_date[:4] if re.match(r"^\d{4}-\d{2}-\d{2}$", release_date) else ""
-                    poster_path = str(row.get("poster_path") or "").strip()
-                    if not name or not poster_path or normalized not in wanted_titles:
-                        continue
-                    if clean_year and candidate_year != clean_year:
-                        continue
-                    score = 100.0
-                    if clean_year and candidate_year == clean_year:
-                        score += 100
-                    score += float(row.get("vote_average") or 0)
-                    score += min(float(row.get("vote_count") or 0), 10000) / 1000
-                    candidates.append((score, poster_path))
-
-                if candidates:
-                    candidates.sort(key=lambda item: item[0], reverse=True)
-                    return TMDB_IMAGE_BASE + candidates[0][1]
+            if candidates:
+                candidates.sort(key=lambda item: item[0], reverse=True)
+                return TMDB_IMAGE_BASE + candidates[0][1]
     except Exception as exc:
-        logger.debug("TMDB poster lookup failed for '%s (%s)': %s", clean_title, clean_year, exc)
+        logger.debug("TMDB poster lookup failed for '%s (%s)': %s", clean_title, clean_year, type(exc).__name__)
     return None
 
 
