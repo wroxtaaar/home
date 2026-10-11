@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { api, API_BASE, MovieCatalogueItem, MovieCatalogueKey, MovieCataloguePage, MovieOttAvailability, MovieOttProvider, TorrentSearchResult } from '../api/client.ts';
 import { formatBytes } from '../utils/formatters.ts';
-import searchLimits from '../../search_limits.json';
+import searchLimits from '../../../search_limits.json';
 
 type MovieOttCardState = MovieOttAvailability | { status: 'loading' | 'error'; message?: string };
 
