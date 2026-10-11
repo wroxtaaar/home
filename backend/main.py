@@ -194,6 +194,7 @@ TMDB_SEARCH_METADATA_CACHE_FILE = Path(os.getenv("TMDB_SEARCH_METADATA_CACHE_FIL
 TMDB_SEARCH_METADATA_QUERY_TTL_SECONDS = max(3600, int(os.getenv("TMDB_SEARCH_METADATA_QUERY_TTL_SECONDS", str(30 * 24 * 60 * 60))))
 IMDB_RATING_CACHE_FILE = Path(os.getenv("IMDB_RATING_CACHE_FILE", "/app/data/imdb_rating_cache.json"))
 IMDB_RATING_CACHE_TTL_SECONDS = max(86400, int(os.getenv("IMDB_RATING_CACHE_TTL_SECONDS", str(30 * 24 * 60 * 60))))
+IMDB_RATING_LOOKUP_VERSION = 2
 _OMDB_HTTP_CLIENT: httpx.AsyncClient | None = None
 _OMDB_REQUEST_SEMAPHORE = asyncio.Semaphore(4)
 _OMDB_RATE_LIMITED_UNTIL = 0.0
@@ -8936,8 +8937,9 @@ def _read_search_metadata_catalogue_rows() -> list[dict[str, Any]]:
     return candidates
 
 
-def _imdb_rating_cache_key(title: str, year: int = 0) -> str:
-    return f"{_normalize_synopsis_match_title(title)}|{int(year or 0)}"
+def _imdb_rating_cache_key(title: str, year: int = 0, media_type: str = "movie") -> str:
+    resolved_type = "tv" if str(media_type or "movie").casefold() in {"tv", "series"} else "movie"
+    return f"{resolved_type}|{_normalize_synopsis_match_title(title)}|{int(year or 0)}"
 
 
 def _parse_imdb_rating_title(value: str) -> tuple[str, int]:
@@ -8994,79 +8996,168 @@ async def _save_imdb_rating_cache_record(record: dict[str, Any]) -> None:
             logger.warning("Could not persist IMDb rating cache: %s", exc)
 
 
-async def _fetch_imdb_rating(title: str, year: int, cache_key: str) -> dict[str, Any]:
+async def _fetch_imdb_rating(
+    title: str,
+    year: int,
+    cache_key: str,
+    media_type: str = "movie",
+) -> dict[str, Any]:
     global _OMDB_HTTP_CLIENT, _OMDB_RATE_LIMITED_UNTIL
     keys = _split_env_keys(os.getenv("OMDB_API_KEYS", ""), os.getenv("OMDB_API_KEY", ""))
     now = int(time.time())
-    base = {"cacheKey": cache_key, "title": title, "year": year or None, "checkedAt": now}
+    normalized_type = "tv" if str(media_type or "movie").casefold() in {"tv", "series"} else "movie"
+    omdb_type = "series" if normalized_type == "tv" else "movie"
+    base = {
+        "cacheKey": cache_key,
+        "title": title,
+        "year": year or None,
+        "mediaType": normalized_type,
+        "checkedAt": now,
+        "lookupVersion": IMDB_RATING_LOOKUP_VERSION,
+    }
     if not keys:
-        return {**base, "status": "unavailable"}
+        return {**base, "status": "unavailable", "reason": "OMDb API key is not configured"}
     if time.time() < _OMDB_RATE_LIMITED_UNTIL:
         return {**base, "status": "rate_limited", "cacheable": False}
 
     provider = "omdb"
-    start = _PROVIDER_KEY_CURSORS.get(provider, 0) % len(keys)
-    ordered = keys[start:] + keys[:start]
-    _PROVIDER_KEY_CURSORS[provider] = (start + 1) % len(keys)
+    start_index = _PROVIDER_KEY_CURSORS.get(provider, 0) % len(keys)
+    ordered = keys[start_index:] + keys[:start_index]
+    _PROVIDER_KEY_CURSORS[provider] = (start_index + 1) % len(keys)
     timeout = httpx.Timeout(5.0, connect=2.5)
+    target = _normalize_synopsis_match_title(title)
 
-    for key in ordered:
-        if not _provider_key_available(provider, key):
-            continue
+    async def call_omdb(key: str, params: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+        global _OMDB_HTTP_CLIENT, _OMDB_RATE_LIMITED_UNTIL
         try:
             if _OMDB_HTTP_CLIENT is None or _OMDB_HTTP_CLIENT.is_closed:
                 _OMDB_HTTP_CLIENT = httpx.AsyncClient(
                     timeout=timeout,
                     follow_redirects=True,
-                    limits=httpx.Limits(max_connections=8, max_keepalive_connections=4, keepalive_expiry=30.0),
+                    limits=httpx.Limits(
+                        max_connections=8,
+                        max_keepalive_connections=4,
+                        keepalive_expiry=30.0,
+                    ),
                 )
-            params: dict[str, Any] = {"apikey": key, "t": title, "type": "movie", "r": "json"}
-            if 1870 <= year <= 2100:
-                params["y"] = year
             async with _OMDB_REQUEST_SEMAPHORE:
-                response = await _OMDB_HTTP_CLIENT.get("https://www.omdbapi.com/", params=params, timeout=timeout)
+                response = await _OMDB_HTTP_CLIENT.get(
+                    "https://www.omdbapi.com/",
+                    params={"apikey": key, **params, "r": "json"},
+                    timeout=timeout,
+                )
         except httpx.HTTPError as exc:
-            logger.info("OMDb rating lookup failed for %r (%s)", title, type(exc).__name__)
-            continue
+            logger.info("OMDb rating lookup failed for %r (%s): %s", title, type(exc).__name__)
+            return None, "transient"
 
         if response.status_code == 429:
             _provider_key_failure(provider, key, _retry_after_seconds(response), "HTTP 429")
             _OMDB_RATE_LIMITED_UNTIL = time.time() + 1800
-            return {**base, "status": "rate_limited", "cacheable": False}
+            return None, "rate_limited"
         if response.status_code in {401, 403}:
             _provider_key_failure(provider, key, 3600, f"HTTP {response.status_code}")
-            continue
+            return None, "invalid_key"
         if response.status_code >= 500:
-            continue
+            return None, "transient"
         if response.status_code >= 400:
-            return {**base, "status": "unavailable", "cacheable": False}
+            return None, "unavailable"
         try:
             payload = response.json()
         except (ValueError, TypeError):
-            return {**base, "status": "unavailable", "cacheable": False}
+            return None, "unavailable"
 
         if str(payload.get("Response") or "").casefold() == "false":
             error = str(payload.get("Error") or "")
             lowered_error = error.casefold()
             if "request limit reached" in lowered_error:
-                # Do not try another key to bypass OMDb's account/day quota.
+                # Do not try another key to bypass the account's daily quota.
                 _OMDB_RATE_LIMITED_UNTIL = time.time() + 3600
-                return {**base, "status": "rate_limited", "cacheable": False}
+                return None, "rate_limited"
             if "invalid api key" in lowered_error:
                 _provider_key_failure(provider, key, 3600, "invalid API key")
-                continue
-            if "movie not found" in lowered_error or "not found" in lowered_error:
-                return {**base, "status": "not_found"}
-            return {**base, "status": "not_found"}
+                return None, "invalid_key"
+        return payload, "ok"
+
+    for key in ordered:
+        if not _provider_key_available(provider, key):
+            continue
+
+        params: dict[str, Any] = {"t": title, "type": omdb_type}
+        if 1870 <= year <= 2100:
+            params["y"] = year
+        payload, state = await call_omdb(key, params)
+        if state == "rate_limited":
+            return {**base, "status": "rate_limited", "reason": "OMDb rate limit reached", "cacheable": False}
+        if state in {"transient", "invalid_key"}:
+            continue
+        if state != "ok" or payload is None:
+            return {**base, "status": "unavailable", "reason": "OMDb request failed", "cacheable": False}
+
+        if str(payload.get("Response") or "").casefold() == "false":
+            error = str(payload.get("Error") or "")
+            lowered_error = error.casefold()
+            if "movie not found" in lowered_error or "series not found" in lowered_error or "not found" in lowered_error:
+                # Title lookups can miss a valid entry; use OMDb search and then
+                # fetch details by IMDb ID, but only accept an exact title/year.
+                search_params: dict[str, Any] = {"s": title, "type": omdb_type}
+                if 1870 <= year <= 2100:
+                    search_params["y"] = year
+                search_payload, search_state = await call_omdb(key, search_params)
+                if search_state == "rate_limited":
+                    return {**base, "status": "rate_limited", "reason": "OMDb rate limit reached", "cacheable": False}
+                if search_state in {"transient", "invalid_key"}:
+                    continue
+                if search_state != "ok" or not search_payload:
+                    return {**base, "status": "unavailable", "reason": "OMDb search failed", "cacheable": False}
+                candidates: list[tuple[int, dict[str, Any]]] = []
+                for row in search_payload.get("Search") or []:
+                    if not isinstance(row, dict):
+                        continue
+                    candidate_title = str(row.get("Title") or "").strip()
+                    candidate_id = str(row.get("imdbID") or "").strip()
+                    if not candidate_title or not re.fullmatch(r"tt\d+", candidate_id):
+                        continue
+                    if _normalize_synopsis_match_title(candidate_title) != target:
+                        continue
+                    year_match = re.search(r"\b((?:18|19|20|21)\d{2})\b", str(row.get("Year") or ""))
+                    candidate_year = int(year_match.group(1)) if year_match else 0
+                    if year and candidate_year and candidate_year != year:
+                        continue
+                    if year and not candidate_year:
+                        continue
+                    candidates.append((0 if year and candidate_year == year else 1, row))
+                if not candidates:
+                    return {**base, "status": "not_found", "reason": "OMDb returned no exact title/year match"}
+                candidates.sort(key=lambda item: item[0])
+                selected_id = str(candidates[0][1].get("imdbID") or "").strip()
+                payload, details_state = await call_omdb(key, {"i": selected_id, "type": omdb_type})
+                if details_state == "rate_limited":
+                    return {**base, "status": "rate_limited", "reason": "OMDb rate limit reached", "cacheable": False}
+                if details_state in {"transient", "invalid_key"}:
+                    continue
+                if details_state != "ok" or payload is None or str(payload.get("Response") or "").casefold() == "false":
+                    return {**base, "status": "unavailable", "reason": "OMDb title details lookup failed", "cacheable": False}
+            else:
+                return {**base, "status": "not_found", "reason": error or "OMDb returned no match"}
 
         returned_title = str(payload.get("Title") or "").strip()
         returned_year_match = re.search(r"\b((?:18|19|20|21)\d{2})\b", str(payload.get("Year") or ""))
         returned_year = int(returned_year_match.group(1)) if returned_year_match else 0
-        target = _normalize_synopsis_match_title(title)
         candidate = _normalize_synopsis_match_title(returned_title)
-        if not returned_title or candidate != target or (year and returned_year != year):
+        returned_type = str(payload.get("Type") or "").casefold()
+        wanted_type = "series" if normalized_type == "tv" else "movie"
+        if (
+            not returned_title
+            or candidate != target
+            or (year and returned_year != year)
+            or (returned_type and returned_type != wanted_type)
+        ):
             # Never display another title's score just because OMDb returned a nearby match.
-            return {**base, "status": "not_found"}
+            return {
+                **base,
+                "status": "not_found",
+                "reason": "OMDb title/year/type did not exactly match the requested entry",
+            }
 
         imdb_id = str(payload.get("imdbID") or "").strip()
         raw_rating = str(payload.get("imdbRating") or "").strip()
@@ -9087,25 +9178,30 @@ async def _fetch_imdb_rating(title: str, year: int, cache_key: str) -> dict[str,
         _provider_key_success(provider, key)
         return record
 
-    return {**base, "status": "unavailable", "cacheable": False}
+    return {**base, "status": "unavailable", "reason": "No usable OMDb key or transient upstream error", "cacheable": False}
 
-
-async def _get_imdb_rating_record(title: str, year: int) -> dict[str, Any]:
-    cache_key = _imdb_rating_cache_key(title, year)
+async def _get_imdb_rating_record(title: str, year: int, media_type: str = "movie") -> dict[str, Any]:
+    normalized_type = "tv" if str(media_type or "movie").casefold() in {"tv", "series"} else "movie"
+    cache_key = _imdb_rating_cache_key(title, year, normalized_type)
     cached = _load_imdb_rating_cache().get(cache_key)
     now = int(time.time())
     if cached:
         try:
             checked_at = int(cached.get("checkedAt") or 0)
+            lookup_version = int(cached.get("lookupVersion") or 0)
         except (TypeError, ValueError):
-            checked_at = 0
-        if checked_at and now - checked_at < IMDB_RATING_CACHE_TTL_SECONDS:
+            checked_at = lookup_version = 0
+        if (
+            lookup_version >= IMDB_RATING_LOOKUP_VERSION
+            and checked_at
+            and now - checked_at < IMDB_RATING_CACHE_TTL_SECONDS
+        ):
             return cached
 
     task = _IMDB_RATING_INFLIGHT.get(cache_key)
     if task is None or task.done():
         async def fetch_and_save() -> dict[str, Any]:
-            result = await _fetch_imdb_rating(title, year, cache_key)
+            result = await _fetch_imdb_rating(title, year, cache_key, normalized_type)
             if result.get("status") in {"found", "not_found"} and result.get("cacheable", True):
                 result.pop("cacheable", None)
                 await _save_imdb_rating_cache_record(result)
@@ -9119,31 +9215,39 @@ async def _get_imdb_rating_record(title: str, year: int) -> dict[str, Any]:
         if task.done() and _IMDB_RATING_INFLIGHT.get(cache_key) is task:
             _IMDB_RATING_INFLIGHT.pop(cache_key, None)
 
-
 @app.get("/api/catalogue/imdb-ratings")
 async def api_catalogue_imdb_ratings(
     titles: list[str] = Query(..., min_length=1, max_length=80),
+    media_types: list[str] = Query(default=[]),
 ):
-    """Return cached IMDb ratings for movie titles; provider calls never block catalogue loading."""
-    requested: dict[str, tuple[str, int, str]] = {}
-    for raw in titles[:80]:
+    """Return cached IMDb ratings for requested movie or TV titles."""
+    requested: dict[str, tuple[str, int, str, str]] = {}
+    for index, raw in enumerate(titles[:80]):
         title, year = _parse_imdb_rating_title(raw)
         if not title:
             continue
-        key = _imdb_rating_cache_key(title, year)
-        requested.setdefault(key, (title, year, raw))
+        supplied_type = media_types[index] if index < len(media_types) else "movie"
+        media_type = "tv" if str(supplied_type or "movie").casefold() in {"tv", "series"} else "movie"
+        key = _imdb_rating_cache_key(title, year, media_type)
+        requested.setdefault(key, (title, year, media_type, raw))
     if not requested:
         return {"status": "ready", "results": []}
 
     results = await asyncio.gather(
-        *(_get_imdb_rating_record(title, year) for title, year, _raw in requested.values()),
+        *(
+            _get_imdb_rating_record(title, year, media_type)
+            for title, year, media_type, _raw in requested.values()
+        ),
         return_exceptions=True,
     )
     output = []
-    for (title, year, raw), result in zip(requested.values(), results):
+    for (title, year, media_type, raw), result in zip(requested.values(), results):
         if isinstance(result, Exception):
             logger.info("IMDb rating lookup failed for %r (%s)", title, type(result).__name__)
-            output.append({"query": raw, "title": title, "year": year or None, "status": "unavailable"})
+            output.append({
+                "query": raw, "title": title, "year": year or None,
+                "mediaType": media_type, "status": "unavailable",
+            })
             continue
         output.append({
             **result,
@@ -9151,6 +9255,7 @@ async def api_catalogue_imdb_ratings(
             # Preserve the requested title/year for reliable client-side card matching.
             "title": title,
             "year": year or result.get("year"),
+            "mediaType": media_type,
         })
     statuses = {str(item.get("status") or "") for item in output}
     return {
@@ -9159,7 +9264,6 @@ async def api_catalogue_imdb_ratings(
         "matched": sum(1 for item in output if item.get("status") == "found" and item.get("imdbRating") is not None),
         "results": output,
     }
-
 
 @app.get("/api/search/metadata/batch")
 async def api_search_metadata_batch(
