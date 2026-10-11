@@ -38,22 +38,75 @@ function isPresetSearchLabel(value: string): boolean {
   ]).has(normalized);
 }
 
+function normalizeProviderLogoUrl(value: unknown): string {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/^https?:\/\//i.test(raw)) return raw;
+  if (raw.startsWith('//')) return 'https:' + raw;
+  if (raw.startsWith('/')) return 'https://image.tmdb.org/t/p/w92' + raw;
+  return '';
+}
+
+function providerIcon(
+  provider: { name: string; logoUrl?: string; webUrl?: string },
+  key: string,
+  sizeClass = 'h-7 w-7',
+): React.ReactNode {
+  const name = displayOttProviderName(provider.name);
+  const initials = name
+    .replace(/\b(video|streaming|entertainment|network)\b/gi, '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map(part => part[0])
+    .join('')
+    .toUpperCase() || name.slice(0, 1).toUpperCase();
+  const logoUrl = normalizeProviderLogoUrl(provider.logoUrl);
+  const icon = (
+    <span
+      className={'relative inline-flex ' + sizeClass + ' shrink-0 items-center justify-center overflow-hidden rounded-md border border-slate-700 bg-slate-950 text-[10px] font-bold text-slate-300'}
+      title={name}
+      aria-label={name}
+    >
+      <span aria-hidden="true">{initials}</span>
+      {logoUrl && (
+        <img
+          src={logoUrl}
+          alt=""
+          loading="lazy"
+          className="absolute inset-0 h-full w-full bg-slate-950 object-contain p-0.5"
+          onError={event => { event.currentTarget.style.display = 'none'; }}
+        />
+      )}
+    </span>
+  );
+  return provider.webUrl ? (
+    <a
+      key={key}
+      href={provider.webUrl}
+      target="_blank"
+      rel="noreferrer"
+      title={name}
+      aria-label={'Open ' + name}
+      className="inline-flex rounded-md outline-offset-2 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
+    >
+      {icon}
+    </a>
+  ) : <span key={key} className="inline-flex" title={name}>{icon}</span>;
+}
+
 function providerNames(providers: MovieOttProvider[]): React.ReactNode {
   const shown = providers.slice(0, 3);
   return (
-    <>
-      {shown.map((provider, index) => (
-        <React.Fragment key={String(provider.providerId ?? provider.name) + '-' + index}>
-          {index > 0 ? ', ' : ''}
-          {provider.webUrl ? (
-            <a href={provider.webUrl} target="_blank" rel="noreferrer" className="text-cyan-300 underline underline-offset-2 hover:text-cyan-200">
-              {provider.name}
-            </a>
-          ) : provider.name}
-        </React.Fragment>
-      ))}
-      {providers.length > 3 ? ' +' + (providers.length - 3) : ''}
-    </>
+    <span className="inline-flex flex-wrap items-center gap-1.5 align-middle">
+      {shown.map((provider, index) =>
+        providerIcon(provider, String(provider.providerId ?? provider.name) + '-' + index)
+      )}
+      {providers.length > shown.length && (
+        <span className="text-[10px] text-slate-400">+{providers.length - shown.length}</span>
+      )}
+    </span>
   );
 }
 
@@ -287,7 +340,7 @@ function displayOttProviderName(name: string): string {
     .trim();
 }
 
-function uniqueOttProviders<T extends { name: string; type?: string; webUrl?: string }>(providers: T[]): T[] {
+function uniqueOttProviders<T extends { name: string; type?: string; webUrl?: string; logoUrl?: string; providerId?: number | string }>(providers: T[]): T[] {
   const unique = new Map<string, T>();
   providers.forEach(provider => {
     const key = normalizeOttProviderName(provider.name);
@@ -323,7 +376,7 @@ function normalizeSavedOttProviders(
       region: String(item?.region || fallbackRegion || 'IN'),
       type: String(item?.type || fallbackType || 'streaming'),
       webUrl: item?.webUrl || item?.web_url || item?.url || undefined,
-      logoUrl: item?.logoUrl || item?.logo_url || item?.logo_path || undefined,
+      logoUrl: normalizeProviderLogoUrl(item?.logoUrl || item?.logo_url || item?.logo_path || item?.logo || item?.image_url) || undefined,
     }];
   });
 }
@@ -3107,14 +3160,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
                       {compactProviders.length > 0 ? (
                         <div className="flex flex-wrap gap-1" aria-label={'Streaming services for ' + group.title}>
-                          {compactProviders.slice(0, 5).map((provider, providerIndex) => (
-                            <span
-                              key={String(provider.name || providerIndex).toLowerCase()}
-                              className="rounded-full border border-cyan-900/70 bg-cyan-950/40 px-1.5 py-0.5 text-[10px] leading-4 text-cyan-200"
-                            >
-                              {displayOttProviderName(provider.name)}
-                            </span>
-                          ))}
+                          {compactProviders.slice(0, 5).map((provider, providerIndex) =>
+                            providerIcon(provider, String(provider.providerId ?? provider.name ?? providerIndex).toLowerCase())
+                          )}
                         </div>
                       ) : (
                         <div className="text-[10px] leading-relaxed text-slate-500">
@@ -3322,21 +3370,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               if (providersToShow.length > 0 && (matchingTitles.length > 0 || availability.status === 'ready')) {
                                 return (
                                   <div className="mt-2 flex flex-wrap gap-1" aria-label={`Streaming services for ${group.title}`}>
-                                    {providersToShow.map((provider, providerIndex) => {
-                                      const name = displayOttProviderName(provider.name);
-                                      return (
-                                        <a
-                                          key={name.toLowerCase() || String(providerIndex)}
-                                          href={provider.webUrl || undefined}
-                                          target={provider.webUrl ? '_blank' : undefined}
-                                          rel={provider.webUrl ? 'noreferrer' : undefined}
-                                          className="rounded-full border border-cyan-900/70 bg-cyan-950/40 px-1.5 py-0.5 text-[10px] leading-4 text-cyan-200 hover:border-cyan-600"
-                                          title={name || 'Streaming service'}
-                                        >
-                                          {name}
-                                        </a>
-                                      );
-                                    })}
+                                    {providersToShow.map((provider, providerIndex) =>
+                                      providerIcon(provider, String(provider.providerId ?? provider.name ?? providerIndex).toLowerCase())
+                                    )}
                                   </div>
                                 );
                               }
