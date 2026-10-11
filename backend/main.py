@@ -192,7 +192,7 @@ TMDB_COMPANY_CACHE_SECONDS = max(3600, int(os.getenv("TMDB_COMPANY_CACHE_SECONDS
 TMDB_CATALOGUE_CACHE_FILE = Path(os.getenv("TMDB_CATALOGUE_CACHE_FILE", "/app/data/tmdb_movie_catalogue_cache.json"))
 TMDB_SEARCH_METADATA_CACHE_FILE = Path(os.getenv("TMDB_SEARCH_METADATA_CACHE_FILE", "/app/data/tmdb_search_metadata_cache.json"))
 TMDB_SEARCH_METADATA_QUERY_TTL_SECONDS = max(3600, int(os.getenv("TMDB_SEARCH_METADATA_QUERY_TTL_SECONDS", str(30 * 24 * 60 * 60))))
-TMDB_SYNOPSIS_LOOKUP_VERSION = 4
+TMDB_SYNOPSIS_LOOKUP_VERSION = 5
 SYNOPSIS_CACHE_RETRY_INTERVAL_SECONDS = max(300, int(os.getenv("SYNOPSIS_CACHE_RETRY_INTERVAL_SECONDS", "900")))
 TMDB_OTT_CACHE_SECONDS = max(3600, int(os.getenv("TMDB_OTT_CACHE_SECONDS", str(24 * 60 * 60))))
 TMDB_OTT_CACHE_FILE = Path(os.getenv("TMDB_OTT_CACHE_FILE", "/app/data/tmdb_ott_availability_cache.json"))
@@ -5494,6 +5494,16 @@ def _write_synopsis_cache(path: Path, payload: dict[str, Any]) -> None:
                 pass
 
 
+def _normalize_synopsis_match_title(value: Any) -> str:
+    """Normalize harmless catalogue/provider title variants before matching metadata."""
+    normalized = _normalize_title(str(value or ""))
+    # Some sources omit a leading article and spell numerals as words; normalize
+    # these common variants without allowing broad fuzzy matches to unrelated films.
+    normalized = re.sub(r"^(?:the|a|an)\s+", "", normalized)
+    normalized = re.sub(r"\bfour\b", "4", normalized)
+    return normalized
+
+
 async def _lookup_watchmode_catalogue_synopsis(
     title: str,
     year: int,
@@ -5600,13 +5610,13 @@ async def _lookup_watchmode_catalogue_synopsis(
         return None, False
 
     title_results = data.get("title_results", []) if isinstance(data, dict) else []
-    target = _normalize_title(query)
+    target = _normalize_synopsis_match_title(query)
     candidates: list[tuple[int, dict[str, Any]]] = []
     for candidate in title_results if isinstance(title_results, list) else []:
         if not isinstance(candidate, dict) or not candidate.get("id"):
             continue
         candidate_title = str(candidate.get("name") or candidate.get("title") or "").strip()
-        if not candidate_title or _normalize_title(candidate_title) != target:
+        if not candidate_title or _normalize_synopsis_match_title(candidate_title) != target:
             continue
         try:
             candidate_year = int(candidate.get("year") or 0)
@@ -5738,11 +5748,11 @@ async def _lookup_catalogue_synopsis(
         return watchmode_metadata
 
     rows = [row for row in (result.get("results") or []) if isinstance(row, dict) and row.get("id")]
-    target = _normalize_title(query)
+    target = _normalize_synopsis_match_title(query)
     candidates: list[tuple[int, int, dict[str, Any]]] = []
     for row in rows:
         candidate_title = str(row.get("title") or row.get("original_title") or "").strip()
-        if _normalize_title(candidate_title) != target:
+        if _normalize_synopsis_match_title(candidate_title) != target:
             continue
         release_date = str(row.get("release_date") or "")
         try:
