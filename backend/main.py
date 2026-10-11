@@ -6760,6 +6760,33 @@ def _availability_normalize_title(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
 
 
+def _availability_title_is_relevant(query: str, title: Any) -> bool:
+    """Reject distant partial-title matches while allowing modest subtitle/region suffixes."""
+    target = _availability_normalize_title(query)
+    candidate = _availability_normalize_title(title)
+    if not target or not candidate:
+        return False
+    if target == candidate:
+        return True
+    # Containment is useful for regional editions and subtitles, but not arbitrary
+    # longer titles that happen to begin with the requested words.
+    max_extra = max(4, int(len(target) * 0.5))
+    if target in candidate:
+        return len(candidate) - len(target) <= max_extra
+    if candidate in target:
+        return len(target) - len(candidate) <= max_extra
+    return False
+
+
+def _availability_canonical_type(value: Any) -> str:
+    kind = str(value or "").casefold().replace("-", "_").replace(" ", "_")
+    if any(token in kind for token in ("tv", "series", "show", "episode")):
+        return "tv"
+    if any(token in kind for token in ("movie", "film", "feature")):
+        return "movie"
+    return kind or "unknown"
+
+
 async def _fallback_tvmaze_search(query: str, timeout: httpx.Timeout) -> list[dict[str, Any]]:
     """Metadata-only fallback used only when Watchmode and TMDB find no title."""
     cache_key = query.casefold()
@@ -6784,7 +6811,7 @@ async def _fallback_tvmaze_search(query: str, timeout: httpx.Timeout) -> list[di
         if not title:
             continue
         normalized = _availability_normalize_title(title)
-        if normalized != target and target not in normalized and normalized not in target:
+        if not _availability_title_is_relevant(query, title):
             continue
         premiered = str(show.get("premiered") or "")
         network = show.get("network") or show.get("webChannel") or {}
@@ -6827,7 +6854,7 @@ async def _fallback_omdb_search(query: str, timeout: httpx.Timeout) -> list[dict
             if not title or not imdb_id:
                 continue
             normalized = _availability_normalize_title(title)
-            if normalized != target and target not in normalized and normalized not in target:
+            if not _availability_title_is_relevant(query, title):
                 continue
             kind = "tv" if str(row.get("Type") or "").casefold() == "series" else "movie"
             matches.append({
@@ -6869,10 +6896,10 @@ async def api_search_availability(q: str = Query(..., min_length=2, max_length=1
             if response is not None and response.status_code < 400:
                 data = response.json()
                 titles = data.get("title_results", []) if isinstance(data, dict) else []
-                titles = [item for item in titles if isinstance(item, dict) and item.get("id")]
+                titles = [item for item in titles if isinstance(item, dict) and item.get("id")
+                    and _availability_title_is_relevant(query, item.get("name"))]
                 titles.sort(key=lambda item: (
                     _availability_normalize_title(item.get("name")) == target,
-                    target in _availability_normalize_title(item.get("name")),
                     bool(item.get("year")),
                 ), reverse=True)
                 selected, seen_ids = [], set()
@@ -6943,7 +6970,7 @@ async def api_search_availability(q: str = Query(..., min_length=2, max_length=1
                     continue
                 title = str(row.get(title_key) or "").strip()
                 normalized = _availability_normalize_title(title)
-                if not title or (normalized != target and target not in normalized and normalized not in target):
+                if not title or not _availability_title_is_relevant(query, title):
                     continue
                 rows.append(row)
             rows.sort(key=lambda row: (
@@ -6979,7 +7006,7 @@ async def api_search_availability(q: str = Query(..., min_length=2, max_length=1
     deduped: list[dict[str, Any]] = []
     index_by_identity: dict[tuple[str, str], int] = {}
     for match in primary_matches:
-        identity = (str(match.get("type") or "").casefold(),
+        identity = (_availability_canonical_type(match.get("type")),
                     _availability_normalize_title(match.get("title")))
         if identity in index_by_identity:
             existing = deduped[index_by_identity[identity]]
@@ -7016,8 +7043,8 @@ async def api_search_availability(q: str = Query(..., min_length=2, max_length=1
 
     deduped.sort(key=lambda item: (
         _availability_normalize_title(item.get("title")) == target,
-        bool(item.get("year")),
         bool(item.get("providers")),
+        bool(item.get("year")),
     ), reverse=True)
     merged_providers, seen_merged = [], set()
     for match in deduped:
