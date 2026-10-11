@@ -5101,6 +5101,7 @@ async def _build_marvel_catalogue() -> None:
             "resultCount": len(results),
             "results": results,
         }
+        _merge_saved_catalogue_metadata(payload, MARVEL_CATALOGUE_PATH)
         _write_marvel_catalogue(payload)
         _marvel_catalogue_state.update({
             "status": "ready",
@@ -5300,6 +5301,154 @@ def _synopsis_row_identity(item: dict[str, Any]) -> tuple[str, int]:
         if match:
             year = int(match.group(1))
     return _normalize_title(title), year
+
+
+_CATALOGUE_PERSISTENT_METADATA_FIELDS = (
+    "overview",
+    "tmdbId",
+    "tmdbUrl",
+    "releaseDate",
+    "rating",
+    "posterUrl",
+    "backdropUrl",
+    "genres",
+    "synopsisCheckedAt",
+    "synopsisLookupVersion",
+)
+
+
+def _catalogue_metadata_value_present(field: str, value: Any) -> bool:
+    if value in (None, "", []):
+        return False
+    # Zero-value metadata should not prevent a useful saved value being reused.
+    if field in {"tmdbId", "rating", "synopsisCheckedAt", "synopsisLookupVersion"}:
+        try:
+            return float(value) > 0
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
+def _catalogue_metadata_tmdb_id(item: dict[str, Any]) -> int:
+    try:
+        return int(item.get("tmdbId") or item.get("id") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _merge_catalogue_metadata_profile(
+    target: dict[str, Any],
+    source: dict[str, Any],
+) -> None:
+    for field in _CATALOGUE_PERSISTENT_METADATA_FIELDS:
+        value = source.get(field)
+        if (
+            not _catalogue_metadata_value_present(field, target.get(field))
+            and _catalogue_metadata_value_present(field, value)
+        ):
+            target[field] = value
+
+
+def _merge_saved_catalogue_metadata(
+    payload: dict[str, Any],
+    destination_path: Path,
+) -> int:
+    """Carry saved TMDB metadata forward when rebuilding a torrent catalogue.
+
+    Cache rows are matched by TMDB ID first, then by normalized canonical title
+    and release year. Only absent fields are copied, so freshly fetched data wins
+    and an empty synopsis from a torrent provider can never erase a saved one.
+    Metadata is shared across the English/Hindi Marvel and DC cache variants.
+    """
+    fresh_rows = payload.get("results")
+    if not isinstance(fresh_rows, list):
+        return 0
+
+    metadata_by_tmdb_id: dict[int, dict[str, Any]] = {}
+    metadata_by_identity: dict[tuple[str, int], dict[str, Any]] = {}
+
+    def collect_profile(
+        index: dict[Any, dict[str, Any]],
+        key: Any,
+        row: dict[str, Any],
+    ) -> None:
+        if not key:
+            return
+        profile = index.setdefault(key, {})
+        _merge_catalogue_metadata_profile(profile, row)
+
+    seen_paths: set[str] = set()
+    for _name, cache_path in _synopsis_cache_paths():
+        try:
+            canonical_path = str(cache_path.resolve())
+        except OSError:
+            canonical_path = str(cache_path)
+        if canonical_path in seen_paths:
+            continue
+        seen_paths.add(canonical_path)
+
+        try:
+            saved_payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        saved_rows = saved_payload.get("results", []) if isinstance(saved_payload, dict) else []
+        if not isinstance(saved_rows, list):
+            continue
+
+        for saved_row in saved_rows:
+            if not isinstance(saved_row, dict):
+                continue
+            profile = {
+                field: saved_row[field]
+                for field in _CATALOGUE_PERSISTENT_METADATA_FIELDS
+                if _catalogue_metadata_value_present(field, saved_row.get(field))
+            }
+            if not profile:
+                continue
+
+            tmdb_id = _catalogue_metadata_tmdb_id(saved_row)
+            if tmdb_id:
+                collect_profile(metadata_by_tmdb_id, tmdb_id, profile)
+
+            identity = _synopsis_row_identity(saved_row)
+            if identity[0]:
+                collect_profile(metadata_by_identity, identity, profile)
+
+    updated_rows = 0
+    for row in fresh_rows:
+        if not isinstance(row, dict):
+            continue
+
+        row_tmdb_id = _catalogue_metadata_tmdb_id(row)
+        identity = _synopsis_row_identity(row)
+        profile: dict[str, Any] = {}
+
+        if row_tmdb_id and row_tmdb_id in metadata_by_tmdb_id:
+            _merge_catalogue_metadata_profile(profile, metadata_by_tmdb_id[row_tmdb_id])
+
+        identity_profile = metadata_by_identity.get(identity) if identity[0] else None
+        # If both records already have authoritative but conflicting TMDB IDs,
+        # don't transfer the synopsis based on title similarity alone.
+        identity_tmdb_id = _catalogue_metadata_tmdb_id(identity_profile or {})
+        conflicting_ids = bool(row_tmdb_id and identity_tmdb_id and row_tmdb_id != identity_tmdb_id)
+        if identity_profile and not conflicting_ids:
+            _merge_catalogue_metadata_profile(profile, identity_profile)
+
+        before = {
+            field: row.get(field)
+            for field in _CATALOGUE_PERSISTENT_METADATA_FIELDS
+        }
+        _merge_catalogue_metadata_profile(row, profile)
+        if any(row.get(field) != before[field] for field in _CATALOGUE_PERSISTENT_METADATA_FIELDS):
+            updated_rows += 1
+
+    if updated_rows:
+        logger.info(
+            "Preserved previously saved TMDB metadata for %d rows before rebuilding %s",
+            updated_rows,
+            destination_path.name,
+        )
+    return updated_rows
 
 
 def _write_synopsis_cache(path: Path, payload: dict[str, Any]) -> None:
@@ -6016,6 +6165,7 @@ async def _build_extra_catalogue(key: str) -> None:
         results.sort(key=lambda item: (_extra_item_year(item), float(item.get("rating") or 0), int(item.get("seeders") or 0)), reverse=True)
         payload = {"version": config["version"], "builtAt": datetime.now(timezone.utc).isoformat(),
                    "titlesQueried": len(jobs), "movieCount": movie_count, "resultCount": len(results), "results": results}
+        _merge_saved_catalogue_metadata(payload, _EXTRA_CATALOGUE_PATHS[key])
         _write_extra_catalogue(key, payload)
         _extra_catalogue_retry_after.pop(key, None)
         state.update({"status": "ready", "completed": len(jobs), "total": len(jobs), "movieCount": movie_count,
