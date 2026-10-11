@@ -169,6 +169,10 @@ _tmdb_api_connect_failure_until = 0.0
 TMDB_CATALOGUE_CACHE_SECONDS = max(300, int(os.getenv("TMDB_CATALOGUE_CACHE_SECONDS", str(6 * 60 * 60))))
 TMDB_COMPANY_CACHE_SECONDS = max(3600, int(os.getenv("TMDB_COMPANY_CACHE_SECONDS", str(24 * 60 * 60))))
 TMDB_CATALOGUE_CACHE_FILE = Path(os.getenv("TMDB_CATALOGUE_CACHE_FILE", "/app/data/tmdb_movie_catalogue_cache.json"))
+TMDB_SEARCH_METADATA_CACHE_FILE = Path(os.getenv("TMDB_SEARCH_METADATA_CACHE_FILE", "/app/data/tmdb_search_metadata_cache.json"))
+TMDB_SEARCH_METADATA_QUERY_TTL_SECONDS = max(3600, int(os.getenv("TMDB_SEARCH_METADATA_QUERY_TTL_SECONDS", str(30 * 24 * 60 * 60))))
+TMDB_SYNOPSIS_LOOKUP_VERSION = 2
+SYNOPSIS_CACHE_RETRY_INTERVAL_SECONDS = max(300, int(os.getenv("SYNOPSIS_CACHE_RETRY_INTERVAL_SECONDS", "900")))
 TMDB_OTT_CACHE_SECONDS = max(3600, int(os.getenv("TMDB_OTT_CACHE_SECONDS", str(24 * 60 * 60))))
 TMDB_OTT_CACHE_FILE = Path(os.getenv("TMDB_OTT_CACHE_FILE", "/app/data/tmdb_ott_availability_cache.json"))
 _tmdb_ott_cache: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
@@ -5320,6 +5324,7 @@ def _write_synopsis_cache(path: Path, payload: dict[str, Any]) -> None:
 
 
 async def _lookup_catalogue_synopsis(title: str, year: int) -> dict[str, Any] | None:
+    """Resolve and return synopsis data, checking movie details when search omits the overview."""
     query = re.sub(r"\s+", " ", title).strip()
     if not query:
         return None
@@ -5331,6 +5336,8 @@ async def _lookup_catalogue_synopsis(title: str, year: int) -> dict[str, Any] | 
     try:
         result = await _tmdb_get_json("search/movie", params, request_timeout=6.0)
     except Exception as exc:
+        # A transport/credential failure is not a completed lookup. Leave the row
+        # eligible for the background retry worker.
         logger.info("Synopsis cache lookup failed for %r (%s): %s", query, year, type(exc).__name__)
         return None
 
@@ -5349,24 +5356,60 @@ async def _lookup_catalogue_synopsis(title: str, year: int) -> dict[str, Any] | 
         if year and candidate_year and candidate_year != year:
             continue
         candidates.append((0 if year and candidate_year == year else 1, -int(row.get("vote_count") or 0), row))
+
+    now = int(time.time())
     if not candidates:
-        return None
+        # TMDB answered successfully but has no exact title/year match. Record the
+        # lookup version so we don't retry this negative result on every startup.
+        return {"synopsisCheckedAt": now, "synopsisLookupVersion": TMDB_SYNOPSIS_LOOKUP_VERSION}
+
     candidates.sort(key=lambda candidate: (candidate[0], candidate[1]))
     row = candidates[0][2]
+    tmdb_id = int(row["id"])
+    release_date = str(row.get("release_date") or "")
+    year_match = re.match(r"^(\d{4})", release_date)
+    candidate_year = int(year_match.group(1)) if year_match else (year or None)
+    details: dict[str, Any] = row
     overview = re.sub(r"\s+", " ", str(row.get("overview") or "")).strip()
+
+    # Search/list endpoints frequently omit the overview even when the canonical
+    # movie-details endpoint has it. Do not mark the row as checked until details
+    # has answered successfully; a network failure should remain retryable.
     if not overview:
-        return {
-            "tmdbId": int(row["id"]),
-            "tmdbUrl": f"https://www.themoviedb.org/movie/{int(row['id'])}",
-            "synopsisCheckedAt": int(time.time()),
-        }
+        successful_details_response = False
+        for language in ("en-US", "en"):
+            try:
+                details = await _tmdb_get_json(
+                    f"movie/{tmdb_id}", {"language": language}, request_timeout=6.0
+                )
+                successful_details_response = True
+            except Exception as exc:
+                logger.info("Synopsis details lookup failed for %s (%s): %s",
+                    tmdb_id, language, type(exc).__name__)
+                continue
+            overview = re.sub(r"\s+", " ", str(details.get("overview") or "")).strip()
+            if overview:
+                break
+        if not successful_details_response:
+            return None
+
+    poster_path = str(details.get("poster_path") or row.get("poster_path") or "").strip()
+    backdrop_path = str(details.get("backdrop_path") or row.get("backdrop_path") or "").strip()
+    details_release_date = str(details.get("release_date") or release_date)
     return {
+        "id": tmdb_id,
+        "tmdbId": tmdb_id,
+        "title": str(details.get("title") or row.get("title") or query).strip(),
+        "year": candidate_year,
+        "mediaType": "movie",
         "overview": overview,
-        "tmdbId": int(row["id"]),
-        "tmdbUrl": f"https://www.themoviedb.org/movie/{int(row['id'])}",
-        "releaseDate": str(row.get("release_date") or ""),
-        "rating": float(row.get("vote_average") or 0),
-        "synopsisCheckedAt": int(time.time()),
+        "posterUrl": TMDB_IMAGE_BASE + poster_path if poster_path else "",
+        "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop_path if backdrop_path else "",
+        "tmdbUrl": f"https://www.themoviedb.org/movie/{tmdb_id}",
+        "releaseDate": details_release_date,
+        "rating": float(details.get("vote_average") or row.get("vote_average") or 0),
+        "synopsisCheckedAt": now,
+        "synopsisLookupVersion": TMDB_SYNOPSIS_LOOKUP_VERSION,
     }
 
 
@@ -5405,7 +5448,15 @@ async def _enrich_catalogue_synopses() -> None:
                 checked_at = int(checked_at or 0)
             except (TypeError, ValueError):
                 checked_at = 0
-            if checked_at and now - checked_at < _CATALOGUE_SYNOPSIS_RECHECK_SECONDS:
+            try:
+                lookup_version = int(item.get("synopsisLookupVersion") or 0)
+            except (TypeError, ValueError):
+                lookup_version = 0
+            if (
+                lookup_version >= TMDB_SYNOPSIS_LOOKUP_VERSION
+                and checked_at
+                and now - checked_at < _CATALOGUE_SYNOPSIS_RECHECK_SECONDS
+            ):
                 continue
             identity = _synopsis_row_identity(item)
             normalized_title = identity[0]
@@ -5455,10 +5506,23 @@ async def _enrich_catalogue_synopses() -> None:
                 item["overview"] = metadata["overview"]
                 changed = True
                 state["updatedRows"] += 1
-            for field in ("tmdbId", "tmdbUrl", "releaseDate", "rating", "synopsisCheckedAt"):
-                if field in metadata and not item.get(field):
+            for field in ("tmdbId", "tmdbUrl", "releaseDate", "rating"):
+                if field in metadata and metadata[field] not in (None, "", 0) and not item.get(field):
                     item[field] = metadata[field]
                     changed = True
+            try:
+                old_checked_at = int(item.get("synopsisCheckedAt") or 0)
+                new_checked_at = int(metadata.get("synopsisCheckedAt") or 0)
+                old_lookup_version = int(item.get("synopsisLookupVersion") or 0)
+                new_lookup_version = int(metadata.get("synopsisLookupVersion") or 0)
+            except (TypeError, ValueError):
+                old_checked_at = new_checked_at = old_lookup_version = new_lookup_version = 0
+            if new_checked_at > old_checked_at:
+                item["synopsisCheckedAt"] = new_checked_at
+                changed = True
+            if new_lookup_version > old_lookup_version:
+                item["synopsisLookupVersion"] = new_lookup_version
+                changed = True
         if changed:
             try:
                 _write_synopsis_cache(path, current)
@@ -5474,13 +5538,18 @@ async def _enrich_catalogue_synopses() -> None:
     )
 
 
+_synopsis_enrichment_retry_task: asyncio.Task | None = None
+
+
 async def _start_catalogue_synopsis_enrichment() -> None:
-    global _catalogue_synopsis_enrichment_task
-    # Let normal startup/catalogue initialization finish first; enrichment is
-    # deliberately background work and never delays the health check or UI.
+    global _catalogue_synopsis_enrichment_task, _synopsis_enrichment_retry_task
+    # Let cache initialization finish first. Enrichment must never delay the API.
     await asyncio.sleep(10)
     if _catalogue_synopsis_enrichment_task is None or _catalogue_synopsis_enrichment_task.done():
         _catalogue_synopsis_enrichment_task = asyncio.create_task(_enrich_catalogue_synopses())
+    if _synopsis_enrichment_retry_task is None or _synopsis_enrichment_retry_task.done():
+        # Failed transient lookups remain unversioned and will be retried periodically.
+        _synopsis_enrichment_retry_task = asyncio.create_task(_synopsis_enrichment_retry_loop())
 
 
 @app.get("/api/catalogue/synopsis-enrichment")
@@ -6092,15 +6161,17 @@ async def _lookup_tmdb_catalogue_synopsis_by_id(item: dict[str, Any]) -> dict[st
                 "tmdbId": tmdb_id,
                 "tmdbUrl": f"https://www.themoviedb.org/movie/{tmdb_id}",
                 "synopsisCheckedAt": int(time.time()),
+                "synopsisLookupVersion": TMDB_SYNOPSIS_LOOKUP_VERSION,
             }
 
-    # Mark a successful empty response to avoid repeatedly spending API calls on
-    # titles for which TMDB has not published an English synopsis yet.
+    # Mark only a successfully checked empty response. Transport failures stay
+    # unmarked so the scheduled worker retries them.
     if successful_response:
         return {
             "tmdbId": tmdb_id,
             "tmdbUrl": f"https://www.themoviedb.org/movie/{tmdb_id}",
             "synopsisCheckedAt": int(time.time()),
+            "synopsisLookupVersion": TMDB_SYNOPSIS_LOOKUP_VERSION,
         }
     return None
 
@@ -6150,7 +6221,15 @@ async def _enrich_tmdb_persistent_catalogue_synopses() -> None:
                     tmdb_id = int(item.get("tmdbId") or item.get("id") or 0)
                 except (TypeError, ValueError):
                     checked_at, tmdb_id = 0, 0
-                if checked_at and now - checked_at < _TMDB_CATALOGUE_SYNOPSIS_RECHECK_SECONDS:
+                try:
+                    lookup_version = int(item.get("synopsisLookupVersion") or 0)
+                except (TypeError, ValueError):
+                    lookup_version = 0
+                if (
+                    lookup_version >= TMDB_SYNOPSIS_LOOKUP_VERSION
+                    and checked_at
+                    and now - checked_at < _TMDB_CATALOGUE_SYNOPSIS_RECHECK_SECONDS
+                ):
                     continue
                 if tmdb_id > 0:
                     jobs.setdefault(tmdb_id, item)
@@ -6193,6 +6272,14 @@ async def _enrich_tmdb_persistent_catalogue_synopses() -> None:
                     if metadata.get(field) and not item.get(field):
                         item[field] = metadata[field]
                         changed = True
+                try:
+                    old_lookup_version = int(item.get("synopsisLookupVersion") or 0)
+                    new_lookup_version = int(metadata.get("synopsisLookupVersion") or 0)
+                except (TypeError, ValueError):
+                    old_lookup_version = new_lookup_version = 0
+                if new_lookup_version > old_lookup_version:
+                    item["synopsisLookupVersion"] = new_lookup_version
+                    changed = True
                 try:
                     old_checked_at = int(item.get("synopsisCheckedAt") or 0)
                     new_checked_at = int(metadata.get("synopsisCheckedAt") or 0)
@@ -6238,6 +6325,25 @@ def _schedule_tmdb_catalogue_synopsis_enrichment(payload: dict[str, Any] | None 
     _tmdb_catalogue_synopsis_enrichment_task = asyncio.create_task(
         _enrich_tmdb_persistent_catalogue_synopses()
     )
+
+
+async def _synopsis_enrichment_retry_loop() -> None:
+    """Retry only unresolved synopsis rows on a schedule; completed cache hits stay on disk."""
+    global _catalogue_synopsis_enrichment_task
+    while True:
+        await asyncio.sleep(SYNOPSIS_CACHE_RETRY_INTERVAL_SECONDS)
+        if _catalogue_synopsis_enrichment_task is None or _catalogue_synopsis_enrichment_task.done():
+            _catalogue_synopsis_enrichment_task = asyncio.create_task(_enrich_catalogue_synopses())
+        _schedule_tmdb_catalogue_synopsis_enrichment()
+        tasks = [
+            task for task in (
+                _catalogue_synopsis_enrichment_task,
+                _tmdb_catalogue_synopsis_enrichment_task,
+            )
+            if task is not None and not task.done()
+        ]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def _start_tmdb_catalogue_synopsis_enrichment() -> None:
@@ -7864,6 +7970,25 @@ async def api_search_metadata(q: str = Query(..., min_length=2, max_length=160))
     if cached and now - cached[0] < _TMDB_SEARCH_METADATA_CACHE_TTL:
         return cached[1]
 
+    # Disk-backed query envelopes survive process/container restarts. The per-title
+    # cache below remains durable indefinitely and is refreshed whenever a new
+    # successful lookup supplies better data.
+    persistent_cache = _read_persistent_search_metadata_cache()
+    query_entry = (persistent_cache.get("queries") or {}).get(cache_key)
+    try:
+        query_saved_at = int((query_entry or {}).get("savedAt") or 0)
+    except (TypeError, ValueError):
+        query_saved_at = 0
+    if (
+        isinstance(query_entry, dict)
+        and isinstance(query_entry.get("response"), dict)
+        and now - query_saved_at < TMDB_SEARCH_METADATA_QUERY_TTL_SECONDS
+        and query_entry["response"].get("status") == "ready"
+    ):
+        cached_response = query_entry["response"]
+        _TMDB_SEARCH_METADATA_CACHE[cache_key] = (now, cached_response)
+        return cached_response
+
     if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
         return {"status": "unavailable", "query": query, "source": "TMDB", "results": []}
 
@@ -7930,6 +8055,7 @@ async def api_search_metadata(q: str = Query(..., min_length=2, max_length=160))
         "results": results[:30],
     }
     if response["status"] == "ready":
+        _persist_search_metadata_cache_rows(results[:30], query=query, query_response=response)
         if len(_TMDB_SEARCH_METADATA_CACHE) > 300:
             expired_keys = [
                 key for key, value in _TMDB_SEARCH_METADATA_CACHE.items()
@@ -8012,6 +8138,108 @@ def _search_metadata_cache_candidate(raw: dict[str, Any]) -> dict[str, Any] | No
     }
 
 
+def _read_persistent_search_metadata_cache() -> dict[str, Any]:
+    try:
+        payload = json.loads(TMDB_SEARCH_METADATA_CACHE_FILE.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            payload.setdefault("results", [])
+            payload.setdefault("queries", {})
+            return payload
+    except (OSError, ValueError, TypeError):
+        pass
+    return {"version": 1, "results": [], "queries": {}}
+
+
+def _write_persistent_search_metadata_cache(payload: dict[str, Any]) -> None:
+    # The same atomic/fsync writer used by the catalogue snapshots keeps this
+    # cache safe across container restarts and interrupted writes.
+    _write_synopsis_cache(TMDB_SEARCH_METADATA_CACHE_FILE, payload)
+
+
+def _persist_search_metadata_cache_rows(
+    raw_rows: list[dict[str, Any]],
+    *,
+    query: str | None = None,
+    query_response: dict[str, Any] | None = None,
+) -> int:
+    """Persist useful title metadata permanently; blank refreshes never erase saved synopsis text."""
+    disk = _read_persistent_search_metadata_cache()
+    rows = disk.get("results", [])
+    if not isinstance(rows, list):
+        rows = []
+    index: dict[tuple[str, int, str, str], dict[str, Any]] = {}
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        candidate = _search_metadata_cache_candidate(raw)
+        if not candidate:
+            continue
+        key = (
+            _normalize_title(candidate["title"]),
+            int(candidate.get("year") or 0),
+            str(candidate.get("mediaType") or "movie"),
+            str(candidate.get("tmdbId") or ""),
+        )
+        index[key] = {**raw, **candidate}
+
+    now = int(time.time())
+    added = 0
+    for raw in raw_rows:
+        if not isinstance(raw, dict):
+            continue
+        candidate = _search_metadata_cache_candidate(raw)
+        if not candidate:
+            continue
+        key = (
+            _normalize_title(candidate["title"]),
+            int(candidate.get("year") or 0),
+            str(candidate.get("mediaType") or "movie"),
+            str(candidate.get("tmdbId") or ""),
+        )
+        previous = index.get(key, {})
+        # Do not replace a previously stored synopsis or useful artwork with blanks.
+        merged = {**previous, **candidate}
+        for field in ("overview", "posterUrl", "backdropUrl", "tmdbUrl", "tmdbId", "year", "rating"):
+            if candidate.get(field) in (None, "", 0):
+                if previous.get(field) not in (None, "", 0):
+                    merged[field] = previous[field]
+        merged["cacheUpdatedAt"] = now
+        if not previous or merged != previous:
+            added += 1
+        index[key] = merged
+
+    if query and query_response and query_response.get("status") == "ready":
+        queries = disk.get("queries", {})
+        if not isinstance(queries, dict):
+            queries = {}
+        queries[re.sub(r"\s+", " ", query).strip().casefold()] = {
+            "savedAt": now,
+            "response": query_response,
+        }
+        # Keep the query-envelope cache bounded; the per-title synopsis rows do
+        # not expire, even when an old exact-query envelope is eventually trimmed.
+        if len(queries) > 1000:
+            queries = dict(sorted(
+                queries.items(),
+                key=lambda pair: int((pair[1] or {}).get("savedAt") or 0),
+                reverse=True,
+            )[:1000])
+        disk["queries"] = queries
+
+    max_rows = 8000
+    merged_rows = list(index.values())
+    merged_rows.sort(key=lambda item: int(item.get("cacheUpdatedAt") or 0), reverse=True)
+    disk["version"] = 1
+    disk["updatedAt"] = now
+    disk["results"] = merged_rows[:max_rows]
+    try:
+        _write_persistent_search_metadata_cache(disk)
+    except OSError as exc:
+        logger.warning("Could not persist search-card synopsis cache: %s", exc)
+    return added
+
+
+
 def _persist_search_metadata_overview(tmdb_id: int, overview: str) -> int:
     """Persist a newly fetched overview into any matching runtime catalogue row."""
     overview = re.sub(r"\s+", " ", str(overview or "")).strip()
@@ -8040,6 +8268,7 @@ def _persist_search_metadata_overview(tmdb_id: int, overview: str) -> int:
                 continue
             row["overview"] = overview
             row["synopsisCheckedAt"] = now
+            row["synopsisLookupVersion"] = TMDB_SYNOPSIS_LOOKUP_VERSION
             changed = True
             updated_rows += 1
         if changed:
@@ -8074,6 +8303,7 @@ def _persist_search_metadata_overview(tmdb_id: int, overview: str) -> int:
                 if row_id == tmdb_id:
                     row["overview"] = overview
                     row["synopsisCheckedAt"] = now
+                    row["synopsisLookupVersion"] = TMDB_SYNOPSIS_LOOKUP_VERSION
                     updated_rows += 1
                     disk_changed = True
 
@@ -8116,6 +8346,7 @@ def _persist_search_metadata_overview(tmdb_id: int, overview: str) -> int:
             if row_id == tmdb_id:
                 row["overview"] = overview
                 row["synopsisCheckedAt"] = now
+                row["synopsisLookupVersion"] = TMDB_SYNOPSIS_LOOKUP_VERSION
     return updated_rows
 
 
@@ -8160,6 +8391,8 @@ async def _lookup_search_metadata_by_tmdb_id(item: dict[str, Any]) -> dict[str, 
                     if str(details.get("backdrop_path") or "").strip()
                     else str(item.get("backdropUrl") or "")
                 ),
+                "synopsisCheckedAt": int(time.time()),
+                "synopsisLookupVersion": TMDB_SYNOPSIS_LOOKUP_VERSION,
             }
         # Only issue the alternate-language request if TMDB answered but had no overview.
     return None
@@ -8176,6 +8409,13 @@ def _read_search_metadata_catalogue_rows() -> list[dict[str, Any]]:
         rows = payload.get("results", []) if isinstance(payload, dict) else []
         if isinstance(rows, list):
             candidates.extend(row for row in rows if isinstance(row, dict))
+
+    # Query search results and successful synopses are kept separately so arbitrary
+    # searches survive restarts even when they are not in a prebuilt catalogue.
+    persistent_metadata = _read_persistent_search_metadata_cache()
+    persistent_rows = persistent_metadata.get("results", [])
+    if isinstance(persistent_rows, list):
+        candidates.extend(row for row in persistent_rows if isinstance(row, dict))
 
     # Popular, Trending and Latest are stored separately from franchise snapshots.
     try:
@@ -8297,14 +8537,19 @@ async def api_search_metadata_batch(
                     continue
                 item.update(metadata)
                 item["source"] = "TMDB movie details"
+            persisted_item = {**item, **metadata}
+            _persist_search_metadata_cache_rows([persisted_item])
             saved_rows = _persist_search_metadata_overview(item_id, metadata["overview"])
             logger.info("Hydrated missing search-card synopsis for TMDB ID %s; persisted rows=%s",
                 item_id, saved_rows)
 
+    # Permanently save successful overview hits from any of the catalogue sources.
+    matched = [item for item in matched if str(item.get("overview") or "").strip()]
+    if matched:
+        _persist_search_metadata_cache_rows(matched)
+
     # Never send blank synopsis entries if no details lookup could recover them;
     # this keeps the response list focused on usable saved metadata.
-    matched = [item for item in matched if str(item.get("overview") or "").strip()]
-
     return {
         "status": "ready",
         "source": "VPS catalogue cache",
