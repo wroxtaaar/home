@@ -941,7 +941,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         }
         void Promise.allSettled(availabilityGroups.map(async group => {
           try {
-            const value = await api.searchAvailability(group.title);
+            const availabilityQuery = group.title.replace(/\\s+\\(\\d{4}\\)$/, '').trim();
+            const value = await api.searchAvailability(availabilityQuery);
             if (generation === searchGenerationRef.current) {
               setSearchAvailabilityByGroup(previous => ({ ...previous, [group.key]: value }));
             }
