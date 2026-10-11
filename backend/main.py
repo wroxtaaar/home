@@ -60,6 +60,8 @@ WATCHMODE_API_KEYS = list(dict.fromkeys(
 ))
 WATCHMODE_API_KEY = WATCHMODE_API_KEYS[0] if WATCHMODE_API_KEYS else ""
 WATCHMODE_API_BASE = "https://api.watchmode.com/v1"
+# Shared cooldown prevents manual cache warm-ups from continuing to hit Watchmode after HTTP 429.
+_WATCHMODE_RATE_LIMITED_UNTIL = 0.0
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
 
 
@@ -5693,7 +5695,8 @@ def _tmdb_watch_provider_rows(payload: Any) -> list[dict[str, Any]]:
 
 async def _watchmode_movie_sources(movie_id: int, region: str) -> list[dict[str, Any]]:
     """Look up legal streaming/rent/buy options by the matching TMDB movie ID."""
-    if not WATCHMODE_API_KEYS:
+    global _WATCHMODE_RATE_LIMITED_UNTIL
+    if not WATCHMODE_API_KEYS or time.time() < _WATCHMODE_RATE_LIMITED_UNTIL:
         return []
     try:
         response = await _watchmode_get(
@@ -5706,7 +5709,22 @@ async def _watchmode_movie_sources(movie_id: int, region: str) -> list[dict[str,
         if response.status_code in {401, 403}:
             logger.warning("Watchmode rejected configured credentials (HTTP %s)", response.status_code)
             return []
-        if response.status_code == 429 or response.status_code >= 500:
+        if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After", "").strip()
+            try:
+                cooldown_seconds = max(1, min(3600, int(float(retry_after))))
+            except (TypeError, ValueError):
+                cooldown_seconds = 60
+            _WATCHMODE_RATE_LIMITED_UNTIL = max(
+                _WATCHMODE_RATE_LIMITED_UNTIL,
+                time.time() + cooldown_seconds,
+            )
+            logger.warning(
+                "Watchmode returned HTTP 429; pausing provider lookups for %s seconds",
+                cooldown_seconds,
+            )
+            return []
+        if response.status_code >= 500:
             logger.info("Watchmode temporarily unavailable (HTTP %s)", response.status_code)
             return []
         response.raise_for_status()
