@@ -1918,7 +1918,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       .map(group => {
         const title = String(group.title || '').trim();
         const year = String(group.year || '').trim();
-        return title ? title + (year ? ' (' + year + ')' : '') : '';
+        // group.title can already include its release year (parsed from the
+        // torrent title), so never append the same year twice.
+        const alreadyHasYear = /\(?((?:19|20)\d{2})\)?\s*$/.test(title);
+        return title ? title + (year && !alreadyHasYear ? ' (' + year + ')' : '') : '';
       })
       .filter(Boolean)));
     if (!titles.length) return;
