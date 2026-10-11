@@ -2737,7 +2737,48 @@
       "mediaTitle": "X2: X-Men United",
       "year": 2003,
       "catalogueKey": "marvel-hindi",
-      "catalogueTitle": "X2: X-Men United"
+      "catalogueTitle": "X2: X-Men United",
+      "tmdbId": 36658,
+      "ottAvailability": {
+        "region": "IN",
+        "status": "streaming",
+        "streamingProviders": [
+          {
+            "providerId": 2336,
+            "name": "JioHotstar",
+            "logoUrl": "https://image.tmdb.org/t/p/w92/ledoS6EgdjTNq8F1e6wubUQer18.png"
+          }
+        ],
+        "rentProviders": [
+          {
+            "providerId": 3,
+            "name": "Google Play Movies",
+            "logoUrl": "https://image.tmdb.org/t/p/w92/aZRENwYILujqs0RVOZutTh0BVGV.png"
+          },
+          {
+            "providerId": 192,
+            "name": "YouTube",
+            "logoUrl": "https://image.tmdb.org/t/p/w92/5Maob4o5w8oZnNeYpCDyVFD3M7X.png"
+          }
+        ],
+        "buyProviders": [
+          {
+            "providerId": 3,
+            "name": "Google Play Movies",
+            "logoUrl": "https://image.tmdb.org/t/p/w92/aZRENwYILujqs0RVOZutTh0BVGV.png"
+          },
+          {
+            "providerId": 192,
+            "name": "YouTube",
+            "logoUrl": "https://image.tmdb.org/t/p/w92/5Maob4o5w8oZnNeYpCDyVFD3M7X.png"
+          }
+        ],
+        "providerLink": "https://www.themoviedb.org/movie/36658-x2/watch?locale=IN",
+        "source": "TMDB",
+        "checkedAt": "2026-10-11T14:31:15.812822+00:00",
+        "providerAttribution": "Streaming availability data powered by JustWatch via TMDB.",
+        "attribution": "This product uses the TMDB API but is not endorsed or certified by TMDB."
+      }
     },
     {
       "guid": "limetorrents-6f22a80ad604b72a0ec7",
