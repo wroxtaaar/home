@@ -6107,6 +6107,7 @@ async def _lookup_tmdb_catalogue_synopsis_by_id(item: dict[str, Any]) -> dict[st
 
 
 async def _enrich_tmdb_persistent_catalogue_synopses() -> None:
+    global _tmdb_catalogue_synopsis_enrichment_task, _TMDB_CATALOGUE_SYNOPSIS_RESCAN_REQUESTED
     state = _TMDB_CATALOGUE_SYNOPSIS_ENRICHMENT_STATE
     if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
         state.update({"status": "waiting_for_credentials",
@@ -6204,6 +6205,14 @@ async def _enrich_tmdb_persistent_catalogue_synopses() -> None:
     except Exception as exc:
         logger.exception("TMDB persistent catalogue synopsis enrichment failed")
         state.update({"status": "failed", "error": type(exc).__name__ + ": " + str(exc)[:300]})
+    finally:
+        # If a new cache page arrived while the startup sweep was running, do one
+        # more pass after this task releases its slot so that page is not missed.
+        if _TMDB_CATALOGUE_SYNOPSIS_RESCAN_REQUESTED:
+            _TMDB_CATALOGUE_SYNOPSIS_RESCAN_REQUESTED = False
+            _tmdb_catalogue_synopsis_enrichment_task = asyncio.create_task(
+                _enrich_tmdb_persistent_catalogue_synopses()
+            )
 
 
 def _schedule_tmdb_catalogue_synopsis_enrichment(payload: dict[str, Any] | None = None) -> None:
@@ -6225,9 +6234,8 @@ def _schedule_tmdb_catalogue_synopsis_enrichment(payload: dict[str, Any] | None 
 
 
 async def _start_tmdb_catalogue_synopsis_enrichment() -> None:
-    # Wait for initialization and the franchise-cache warm-up before scanning the
-    # separate persistent TMDB popular/trending/latest JSON.
-    await asyncio.sleep(12)
+    # Registered after cache initialization; launch the backfill without holding
+    # application startup open while hundreds of TMDB details are fetched.
     _schedule_tmdb_catalogue_synopsis_enrichment()
 
 
