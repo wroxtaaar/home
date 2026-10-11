@@ -230,7 +230,10 @@ async def run() -> int:
         old_age = max(0.0, time.time() - disk_entry[0]) if disk_entry else float("inf")
 
         if not args.refresh and disk_entry and old_age < main.TMDB_OTT_CACHE_SECONDS:
-            if old_source == "watchmode" or old_provider_count:
+            # Fresh Watchmode records are already authoritative for this warmer.
+            # Recheck fresh TMDB/legacy records so Watchmode can enrich them;
+            # if Watchmode returns nothing, the old provider data is retained.
+            if old_source == "watchmode":
                 stats["cached"] += 1
                 continue
 
