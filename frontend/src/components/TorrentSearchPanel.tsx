@@ -404,6 +404,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     message?: string;
   }>>({});
   const [selectedQualityByGroup, setSelectedQualityByGroup] = useState<Record<string, string>>({});
+  // Search results are compact cards until the user opens one with Get.
+  // The live search, posters, OTT lookups and metadata prefetch keep running independently.
+  const [expandedSearchGroupKey, setExpandedSearchGroupKey] = useState<string | null>(null);
   const [movieTorrentPreviewGroup, setMovieTorrentPreviewGroup] = useState<TorrentQualityGroup | null>(null);
   const [movieTorrentPreviewCatalogueId, setMovieTorrentPreviewCatalogueId] = useState<string | null>(null);
   const [movieTorrentPickerGroups, setMovieTorrentPickerGroups] = useState<TorrentQualityGroup[] | null>(null);
@@ -1082,6 +1085,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       setResults([]);
       setSearchAvailabilityByGroup({});
       setSelectedQualityByGroup({});
+      setExpandedSearchGroupKey(null);
       setSearched(false);
       setPosterOverrides({});
       posterLoadedRef.current.clear();
@@ -1679,6 +1683,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       setError('');
       setResults([]);
       setSelectedQualityByGroup({});
+      setExpandedSearchGroupKey(null);
       setSearched(false);
       setPosterOverrides({});
       posterLoadedRef.current.clear();
@@ -2654,6 +2659,108 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               const selectedKey = selectedQualityByGroup[group.key];
               const result = group.variants.find(variant => torrentResultKey(variant) === selectedKey) || group.variants[0];
               const posterResult = group.posterResult;
+
+              // Normal searches use the same poster-first, compact card flow as
+              // the Popular/Trending catalogues. The full torrent/OTT details and
+              // quality picker are rendered only after the user presses Get.
+              if (expandedSearchGroupKey !== group.key) {
+                const availability = searchAvailabilityByGroup[group.key];
+                const groupTitleKey = normalizeSavedOttTitle(group.title);
+                const matchingSavedTitles = (availability?.matches || []).filter(match =>
+                  Array.isArray(match.providers) &&
+                  match.providers.length > 0 &&
+                  normalizeSavedOttTitle(String(match.title || '')) === groupTitleKey
+                );
+                const compactProviders = uniqueOttProviders(
+                  matchingSavedTitles.length > 0
+                    ? matchingSavedTitles.flatMap(match => match.providers)
+                    : (availability?.providers || [])
+                );
+                const compactPosterUrl = posterUrlFor(posterResult);
+
+                return (
+                  <article
+                    key={group.key || (group.title + '-' + index)}
+                    className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-slate-700 hover:bg-slate-900/95 flex flex-col"
+                  >
+                    <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
+                      {compactPosterUrl ? (
+                        <img
+                          src={compactPosterUrl}
+                          alt={group.title}
+                          loading="lazy"
+                          className="h-full w-full object-cover"
+                          onError={event => { event.currentTarget.style.display = 'none'; }}
+                        />
+                      ) : (
+                        <div className="absolute inset-0 flex items-center justify-center text-slate-600">
+                          <Film className="h-8 w-8" />
+                        </div>
+                      )}
+                      {Number(result.seeders) > 0 && (
+                        <div className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-md bg-black/80 px-2 py-1 text-[10px] font-bold text-emerald-400">
+                          <Users className="h-3 w-3" />
+                          {Number(result.seeders) || 0}
+                        </div>
+                      )}
+                      {result.indexer && (
+                        <div className="absolute right-2 top-2 max-w-[70%] truncate rounded-md bg-black/75 px-2 py-1 text-[10px] font-medium text-slate-300" title={result.indexer}>
+                          {result.indexer}
+                        </div>
+                      )}
+                      {extractedQuality(result) && (
+                        <div className="absolute bottom-2 left-2 rounded-md border border-cyan-400/30 bg-slate-950/85 px-2 py-1 text-[10px] font-bold text-cyan-300">
+                          {extractedQuality(result)}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex flex-1 flex-col gap-2 p-2.5">
+                      <div>
+                        <h3 className="line-clamp-2 text-sm font-bold leading-snug text-slate-100">{group.title}</h3>
+                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] sm:text-xs">
+                          <span className="font-semibold text-emerald-400">▲ {Number(result.seeders) || 0} seeders</span>
+                          <span className="font-semibold text-amber-400">▼ {Number(result.leechers) || 0} peers</span>
+                          {group.year && <span className="text-slate-500">{group.year}</span>}
+                        </div>
+                      </div>
+
+                      {compactProviders.length > 0 && (
+                        <div className="flex flex-wrap gap-1" aria-label={'Streaming services for ' + group.title}>
+                          {compactProviders.slice(0, 5).map((provider, providerIndex) => (
+                            <span
+                              key={String(provider.name || providerIndex).toLowerCase()}
+                              className="rounded-full border border-cyan-900/70 bg-cyan-950/40 px-1.5 py-0.5 text-[10px] leading-4 text-cyan-200"
+                            >
+                              {displayOttProviderName(provider.name)}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="mt-auto flex items-end justify-between gap-2 pt-1">
+                        <div className="min-w-0">
+                          <div className="font-mono text-[10px] text-slate-300">{formatBytes(Number(result.size) || 0)}</div>
+                          <div className="mt-1 text-[10px] text-slate-500">
+                            {group.variants.length} torrent option{group.variants.length === 1 ? '' : 's'}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setExpandedSearchGroupKey(group.key)}
+                          className="shrink-0 inline-flex items-center justify-center gap-1 rounded-lg bg-cyan-500 px-3 py-2 text-xs font-bold text-slate-950 transition hover:bg-cyan-400"
+                          aria-label={'Get ' + group.title}
+                          title="Open torrent details and choose quality"
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                          Get
+                        </button>
+                      </div>
+                    </div>
+                  </article>
+                );
+              }
+
               return (
               <div
                 key={group.key || (group.title + '-' + index)}
@@ -2734,21 +2841,32 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             <Database className="w-3.5 h-3.5 text-cyan-400" />
                           </div>
                           <div className="relative min-w-0 flex-1 z-10">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const fullTitle = fullTorrentTitleFor(result);
-                                showFullTorrentTitleBubble({
-                                  ...result,
-                                  title: fullTitle || result.title
-                                });
-                              }}
-                              className="block w-full text-left text-[11px] leading-4 sm:text-sm font-semibold text-slate-100 line-clamp-2 hover:text-cyan-300 transition cursor-pointer"
-                              title="Click to view full torrent name"
-                              aria-label="View full torrent name"
-                            >
-                              {group.title}
-                            </button>
+                            <div className="flex items-start gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const fullTitle = fullTorrentTitleFor(result);
+                                  showFullTorrentTitleBubble({
+                                    ...result,
+                                    title: fullTitle || result.title
+                                  });
+                                }}
+                                className="block min-w-0 flex-1 text-left text-[11px] leading-4 sm:text-sm font-semibold text-slate-100 line-clamp-2 hover:text-cyan-300 transition cursor-pointer"
+                                title="Click to view full torrent name"
+                                aria-label="View full torrent name"
+                              >
+                                {group.title}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setExpandedSearchGroupKey(null)}
+                                className="shrink-0 rounded-md p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-100"
+                                title="Back to search cards"
+                                aria-label="Back to search cards"
+                              >
+                                <X className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
 
                             <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[10px] sm:text-xs">
                               <span className="font-semibold text-emerald-400">▲ {Number(result.seeders) || 0} seeders</span>
