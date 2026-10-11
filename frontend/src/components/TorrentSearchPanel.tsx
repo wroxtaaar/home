@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { api, API_BASE, MovieCatalogueItem, MovieCatalogueKey, MovieCataloguePage, MovieOttAvailability, MovieOttProvider, TorrentSearchResult } from '../api/client.ts';
 import { formatBytes } from '../utils/formatters.ts';
+import searchLimits from '../../../search_limits.json';
 
 type MovieOttCardState = MovieOttAvailability | { status: 'loading' | 'error'; message?: string };
 
@@ -1032,7 +1033,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       // Prefer active swarms, but don't let missing seeder metadata hide every
       // release. The regular search can display results from indexers that do
       // not report seed counts reliably.
-      const maxSeedrFriendlySize = 5 * 1024 * 1024 * 1024;
+      const maxSeedrFriendlySize = searchLimits.maxSizeGb * 1024 * 1024 * 1024;
       const lowQualityRelease = /(?:^|[\s._()[\]-])(?:cam(?:rip)?|hdcam|hd[ ._-]?cam|telesync|tele[ ._-]?sync|ts[ ._-]?(?:md|ac3|hd)?|telecine|dvdscr|dvd[ ._-]?scr|screener|workprint)(?:$|[\s._()[\]-])/i;
       // Indexers often return loose keyword matches. Keep a result only when the
       // actual release title contains the selected movie title as a phrase, so a
@@ -1269,8 +1270,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   };
 
   const sortedResults = useMemo(() => {
-    // Home intentionally allows up to 5 GB. new-test remains the 2 GB variant.
-    const maxSeedrFriendlySize = 5 * 1024 * 1024 * 1024;
+    // Use the shared root search_limits.json settings.
+    const maxSeedrFriendlySize = searchLimits.maxSizeGb * 1024 * 1024 * 1024;
     // Exclude theatrical/unfinished releases regardless of provider. Keep the
     // tokens bounded so words such as "timestamp" are not mistaken for TS.
     const lowQualityRelease = /(?:^|[\s._()[\]-])(?:cam(?:rip)?|hdcam|hd[ ._-]?cam|telesync|tele[ ._-]?sync|ts[ ._-]?(?:md|ac3|hd)?|telecine|dvdscr|dvd[ ._-]?scr|screener|workprint)(?:$|[\s._()[\]-])/i;

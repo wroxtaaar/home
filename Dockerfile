@@ -7,6 +7,7 @@ COPY frontend/package.json ./
 RUN npm install
 
 COPY frontend/ ./
+COPY search_limits.json ./
 
 # API calls default to the browser origin in the full-stack build.
 RUN npm run build
@@ -24,6 +25,7 @@ COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/ ./
+COPY search_limits.json ./
 COPY --from=frontend-build /frontend/dist ./frontend-dist
 
 ENV PYTHONUNBUFFERED=1

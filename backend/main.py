@@ -104,9 +104,21 @@ _X1337_REQUEST_SEMAPHORE = asyncio.Semaphore(2)
 _LIMETORRENTS_REQUEST_SEMAPHORE = asyncio.Semaphore(2)
 _KNABEN_REQUEST_SEMAPHORE = asyncio.Semaphore(1)
 _YTS_REQUEST_SEMAPHORE = asyncio.Semaphore(2)
-# Home intentionally uses the wider 100 MB–5 GB search window.
-# new-test remains the separate 100 MB–2 GB variant.
-MAX_SEARCH_RESULT_SIZE_BYTES = 5 * 1024 * 1024 * 1024
+# Shared root config is used by both the backend and frontend.
+_SEARCH_LIMITS_CANDIDATES = (
+    Path(__file__).resolve().parent / "search_limits.json",
+    Path(__file__).resolve().parent.parent / "search_limits.json",
+)
+_SEARCH_LIMITS = {}
+for _limits_path in _SEARCH_LIMITS_CANDIDATES:
+    try:
+        with _limits_path.open("r", encoding="utf-8") as _limits_file:
+            _SEARCH_LIMITS = json.load(_limits_file)
+        break
+    except (OSError, json.JSONDecodeError):
+        continue
+MIN_SEARCH_RESULT_SIZE_BYTES = max(0, int(_SEARCH_LIMITS.get("minSizeMb", 100))) * 1024 * 1024
+MAX_SEARCH_RESULT_SIZE_BYTES = max(MIN_SEARCH_RESULT_SIZE_BYTES, int(_SEARCH_LIMITS.get("maxSizeGb", 5))) * 1024 * 1024 * 1024
 SEARCH_COMPOUND_ALIASES = {
     "antman": "ant man",
     "spiderman": "spider man",
@@ -2239,8 +2251,8 @@ async def search_1337x_direct(
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     }
-    # Match Home's shared 100 MB–5 GB search window.
-    minimum_size, maximum_size = 100 * 1024 * 1024, MAX_SEARCH_RESULT_SIZE_BYTES
+    # Apply the shared configured search-size window.
+    minimum_size, maximum_size = MIN_SEARCH_RESULT_SIZE_BYTES, MAX_SEARCH_RESULT_SIZE_BYTES
     categories = (
         [category]
         if category in {"Movies", "TV"}
@@ -3339,7 +3351,7 @@ def _search_quality_filter(item: dict[str, Any], query: str) -> bool:
         return False
 
     size = int(item.get("size") or 0)
-    return 100 * 1024 * 1024 <= size <= MAX_SEARCH_RESULT_SIZE_BYTES
+    return MIN_SEARCH_RESULT_SIZE_BYTES <= size <= MAX_SEARCH_RESULT_SIZE_BYTES
 
 
 def _title_relevance(title: str, query: str) -> tuple[int, int]:
@@ -3495,7 +3507,7 @@ async def _search_1337x_uncached(
     This is intentionally conservative for Render Free: only the primary
     1337x/Knaben pair runs on the first pass. More expensive alternate queries
     and specialist providers are activated only when fewer than 8 usable
-    results survive the hard media and 100 MB-5 GB gates.
+    results survive the hard media and configured size gates.
     """
     limit = 50
     kind = _search_media_kind(query)
@@ -4721,7 +4733,7 @@ async def _build_marvel_catalogue() -> None:
                             seeders = int(float(item.get("seeders") or 0))
                         except (TypeError, ValueError, OverflowError):
                             continue
-                        if size < 100 * 1024 * 1024 or size > MAX_SEARCH_RESULT_SIZE_BYTES or seeders <= 0:
+                        if size < MIN_SEARCH_RESULT_SIZE_BYTES or size > MAX_SEARCH_RESULT_SIZE_BYTES or seeders <= 0:
                             continue
                         if not any(str(item.get(key) or "").strip() for key in (
                             "magnetUrl", "downloadUrl", "sourceUrl", "infoUrl", "infoHash"
@@ -5391,7 +5403,7 @@ async def _build_extra_catalogue(key: str) -> None:
                         seeders = int(float(str(item.get("seeders") or 0).replace(",", "")))
                     except (TypeError, ValueError, OverflowError):
                         continue
-                    if size < 100 * 1024 * 1024 or size > MAX_SEARCH_RESULT_SIZE_BYTES or seeders <= 0:
+                    if size < MIN_SEARCH_RESULT_SIZE_BYTES or size > MAX_SEARCH_RESULT_SIZE_BYTES or seeders <= 0:
                         continue
                     if not any(str(item.get(field) or "").strip() for field in ("magnetUrl", "downloadUrl", "sourceUrl", "infoUrl", "infoHash")):
                         continue
