@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>NexStream Lab · Home Experimental</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif; background:#080d17; color:#e7edf8; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; background:radial-gradient(ellipse at top,#12243b 0,#080d17 58%); }
+    main { width:min(1120px,100%); margin:0 auto; padding:clamp(16px,4vw,36px); }
+    .eyebrow { color:#67e8f9; font-size:12px; font-weight:800; letter-spacing:.16em; text-transform:uppercase; }
+    h1 { margin:8px 0; font-size:clamp(28px,5vw,42px); letter-spacing:-.04em; }
+    .muted { color:#93a4bd; line-height:1.55; }
+    .panel { margin-top:22px; padding:clamp(16px,3vw,24px); border:1px solid #26354b; border-radius:20px; background:rgba(12,20,34,.92); box-shadow:0 20px 70px #0004; }
+    .fields { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; align-items:end; }
+    label { display:flex; flex-direction:column; gap:7px; color:#aab8cc; font-size:12px; font-weight:700; }
+    input,select { width:100%; min-width:0; padding:12px; border:1px solid #35445a; border-radius:10px; background:#0a1220; color:#f4f7fb; font:inherit; }
+    button { border:0; border-radius:10px; padding:12px 18px; background:#22d3ee; color:#06121e; font-weight:800; cursor:pointer; }
+    button:disabled { opacity:.55; cursor:wait; }
+    .status { margin-top:16px; padding:12px 14px; border-radius:10px; background:#101c2e; color:#c3d2e8; font-size:13px; overflow-wrap:anywhere; }
+    .status.error { color:#fecaca; border:1px solid #7f1d1d; background:#2a121a; }
+    .details { display:flex; align-items:center; gap:14px; margin:18px 0; }
+    .poster { width:64px; height:92px; object-fit:cover; border-radius:8px; background:#172338; }
+    .player { overflow:hidden; border-radius:14px; background:#000; aspect-ratio:16/9; border:1px solid #27354a; }
+    iframe { display:block; width:100%; height:100%; border:0; background:#000; }
+    .empty { height:100%; display:grid; place-items:center; padding:24px; text-align:center; color:#8ea0b8; }
+    .pill { display:inline-flex; margin-top:8px; padding:5px 9px; border:1px solid #2d435b; border-radius:999px; color:#9eb4cf; font-size:11px; }
+    .hidden { display:none !important; }
+    .warning { margin-top:14px; color:#fbbf24; font-size:12px; line-height:1.5; }
+    @media(max-width:700px) { .fields { grid-template-columns:repeat(2,minmax(0,1fr)); } .fields button { width:100%; } .player { aspect-ratio:9/16; max-height:75vh; } }
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">Home · isolated experiment</div>
+  <h1>NexStream Lab</h1>
+  <p class="muted">Test NexStream movie and TV resolution without changing Home's existing Seedr/torrent player. The API key stays on the server; this page receives only an approved player URL.</p>
+
+  <section class="panel">
+    <div class="fields">
+      <label>Content type
+        <select id="kind"><option value="movie">Movie</option><option value="tv">TV episode</option></select>
+      </label>
+      <label>TMDB ID
+        <input id="tmdbId" type="number" min="1" step="1" value="597" required>
+      </label>
+      <label id="seasonField" class="hidden">Season
+        <input id="season" type="number" min="1" step="1" value="1">
+      </label>
+      <label id="episodeField" class="hidden">Episode
+        <input id="episode" type="number" min="1" step="1" value="1">
+      </label>
+      <button id="playButton" type="button">Resolve &amp; play</button>
+    </div>
+    <div id="status" class="status" role="status" aria-live="polite">Ready. Default test: Titanic (TMDB 597).</div>
+    <div id="details" class="details hidden">
+      <img id="poster" class="poster" alt="">
+      <div><strong id="title"></strong><div id="subtitle" class="muted"></div><span class="pill">Resolved by NexStream</span></div>
+    </div>
+    <p class="warning">Experimental only. Playback controls, subtitles, audio tracks and seeking are controlled by the embedded provider, not Home's native player. Use only content you are authorized to access.</p>
+  </section>
+
+  <section class="panel">
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+      <strong>Embedded player</strong><span id="sourceLabel" class="muted">No source loaded</span>
+    </div>
+    <div id="player" class="player"><div class="empty">Resolve a movie or episode to load its player here.</div></div>
+  </section>
+</main>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const kind = $('kind');
+  const status = $('status');
+  const player = $('player');
+  const button = $('playButton');
+  const details = $('details');
+  const safeText = (element, value) => { element.textContent = String(value || ''); };
+  const showError = message => {
+    status.textContent = message;
+    status.classList.add('error');
+  };
+
+  kind.addEventListener('change', () => {
+    const isTv = kind.value === 'tv';
+    $('seasonField').classList.toggle('hidden', !isTv);
+    $('episodeField').classList.toggle('hidden', !isTv);
+    $('tmdbId').value = isTv ? '1399' : '597';
+  });
+
+  button.addEventListener('click', async () => {
+    const tmdbId = Number($('tmdbId').value);
+    if (!Number.isInteger(tmdbId) || tmdbId <= 0) {
+      showError('Enter a valid positive TMDB ID.');
+      return;
+    }
+    const params = new URLSearchParams({ type: kind.value, tmdb_id: String(tmdbId) });
+    if (kind.value === 'tv') {
+      const season = Number($('season').value);
+      const episode = Number($('episode').value);
+      if (!Number.isInteger(season) || season < 1 || !Number.isInteger(episode) || episode < 1) {
+        showError('Season and episode must be positive whole numbers.');
+        return;
+      }
+      params.set('season', String(season));
+      params.set('episode', String(episode));
+    }
+
+    button.disabled = true;
+    status.classList.remove('error');
+    status.textContent = 'Contacting NexStream…';
+    player.innerHTML = '<div class="empty">Resolving source…</div>';
+    $('sourceLabel').textContent = 'Resolving…';
+    details.classList.add('hidden');
+
+    try {
+      const response = await fetch('/api/nexstream/resolve?' + params.toString(), {
+        headers: { Accept: 'application/json' },
+        credentials: 'same-origin'
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.success || !Array.isArray(data.sources) || !data.sources.length) {
+        throw new Error(data.detail || data.message || ('Request failed with HTTP ' + response.status));
+      }
+      const source = data.sources[0];
+      const parsed = new URL(source.url);
+      if (parsed.protocol !== 'https:' || !['embedmaster.link', 'www.embedmaster.link'].includes(parsed.hostname)) {
+        throw new Error('The resolver returned an unsupported player host.');
+      }
+
+      safeText($('title'), data.meta?.title || (kind.value === 'tv' ? 'TV episode' : 'Movie') + ' · TMDB ' + tmdbId);
+      safeText($('subtitle'), kind.value === 'tv' ? 'Season ' + $('season').value + ', Episode ' + $('episode').value : 'TMDB ID ' + tmdbId);
+      const poster = $('poster');
+      poster.src = typeof data.meta?.poster === 'string' ? data.meta.poster : '';
+      poster.alt = data.meta?.title ? data.meta.title + ' poster' : '';
+      details.classList.remove('hidden');
+
+      const iframe = document.createElement('iframe');
+      iframe.src = source.url;
+      iframe.title = 'NexStream resolved player';
+      iframe.allow = 'autoplay; fullscreen; encrypted-media; picture-in-picture';
+      iframe.allowFullscreen = true;
+      iframe.referrerPolicy = 'strict-origin-when-cross-origin';
+      player.replaceChildren(iframe);
+      $('sourceLabel').textContent = source.name || 'EmbedMaster';
+      status.textContent = 'Resolved successfully. If the player loads, test play/pause, seeking, fullscreen, subtitles and audio options.';
+    } catch (error) {
+      showError(String(error?.message || error || 'Could not resolve this title.'));
+      player.innerHTML = '<div class="empty">No player loaded. Check the status message above.</div>';
+      $('sourceLabel').textContent = 'Resolution failed';
+    } finally {
+      button.disabled = false;
+    }
+  });
+})();
+</script>
+</body>
+</html>
