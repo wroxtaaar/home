@@ -269,6 +269,15 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     query: string;
     title?: string;
     year?: number | string;
+    matches?: Array<{
+      id: string;
+      title: string;
+      year?: number | string;
+      type?: string;
+      tmdbId?: number | string;
+      status: 'ready' | 'not_found' | 'not_confirmed' | 'unavailable';
+      providers: Array<{ name: string; region: string; type: string; webUrl?: string }>;
+    }>;
     providers: Array<{ name: string; region: string; type: string; webUrl?: string }>;
     message?: string;
   }>>({});
@@ -2295,6 +2304,34 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             {(() => {
                               const availability = searchAvailabilityByGroup[group.key];
                               if (!availability) return null;
+                              const matchedTitles = (availability.matches || []).filter(match => match.providers?.length);
+                              if (matchedTitles.length > 0) {
+                                return (
+                                  <div className="mt-2 space-y-1.5" aria-label={`Streaming services for ${group.title}`}>
+                                    {matchedTitles.map((match, matchIndex) => (
+                                      <div key={match.id || match.title + String(match.year || '') + matchIndex} className="rounded-md border border-slate-800 bg-slate-950/60 px-2 py-1.5">
+                                        <div className="mb-1 text-[10px] font-semibold leading-4 text-slate-300">
+                                          {match.title}{match.year ? ` (${match.year})` : ''}
+                                        </div>
+                                        <div className="flex flex-wrap gap-1">
+                                          {match.providers.map((provider, providerIndex) => (
+                                            <a
+                                              key={provider.name + provider.type + providerIndex}
+                                              href={provider.webUrl || undefined}
+                                              target={provider.webUrl ? '_blank' : undefined}
+                                              rel={provider.webUrl ? 'noreferrer' : undefined}
+                                              className="rounded-full border border-cyan-900/70 bg-cyan-950/40 px-1.5 py-0.5 text-[10px] leading-4 text-cyan-200 hover:border-cyan-600"
+                                              title={provider.type ? provider.type : 'Streaming service'}
+                                            >
+                                              {provider.name}{provider.type ? ` · ${provider.type}` : ''}
+                                            </a>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                );
+                              }
                               if (availability.status === 'ready' && availability.providers.length > 0) {
                                 return (
                                   <div className="mt-2 flex flex-wrap gap-1" aria-label={`Streaming services for ${group.title}`}>
