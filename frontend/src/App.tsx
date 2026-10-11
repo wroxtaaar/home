@@ -2814,6 +2814,21 @@ export default function App() {
             search continues in the background and its results remain available
             when the user returns to Search. */}
         <div className={activeTab === 'search' ? 'block' : 'hidden'}>
+          <div className="mb-4 flex flex-col gap-3 rounded-2xl border border-cyan-500/20 bg-slate-900/70 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div className="text-sm font-bold text-slate-100">Try NexStream Search</div>
+              <p className="mt-1 text-xs leading-5 text-slate-400">
+                Search movies and TV shows separately through TMDB, then test NexStream playback without changing your Seedr results.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => window.open('/nexstream-test.html', '_blank', 'noopener,noreferrer')}
+              className="inline-flex shrink-0 items-center justify-center rounded-xl border border-cyan-400/30 bg-cyan-500/10 px-4 py-2.5 text-sm font-bold text-cyan-300 transition hover:bg-cyan-500/20"
+            >
+              NexStream Search
+            </button>
+          </div>
           <TorrentSearchPanel
             onPrepare={handleSearchPrepare}
             onCancelPrepare={handleCancelSeedrDownload}
