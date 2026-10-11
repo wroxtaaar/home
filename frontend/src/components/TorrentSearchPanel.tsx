@@ -1029,6 +1029,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       {
         const availabilityGroups = groupTorrentResults(data).slice(0, 15);
         const pendingLiveLookups: typeof availabilityGroups = [];
+        const savedOnlyCatalogueModes = new Set([
+          'marvel', 'marvel-hindi', 'dc-live-action', 'dc-live-action-hindi', 'dc-animated'
+        ]);
 
         for (const group of availabilityGroups) {
           const cachedRow = group.variants.find(variant => {
@@ -1074,6 +1077,24 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   providers,
                 }],
                 message: saved.status === 'no_providers' ? 'No providers in saved enrichment.' : undefined,
+              }
+            }));
+            continue;
+          }
+
+          // Franchise shortcut results are backed by persistent enriched catalogues.
+          // Do not start a live title scan when a cached row has no saved OTT data.
+          if (searchMode && savedOnlyCatalogueModes.has(searchMode)) {
+            setSearchAvailabilityByGroup(previous => ({
+              ...previous,
+              [group.key]: {
+                status: 'not_confirmed',
+                query: group.title,
+                title: group.title,
+                year: group.year,
+                providers: [],
+                matches: [],
+                message: 'No saved streaming details are available for this cached title.'
               }
             }));
             continue;
@@ -2499,6 +2520,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               }
                               if (availability.status === 'unavailable') {
                                 return <div className="mt-2 text-[10px] text-slate-500">Streaming info unavailable</div>;
+                              }
+                              if (availability.status === 'not_confirmed') {
+                                return <div className="mt-2 text-[10px] text-slate-500">No saved streaming details</div>;
                               }
                               return null;
                             })()}
