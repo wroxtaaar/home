@@ -1,0 +1,67 @@
+name: Enrich remaining OTT catalogues
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: home-ott-catalogue-enrichment
+  cancel-in-progress: false
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_SSH_PORT: ${{ secrets.VPS_SSH_PORT || '22' }}
+        run: |
+          set -eu
+          test -n "$VPS_HOST" || { echo "Missing VPS_HOST"; exit 1; }
+          test -n "$VPS_SSH_KEY" || { echo "Missing VPS_SSH_KEY"; exit 1; }
+
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p "$VPS_SSH_PORT" "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Enrich missing OTT entries on Oracle VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_PORT: ${{ secrets.VPS_SSH_PORT || '22' }}
+        run: |
+          set -eu
+          test -n "$VPS_USER" || { echo "Missing VPS_USER"; exit 1; }
+
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=120 \
+            -p "$VPS_SSH_PORT" "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -eu
+
+          APP_DIR="$HOME/home"
+          DATA_DIR="$HOME/home-data"
+          SCRIPT="$APP_DIR/scripts/enrich_catalogue_ott.py"
+          LOG="$DATA_DIR/catalogue_ott_enrichment_run.log"
+
+          test -f "$SCRIPT" || { echo "Missing enrichment script: $SCRIPT"; exit 1; }
+          test -d "$DATA_DIR" || { echo "Missing persistent data directory: $DATA_DIR"; exit 1; }
+          curl -fsS http://127.0.0.1:10000/health
+          echo
+
+          if pgrep -af '[e]nrich_catalogue_ott.py' >/dev/null; then
+            echo "OTT catalogue enrichment is already running on the VPS; refusing to start a duplicate."
+            exit 0
+          fi
+
+          cd "$APP_DIR"
+          echo "Starting resumable OTT enrichment of the five persistent Marvel/DC catalogues."
+          echo "The script skips successful entries, backs up each catalogue before editing, and saves progress after each title."
+          echo "A full run log is also written to: $LOG"
+          python3 "$SCRIPT" 2>&1 | tee "$LOG"
+          REMOTE
