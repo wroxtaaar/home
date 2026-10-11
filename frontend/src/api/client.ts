@@ -274,14 +274,31 @@ export const api = {
     message?: string;
   }> {
     const params = new URLSearchParams({ q: query });
-    const res = await fetch(API_BASE + '/api/search/availability?' + params.toString(), {
-      signal, credentials: 'include', cache: 'no-store',
-    });
-    const body = await res.text();
-    let data: any = null;
-    try { data = body ? JSON.parse(body) : null; } catch {}
-    if (!res.ok) throw new Error(data?.detail || data?.message || body || ('Availability lookup failed (HTTP ' + res.status + ')'));
-    return data;
+    const controller = new AbortController();
+    let timedOut = false;
+    const timeoutId = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, 14000);
+    const forwardAbort = () => controller.abort();
+    if (signal?.aborted) controller.abort();
+    else signal?.addEventListener('abort', forwardAbort, { once: true });
+    try {
+      const res = await fetch(API_BASE + '/api/search/availability?' + params.toString(), {
+        signal: controller.signal, credentials: 'include', cache: 'no-store',
+      });
+      const body = await res.text();
+      let data: any = null;
+      try { data = body ? JSON.parse(body) : null; } catch {}
+      if (!res.ok) throw new Error(data?.detail || data?.message || body || ('Availability lookup failed (HTTP ' + res.status + ')'));
+      return data;
+    } catch (error: any) {
+      if (timedOut) throw new Error('Streaming availability check timed out.');
+      throw error;
+    } finally {
+      window.clearTimeout(timeoutId);
+      signal?.removeEventListener('abort', forwardAbort);
+    }
   },
 
   // Torrents (qBittorrent WebAPI)
