@@ -50,6 +50,7 @@ _PROVIDER_KEY_COOLDOWNS: dict[str, float] = {}
 _PROVIDER_KEY_FAILURES: dict[str, int] = {}
 _PROVIDER_KEY_CURSORS: dict[str, int] = {}
 _WATCHMODE_RATE_LIMITED_UNTIL = 0.0
+_WATCHMODE_RESOLVED_TITLE_IDS: dict[int, int | None] = {}
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
 
 
@@ -83,7 +84,7 @@ def _retry_after_seconds(response: httpx.Response, default: float = 60.0) -> flo
 
 
 async def _watchmode_get(path: str, *, params: dict[str, Any] | None = None,
-    timeout: httpx.Timeout | float = 10.0, auth_header: bool = False) -> httpx.Response | None:
+    timeout: httpx.Timeout | float = 10.0, auth_header: bool = True) -> httpx.Response | None:
     """Rotate through available keys immediately; retry transient failures once after a pause."""
     if not WATCHMODE_API_KEYS:
         return None
@@ -5712,18 +5713,94 @@ def _tmdb_watch_provider_rows(payload: Any) -> list[dict[str, Any]]:
     return rows
 
 
+async def _resolve_watchmode_title_id(movie_id: int) -> int | None:
+    """Resolve and memoize the native Watchmode title ID for a TMDB movie ID."""
+    if movie_id in _WATCHMODE_RESOLVED_TITLE_IDS:
+        return _WATCHMODE_RESOLVED_TITLE_IDS[movie_id]
+    if not WATCHMODE_API_KEYS:
+        return None
+    try:
+        response = await _watchmode_get(
+            "/search/",
+            params={"search_field": "tmdb_movie_id", "search_value": str(movie_id), "types": "movie"},
+            timeout=httpx.Timeout(10.0, connect=4.0),
+        )
+        if response is None or response.status_code >= 400:
+            status = response.status_code if response is not None else "no response"
+            logger.info("Watchmode ID resolution failed for TMDB movie %s (%s)", movie_id, status)
+            return None
+        payload = response.json()
+        results = payload.get("title_results") if isinstance(payload, dict) else None
+        matches: set[int] = set()
+        if isinstance(results, list):
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    result_tmdb_id = int(item.get("tmdb_id") or 0)
+                    watchmode_id = int(item.get("id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if (
+                    result_tmdb_id == movie_id
+                    and str(item.get("type") or "").casefold() == "movie"
+                    and watchmode_id > 0
+                ):
+                    matches.add(watchmode_id)
+        resolved = next(iter(matches)) if len(matches) == 1 else None
+        _WATCHMODE_RESOLVED_TITLE_IDS[movie_id] = resolved
+        if resolved is None:
+            logger.info("Watchmode has no unambiguous native title ID for TMDB movie %s", movie_id)
+        return resolved
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
+        logger.info("Watchmode ID resolution failed for TMDB movie %s: %s", movie_id, type(exc).__name__)
+        return None
+
+
 async def _watchmode_movie_sources(movie_id: int, region: str) -> list[dict[str, Any]]:
-    """Look up legal streaming/rent/buy options by TMDB movie ID."""
+    """Look up sources by TMDB ID, falling back to Watchmode's native title ID."""
     if not WATCHMODE_API_KEYS:
         return []
     try:
-        response = await _watchmode_get(f"/title/movie-{movie_id}/sources/",
-            params={"regions": region}, timeout=httpx.Timeout(10.0, connect=4.0))
-        if response is None or response.status_code >= 400:
+        response = await _watchmode_get(
+            f"/title/movie-{movie_id}/sources/",
+            params={"regions": region},
+            timeout=httpx.Timeout(10.0, connect=4.0),
+        )
+        if response is None:
             return []
-        payload = response.json()
-        return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
-    except (httpx.HTTPError, ValueError) as exc:
+        if response.status_code < 400:
+            payload = response.json()
+            if not isinstance(payload, list):
+                logger.info("Watchmode returned an unexpected source payload for TMDB movie %s", movie_id)
+                return []
+            rows = [item for item in payload if isinstance(item, dict)]
+            if rows:
+                return rows
+            # A valid empty response can mean the TMDB-formatted ID did not map
+            # to a Watchmode record. Resolve the native ID before concluding empty.
+        elif response.status_code != 404:
+            logger.info("Watchmode source lookup failed for TMDB movie %s (%s)", movie_id, response.status_code)
+            return []
+
+        watchmode_id = await _resolve_watchmode_title_id(movie_id)
+        if watchmode_id is None:
+            return []
+        fallback = await _watchmode_get(
+            f"/title/{watchmode_id}/sources/",
+            params={"regions": region},
+            timeout=httpx.Timeout(10.0, connect=4.0),
+        )
+        if fallback is None or fallback.status_code >= 400:
+            status = fallback.status_code if fallback is not None else "no response"
+            logger.info("Watchmode native-ID source lookup failed for TMDB movie %s (%s)", movie_id, status)
+            return []
+        payload = fallback.json()
+        if not isinstance(payload, list):
+            logger.info("Watchmode returned an unexpected native-ID source payload for TMDB movie %s", movie_id)
+            return []
+        return [item for item in payload if isinstance(item, dict)]
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
         logger.info("Watchmode source lookup failed for movie %s in %s: %s", movie_id, region, type(exc).__name__)
         return []
 
