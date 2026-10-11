@@ -6415,7 +6415,7 @@ async def api_search_availability(q: str = Query(..., min_length=2, max_length=1
     if not WATCHMODE_API_KEY:
         return {"status": "unavailable", "query": query, "providers": [], "message": "Watchmode is not configured."}
 
-    timeout = httpx.Timeout(4.0, connect=1.5)
+    timeout = httpx.Timeout(10.0, connect=3.0)
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             search_response = await client.get(
