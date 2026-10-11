@@ -69,6 +69,27 @@ export interface MovieCatalogueItem {
   };
 }
 
+export interface SearchMediaMetadata {
+  id: number | string;
+  tmdbId?: number | string;
+  title: string;
+  year?: number | null;
+  mediaType: 'movie' | 'tv';
+  overview?: string;
+  posterUrl?: string;
+  backdropUrl?: string;
+  rating?: number;
+  tmdbUrl: string;
+  source?: string;
+}
+
+export interface SearchMediaMetadataResponse {
+  status: 'ready' | 'not_found' | 'unavailable';
+  query: string;
+  source?: string;
+  results: SearchMediaMetadata[];
+}
+
 export interface MovieCataloguePage {
   catalogue: MovieCatalogueKey;
   provider: string;
@@ -170,6 +191,18 @@ const apiFetch = (input: RequestInfo | URL, init?: RequestInit) => {
 };
 
 export const api = {
+  async searchMediaMetadata(query: string, signal?: AbortSignal): Promise<SearchMediaMetadataResponse> {
+    const params = new URLSearchParams({ q: query });
+    const res = await fetch(API_BASE + '/api/search/metadata?' + params.toString(), {
+      signal, credentials: 'include', cache: 'no-store',
+    });
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch {}
+    if (!res.ok) throw new Error(data?.detail || body || ('TMDB metadata lookup failed (HTTP ' + res.status + ')'));
+    return data as SearchMediaMetadataResponse;
+  },
+
   async searchSavedOtt(titles: string[], signal?: AbortSignal): Promise<{
     status: string;
     results: Array<{ query: string; found: boolean; entries: Array<{
