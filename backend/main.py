@@ -6437,7 +6437,7 @@ def _attach_saved_ott_enrichment(catalogue_key: str, payload: dict[str, Any]) ->
             year_value = str(row.get("year") or "")
             if tmdb_id:
                 by_tmdb_id.setdefault(tmdb_id, row)
-            normalized = _normalize_title(re.sub(r"\\s*\\(?((?:19|20)\\d{2})\\)?\\s*$", "", title))
+            normalized = _normalize_title(re.sub(r"\s*\(?((?:19|20)\d{2})\)?\s*$", "", title))
             if normalized:
                 by_title_year.setdefault((normalized, year_value), row)
 
@@ -6452,7 +6452,7 @@ def _attach_saved_ott_enrichment(catalogue_key: str, payload: dict[str, Any]) ->
         if saved is None:
             title = str(item.get("title") or "").strip()
             year = str(item.get("year") or (str(item.get("releaseDate") or "")[:4]))
-            normalized = _normalize_title(re.sub(r"\\s*\\(?((?:19|20)\\d{2})\\)?\\s*$", "", title))
+            normalized = _normalize_title(re.sub(r"\s*\(?((?:19|20)\d{2})\)?\s*$", "", title))
             saved = by_title_year.get((normalized, year)) or by_title_year.get((normalized, ""))
         if saved:
             item["tmdbId"] = saved.get("tmdbId")
