@@ -129,33 +129,73 @@ function normalizeGroupTitle(value: string): string {
     .replace(/^(?:the|a|an)\s+/, '');
 }
 
+const PREFERRED_OTT_PROVIDERS = [
+  'amazon prime video',
+  'netflix',
+  'sonyliv',
+  'hotstar',
+  'apple tv',
+  'zee5',
+];
+
+function normalizeOttProviderName(name: string): string {
+  const normalized = String(name || '')
+    .toLowerCase()
+    .replace(/\\s*[-·:]\\s*(?:rent|buy|subscription|sub|streaming)\\s*$/i, '')
+    .replace(/\\s+with\\s+ads?$/i, '')
+    .replace(/\\s+(?:channel|add-on)$/i, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\\s+/g, ' ');
+
+  if (/^(?:primevideo|prime video|amazon video|amazon primevideo|amazon prime video)$/.test(normalized)) {
+    return 'amazon prime video';
+  }
+  if (/^(?:appletv|apple tv|apple tv store|apple tv plus|apple tv channel)$/.test(normalized)) {
+    return 'apple tv';
+  }
+  if (/^(?:jiohotstar|jio hotstar|hotstar)$/.test(normalized)) {
+    return 'hotstar';
+  }
+  if (/^sonyliv$/.test(normalized)) return 'sonyliv';
+  if (/^zee ?5$/.test(normalized)) return 'zee5';
+  if (normalized.startsWith('sony pictures ') && normalized.includes('amazon channel')) {
+    return 'sony pictures amazon channel';
+  }
+  if (normalized.includes('lionsgate play')) return 'lionsgate play';
+  return normalized;
+}
+
+function displayOttProviderName(name: string): string {
+  const key = normalizeOttProviderName(name);
+  const preferredLabels: Record<string, string> = {
+    'amazon prime video': 'Prime Video',
+    netflix: 'Netflix',
+    sonyliv: 'SonyLIV',
+    hotstar: 'Hotstar',
+    'apple tv': 'Apple TV',
+    zee5: 'ZEE5',
+  };
+  if (preferredLabels[key]) return preferredLabels[key];
+  return String(name || '')
+    .replace(/\\s*[-·:]\\s*(?:rent|buy|subscription|sub|streaming)\\s*$/i, '')
+    .replace(/\\s+with\\s+ads?$/i, '')
+    .trim();
+}
+
 function uniqueOttProviders<T extends { name: string; type?: string; webUrl?: string }>(providers: T[]): T[] {
-  const seen = new Set<string>();
-  return providers.filter(provider => {
-    let key = String(provider.name || '')
-      .toLowerCase()
-      .replace(/\s*[-·:]\s*(?:rent|buy|subscription|sub|streaming)\s*$/i, '')
-      .replace(/\s+with\s+ads?$/i, '')
-      .replace(/\s+(?:channel|add-on)$/i, '')
-      .replace(/[^a-z0-9]+/g, ' ')
-      .trim();
-
-    // Provider feeds can report one service as a storefront, ad tier, or channel.
-    // Normalize those aliases so each service appears only once on the movie card.
-    if (/^(?:amazon video|amazon prime video|amazon prime video with ads)$/.test(key)) {
-      key = 'amazon prime video';
-    } else if (/^(?:apple tv|apple tv store|apple tv plus|apple tv channel)$/.test(key)) {
-      key = 'apple tv';
-    } else if (key.includes('lionsgate play')) {
-      key = 'lionsgate play';
-    } else if (key.startsWith('sony pictures ') && key.includes('amazon channel')) {
-      key = 'sony pictures amazon channel';
-    }
-
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
-    return true;
+  const unique = new Map<string, T>();
+  providers.forEach(provider => {
+    const key = normalizeOttProviderName(provider.name);
+    if (!key || unique.has(key)) return;
+    unique.set(key, { ...provider, name: displayOttProviderName(provider.name) });
   });
+
+  const all = Array.from(unique.entries());
+  const preferred = all.filter(([key]) => PREFERRED_OTT_PROVIDERS.includes(key));
+  // If at least one of the six priority services is available, keep the card concise
+  // and show only priority services. Fall back to other providers only when none match.
+  return (preferred.length ? preferred : all).map(([, provider]) => provider);
 }
 
 function normalizeSavedOttProviders(
@@ -2646,10 +2686,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                 return (
                                   <div className="mt-2 flex flex-wrap gap-1" aria-label={`Streaming services for ${group.title}`}>
                                     {providersToShow.map((provider, providerIndex) => {
-                                      const name = String(provider.name || '')
-                                        .replace(/\s*[-·:]\s*(?:rent|buy|subscription|sub|streaming)\s*$/i, '')
-                                        .replace(/\s+with\s+ads?$/i, '')
-                                        .trim();
+                                      const name = displayOttProviderName(provider.name);
                                       return (
                                         <a
                                           key={name.toLowerCase() || String(providerIndex)}
