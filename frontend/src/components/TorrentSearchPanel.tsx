@@ -994,100 +994,22 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       setSearched(true);
       startPosterBackgroundSearch(data);
 
-      // Prefer the saved OTT enrichment embedded in the persistent Marvel/DC catalogue rows.
-      // Those catalogues were already enriched with tmdbId + ottAvailability; don't re-scan
-      // their titles through Watchmode/TMDB on every visit. Only use live search as a fallback
-      // for entries that genuinely have no saved enrichment.
+      // Resolve streaming providers per movie card, independently of torrent search.
+      // Keep lookups bounded and asynchronous so provider checks never delay results.
       {
-        const cachedCatalogueModes = new Set([
-          'marvel', 'marvel-hindi', 'dc-live-action', 'dc-live-action-hindi', 'dc-animated'
-        ]);
-        const useEnrichedCatalogue = Boolean(searchMode && cachedCatalogueModes.has(searchMode));
+        // Run the same per-title lookup for normal searches and the cached
+        // Marvel/DC/other franchise catalogues. Watchmode's backend cache lets
+        // later visitors reuse resolved availability instead of starting over.
         const availabilityGroups = groupTorrentResults(data).slice(0, 15);
-        const pendingLiveLookups: typeof availabilityGroups = [];
-
         for (const group of availabilityGroups) {
-          let cachedRow: any = null;
-          let cachedOtt: any = null;
-          if (useEnrichedCatalogue) {
-            for (const variant of group.variants) {
-              const row = variant as TorrentSearchResult & {
-                tmdbId?: number | string;
-                ottAvailability?: any;
-                catalogueTitle?: string;
-                marvelCatalogueTitle?: string;
-              };
-              if (row.ottAvailability && typeof row.ottAvailability === 'object') {
-                cachedRow = row;
-                cachedOtt = row.ottAvailability;
-                break;
-              }
-            }
-          }
-
-          if (cachedOtt) {
-            const toProvider = (provider: any, type: string) => ({
-              name: String(provider?.name || provider?.provider_name || '').trim(),
-              region: String(provider?.region || cachedOtt.region || 'IN'),
-              type: String(provider?.type || type),
-              webUrl: provider?.webUrl || provider?.web_url || provider?.url || undefined,
-            });
-            const providers = [
-              ...(Array.isArray(cachedOtt.streamingProviders) ? cachedOtt.streamingProviders.map((p: any) => toProvider(p, 'streaming')) : []),
-              ...(Array.isArray(cachedOtt.rentProviders) ? cachedOtt.rentProviders.map((p: any) => toProvider(p, 'rent')) : []),
-              ...(Array.isArray(cachedOtt.buyProviders) ? cachedOtt.buyProviders.map((p: any) => toProvider(p, 'buy')) : []),
-            ].filter((provider: any) => provider.name);
-            const cachedTitle = String(
-              cachedRow.catalogueTitle || cachedRow.marvelCatalogueTitle ||
-              cachedRow.mediaTitle || cachedRow.title || group.title
-            ).replace(/\\s*\\(?(?:19|20)\\d{2}\\)?\\s*$/, '').trim();
-            const cachedStatus = String(cachedOtt.status || '');
-            const cachedAvailability = {
-              status: 'ready' as const,
-              query: cachedTitle,
-              title: cachedTitle,
-              year: group.year,
-              matches: [{
-                id: String(cachedRow.tmdbId || ''),
-                tmdbId: cachedRow.tmdbId,
-                title: cachedTitle,
-                year: group.year,
-                type: 'movie',
-                status: 'ready' as const,
-                providers,
-              }],
-              providers,
-              message: cachedStatus === 'no_providers' ? 'No providers in saved enrichment.' : undefined,
-            };
-            setSearchAvailabilityByGroup(previous => ({ ...previous, [group.key]: cachedAvailability }));
-            continue;
-          }
-
-          // Preserve an explicit completed state for cached rows with no providers;
-          // don't keep those cards in a loading state or re-check them every visit.
-          if (useEnrichedCatalogue && group.variants.some(variant =>
-            Boolean((variant as any).tmdbId) && (variant as any).ottAvailability &&
-            (variant as any).ottAvailability.status === 'no_providers'
-          )) {
-            setSearchAvailabilityByGroup(previous => ({
-              ...previous,
-              [group.key]: { status: 'ready', query: group.title, title: group.title, providers: [], matches: [] }
-            }));
-            continue;
-          }
-
           setSearchAvailabilityByGroup(previous => ({
             ...previous,
             [group.key]: { status: 'loading', query: group.title, providers: [] }
           }));
-          pendingLiveLookups.push(group);
         }
-
-        void Promise.allSettled(pendingLiveLookups.map(async group => {
+        void Promise.allSettled(availabilityGroups.map(async group => {
           try {
-            const availabilityQuery = group.year
-              ? group.title.slice(0, group.title.lastIndexOf(' (')).trim()
-              : group.title.trim();
+            const availabilityQuery = group.year ? group.title.slice(0, group.title.lastIndexOf(' (')).trim() : group.title.trim();
             const value = await api.searchAvailability(availabilityQuery);
             if (generation === searchGenerationRef.current) {
               setSearchAvailabilityByGroup(previous => ({ ...previous, [group.key]: value }));
