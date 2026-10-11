@@ -9122,7 +9122,7 @@ async def _get_imdb_rating_record(title: str, year: int) -> dict[str, Any]:
 
 @app.get("/api/catalogue/imdb-ratings")
 async def api_catalogue_imdb_ratings(
-    titles: list[str] = Query(..., min_length=2, max_length=180),
+    titles: list[str] = Query(..., min_length=1, max_length=80),
 ):
     """Return cached IMDb ratings for movie titles; provider calls never block catalogue loading."""
     requested: dict[str, tuple[str, int, str]] = {}
