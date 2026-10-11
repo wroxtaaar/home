@@ -260,11 +260,14 @@ def main():
                 continue
 
             tmdb_id = state.get("resolved", {}).get(identity)
-            if not tmdb_id and identity in resolution_cache:
-                tmdb_id = resolution_cache[identity]
-            if not tmdb_id:
+            if identity in resolution_cache:
+                tmdb_id, resolution = resolution_cache[identity]
+                if not tmdb_id:
+                    counts[resolution] = counts.get(resolution, 0) + 1
+                    continue
+            elif not tmdb_id:
                 tmdb_id, resolution = resolve_movie(title, year, tokens)
-                resolution_cache[identity] = tmdb_id
+                resolution_cache[identity] = (tmdb_id, resolution)
                 if tmdb_id:
                     state.setdefault("resolved", {})[identity] = tmdb_id
                     save_state(state)
