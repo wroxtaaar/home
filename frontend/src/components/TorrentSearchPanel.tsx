@@ -928,7 +928,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
       // Resolve streaming providers per movie card, independently of torrent search.
       // Keep lookups bounded and asynchronous so provider checks never delay results.
-      if (!searchMode) {
+      {
+        // Run the same per-title lookup for normal searches and the cached
+        // Marvel/DC/other franchise catalogues. Watchmode's backend cache lets
+        // later visitors reuse resolved availability instead of starting over.
         const availabilityGroups = groupTorrentResults(data).slice(0, 15);
         for (const group of availabilityGroups) {
           setSearchAvailabilityByGroup(previous => ({
