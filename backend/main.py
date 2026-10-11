@@ -33,73 +33,127 @@ logger = logging.getLogger("torrent-studio")
 # TMDB provides dynamic, paginated movie discovery. Credentials stay server-side;
 # use a free developer key for non-commercial use or the API Read Access Token.
 TMDB_API_KEY = os.getenv("TMDB_API_KEY", "").strip()
-# Accept a comma- or newline-separated list of bearer tokens while preserving
-# the legacy single-token variables for existing deployments.
-TMDB_READ_ACCESS_TOKENS = list(dict.fromkeys(
-    token.strip()
-    for token in (
-        os.getenv("TMDB_READ_ACCESS_TOKENS", "").replace("\\n", "\n").replace(",", "\n").splitlines()
-        + [
-            os.getenv("TMDB_READ_ACCESS_TOKEN", "").strip(),
-            os.getenv("TMDB_BEARER_TOKEN", "").strip(),
-        ]
-    )
-    if token.strip()
-))
+def _split_env_keys(*values: str) -> list[str]:
+    return list(dict.fromkeys(item.strip() for value in values
+        for item in str(value or "").replace("\\n", "\n").replace(",", "\n").splitlines()
+        if item.strip()))
+
+TMDB_API_KEYS = _split_env_keys(os.getenv("TMDB_API_KEYS", ""), os.getenv("TMDB_API_KEY", ""))
+TMDB_READ_ACCESS_TOKENS = _split_env_keys(os.getenv("TMDB_READ_ACCESS_TOKENS", ""),
+    os.getenv("TMDB_READ_ACCESS_TOKEN", ""), os.getenv("TMDB_BEARER_TOKEN", ""))
 TMDB_READ_ACCESS_TOKEN = TMDB_READ_ACCESS_TOKENS[0] if TMDB_READ_ACCESS_TOKENS else ""
 TMDB_API_BASE = "https://api.themoviedb.org/3"
-# Multiple Watchmode keys are accepted for credential resilience. Prefer the plural
-# variable; retain WATCHMODE_API_KEY for existing deployments.
-WATCHMODE_API_KEYS = list(dict.fromkeys(
-    key.strip()
-    for key in (
-        os.getenv("WATCHMODE_API_KEYS", "").replace("\\n", "\n").replace(",", "\n").splitlines()
-        + [os.getenv("WATCHMODE_API_KEY", "").strip()]
-    )
-    if key.strip()
-))
+WATCHMODE_API_KEYS = _split_env_keys(os.getenv("WATCHMODE_API_KEYS", ""), os.getenv("WATCHMODE_API_KEY", ""))
 WATCHMODE_API_KEY = WATCHMODE_API_KEYS[0] if WATCHMODE_API_KEYS else ""
 WATCHMODE_API_BASE = "https://api.watchmode.com/v1"
-# Shared cooldown prevents manual cache warm-ups from continuing to hit Watchmode after HTTP 429.
+_PROVIDER_KEY_COOLDOWNS: dict[str, float] = {}
+_PROVIDER_KEY_FAILURES: dict[str, int] = {}
+_PROVIDER_KEY_CURSORS: dict[str, int] = {}
 _WATCHMODE_RATE_LIMITED_UNTIL = 0.0
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
 
 
-async def _watchmode_get(path: str, *, params: dict[str, Any] | None = None, timeout: httpx.Timeout | float = 10.0, auth_header: bool = False) -> httpx.Response | None:
-    """Request Watchmode with configured keys; stop on quota/rate-limit responses.
+def _provider_key_id(provider: str, key: str) -> str:
+    return provider + ":" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
-    A second key is only tried for an invalid credential, transport failure, or
-    server error. HTTP 429/403 are returned immediately rather than used to
-    bypass a provider's quota or access restriction.
-    """
+
+def _provider_key_available(provider: str, key: str) -> bool:
+    return _PROVIDER_KEY_COOLDOWNS.get(_provider_key_id(provider, key), 0.0) <= time.time()
+
+
+def _provider_key_failure(provider: str, key: str, seconds: float, reason: str) -> None:
+    identity = _provider_key_id(provider, key)
+    _PROVIDER_KEY_FAILURES[identity] = _PROVIDER_KEY_FAILURES.get(identity, 0) + 1
+    _PROVIDER_KEY_COOLDOWNS[identity] = max(_PROVIDER_KEY_COOLDOWNS.get(identity, 0.0), time.time() + max(1.0, seconds))
+    logger.warning("%s credential %s cooling down for %.0fs (%s; failures=%s)",
+        provider, identity.rsplit(":", 1)[-1], max(1.0, seconds), reason, _PROVIDER_KEY_FAILURES[identity])
+
+
+def _provider_key_success(provider: str, key: str) -> None:
+    identity = _provider_key_id(provider, key)
+    _PROVIDER_KEY_FAILURES.pop(identity, None)
+    _PROVIDER_KEY_COOLDOWNS.pop(identity, None)
+
+
+def _retry_after_seconds(response: httpx.Response, default: float = 60.0) -> float:
+    try:
+        return max(1.0, min(21600.0, float(str(response.headers.get("Retry-After") or "").strip())))
+    except (TypeError, ValueError):
+        return default
+
+
+async def _watchmode_get(path: str, *, params: dict[str, Any] | None = None,
+    timeout: httpx.Timeout | float = 10.0, auth_header: bool = False) -> httpx.Response | None:
+    """Rotate through available keys immediately; retry transient failures once after a pause."""
     if not WATCHMODE_API_KEYS:
         return None
+    provider = "watchmode"
     request_params = dict(params or {})
+    start = _PROVIDER_KEY_CURSORS.get(provider, 0) % len(WATCHMODE_API_KEYS)
+    ordered = WATCHMODE_API_KEYS[start:] + WATCHMODE_API_KEYS[:start]
+    _PROVIDER_KEY_CURSORS[provider] = (start + 1) % len(WATCHMODE_API_KEYS)
     last_response = None
-    for index, key in enumerate(WATCHMODE_API_KEYS):
+    transient_failed: list[str] = []
+    eligible = 0
+
+    async def attempt(key: str) -> tuple[httpx.Response | None, bool]:
+        nonlocal last_response, eligible
+        if not _provider_key_available(provider, key):
+            return None, False
+        eligible += 1
         headers = {"Accept": "application/json"}
+        query = dict(request_params)
         if auth_header:
             headers["X-API-Key"] = key
-            current_params = dict(request_params)
-            current_params.pop("apiKey", None)
+            query.pop("apiKey", None)
         else:
-            current_params = dict(request_params)
-            current_params["apiKey"] = key
+            query["apiKey"] = key
         try:
             async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=headers) as client:
-                response = await client.get(f"{WATCHMODE_API_BASE}{path}", params=current_params)
+                response = await client.get(f"{WATCHMODE_API_BASE}{path}", params=query)
             last_response = response
-            if response.status_code == 401 or response.status_code >= 500:
-                if index + 1 < len(WATCHMODE_API_KEYS):
-                    continue
-            # Do not rotate keys to work around quota/rate limits or forbidden access.
-            return response
+            if response.status_code < 300:
+                _provider_key_success(provider, key)
+                return response, True
+            if response.status_code == 429:
+                _provider_key_failure(provider, key, _retry_after_seconds(response), "HTTP 429")
+                return None, False
+            if response.status_code in {401, 403}:
+                _provider_key_failure(provider, key, 3600, f"HTTP {response.status_code}")
+                return None, False
+            if response.status_code >= 500:
+                transient_failed.append(key)
+                return None, False
+            return response, True
         except httpx.HTTPError as exc:
-            logger.info("Watchmode request failed for %s using configured key %s/%s: %s", path, index + 1, len(WATCHMODE_API_KEYS), type(exc).__name__)
-            if index + 1 >= len(WATCHMODE_API_KEYS):
-                return last_response
-    return last_response
-# If TMDB API connections are reset before TLS completes, pause new API attempts
+            logger.info("Watchmode transport failure for %s credential %s: %s",
+                path, _provider_key_id(provider, key).rsplit(":", 1)[-1], type(exc).__name__)
+            transient_failed.append(key)
+            return None, False
+
+    for key in ordered:
+        response, terminal = await attempt(key)
+        if response is not None and terminal:
+            return response
+    if transient_failed:
+        await asyncio.sleep(0.75)
+        retry_keys = list(dict.fromkeys(transient_failed))
+        transient_failed.clear()
+        for key in retry_keys:
+            response, terminal = await attempt(key)
+            if response is not None and terminal:
+                return response
+        for key in retry_keys:
+            if _provider_key_available(provider, key):
+                _provider_key_failure(provider, key, 30, "failed twice in one request")
+    if last_response is not None:
+        return last_response
+    if not eligible:
+        logger.info("All Watchmode keys are cooling down for %s", path)
+    return None
+
+
+# If TMDB API connections are reset before TLS completes# If TMDB API connections are reset before TLS completes, pause new API attempts
 # briefly so catalogue requests fail fast and can fall back to persistent caches.
 TMDB_API_CONNECT_FAILURE_COOLDOWN_SECONDS = max(15, int(os.getenv("TMDB_API_CONNECT_FAILURE_COOLDOWN_SECONDS", "60")))
 _tmdb_api_connect_failure_until = 0.0
@@ -5694,46 +5748,18 @@ def _tmdb_watch_provider_rows(payload: Any) -> list[dict[str, Any]]:
 
 
 async def _watchmode_movie_sources(movie_id: int, region: str) -> list[dict[str, Any]]:
-    """Look up legal streaming/rent/buy options by the matching TMDB movie ID."""
-    global _WATCHMODE_RATE_LIMITED_UNTIL
-    if not WATCHMODE_API_KEYS or time.time() < _WATCHMODE_RATE_LIMITED_UNTIL:
+    """Look up legal streaming/rent/buy options by TMDB movie ID."""
+    if not WATCHMODE_API_KEYS:
         return []
     try:
-        response = await _watchmode_get(
-            f"/title/movie-{movie_id}/sources/",
-            params={"regions": region},
-            timeout=httpx.Timeout(10.0, connect=4.0),
-        )
-        if response is None:
+        response = await _watchmode_get(f"/title/movie-{movie_id}/sources/",
+            params={"regions": region}, timeout=httpx.Timeout(10.0, connect=4.0))
+        if response is None or response.status_code >= 400:
             return []
-        if response.status_code in {401, 403}:
-            logger.warning("Watchmode rejected configured credentials (HTTP %s)", response.status_code)
-            return []
-        if response.status_code == 429:
-            retry_after = response.headers.get("Retry-After", "").strip()
-            try:
-                cooldown_seconds = max(1, min(3600, int(float(retry_after))))
-            except (TypeError, ValueError):
-                cooldown_seconds = 60
-            _WATCHMODE_RATE_LIMITED_UNTIL = max(
-                _WATCHMODE_RATE_LIMITED_UNTIL,
-                time.time() + cooldown_seconds,
-            )
-            logger.warning(
-                "Watchmode returned HTTP 429; pausing provider lookups for %s seconds",
-                cooldown_seconds,
-            )
-            return []
-        if response.status_code >= 500:
-            logger.info("Watchmode temporarily unavailable (HTTP %s)", response.status_code)
-            return []
-        response.raise_for_status()
         payload = response.json()
-        if not isinstance(payload, list):
-            return []
-        return [item for item in payload if isinstance(item, dict)]
+        return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
     except (httpx.HTTPError, ValueError) as exc:
-        logger.info("Watchmode source lookup failed for TMDB movie %s in %s: %s", movie_id, region, exc)
+        logger.info("Watchmode source lookup failed for movie %s in %s: %s", movie_id, region, type(exc).__name__)
         return []
 
 
@@ -5876,153 +5902,82 @@ async def _tmdb_fetch_movie_ott_availability(movie_id: int, region: str) -> dict
     }
 
 async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-    global _tmdb_api_connect_failure_until
-
-    read_tokens = TMDB_READ_ACCESS_TOKENS
-    if not read_tokens and not TMDB_API_KEY:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "TMDB API credentials are not configured. Add TMDB_READ_ACCESS_TOKEN, "
-                "TMDB_READ_ACCESS_TOKENS, or TMDB_API_KEY to the server environment "
-                "to enable paginated movie discovery."
-            ),
-        )
-
-    cooldown_remaining = _tmdb_api_connect_failure_until - time.monotonic()
-    if cooldown_remaining > 0:
-        retry_in = max(1, int(cooldown_remaining + 0.999))
-        raise HTTPException(
-            status_code=503,
-            detail=f"TMDB API connections are temporarily failing from this VPS; skipping retries for about {retry_in}s.",
-        )
-
+    credentials = [("bearer", token) for token in TMDB_READ_ACCESS_TOKENS] + [("api_key", key) for key in TMDB_API_KEYS]
+    if not credentials:
+        raise HTTPException(status_code=503, detail="TMDB credentials are not configured. Set TMDB_API_KEYS and/or TMDB_READ_ACCESS_TOKENS.")
+    provider = "tmdb"
+    start = _PROVIDER_KEY_CURSORS.get(provider, 0) % len(credentials)
+    ordered = credentials[start:] + credentials[:start]
+    _PROVIDER_KEY_CURSORS[provider] = (start + 1) % len(credentials)
     query = dict(params or {})
-    # Try bearer tokens in order. The API-key query parameter remains a legacy
-    # fallback only when no bearer token is configured.
-    credentials: list[tuple[str, str]] = (
-        [("bearer", token) for token in read_tokens]
-        if read_tokens
-        else [("api_key", TMDB_API_KEY)]
-    )
-    last_error: Exception | None = None
+    last_response = None
+    transient_failed: list[tuple[str, str]] = []
+    last_error = None
 
-    for credential_index, (credential_type, credential) in enumerate(credentials):
+    async def attempt(kind: str, credential: str) -> dict[str, Any] | None:
+        nonlocal last_response, last_error
+        fingerprint = kind + ":" + credential
+        identity = _provider_key_id(provider, fingerprint)
+        if _PROVIDER_KEY_COOLDOWNS.get(identity, 0.0) > time.time():
+            return None
         headers = {"Accept": "application/json"}
         request_params = dict(query)
-        if credential_type == "bearer":
+        if kind == "bearer":
             headers["Authorization"] = "Bearer " + credential
         else:
             request_params["api_key"] = credential
-
-        rejected_credential = False
-        # Use a fresh AsyncClient for every attempt so DNS is resolved again;
-        # this matters when the CDN has several edge IPs and some reset TLS.
-        # Keep retries bounded to avoid hammering TMDB during a wider outage.
-        max_attempts = 6
-        for attempt in range(max_attempts):
-            try:
-                async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(12.0, connect=4.0),
-                    follow_redirects=True,
-                    headers=headers,
-                ) as client:
-                    response = await client.get(
-                        f"{TMDB_API_BASE}/{path.lstrip('/')}",
-                        params=request_params,
-                    )
-
-                if response.status_code in {401, 403}:
-                    rejected_credential = True
-                    logger.warning(
-                        "TMDB rejected credential %s/%s with HTTP %s for %s; trying the next configured credential",
-                        credential_index + 1, len(credentials), response.status_code, path,
-                    )
-                    break
-
-                if response.status_code == 429 or response.status_code >= 500:
-                    if attempt < max_attempts - 1:
-                        logger.warning(
-                            "TMDB temporary HTTP %s for %s (attempt %s/%s)",
-                            response.status_code, path, attempt + 1, max_attempts,
-                        )
-                        await asyncio.sleep(min(4.0, 0.5 * (2 ** min(attempt, 3))) + secrets.randbelow(501) / 1000)
-                        continue
-                    if response.status_code == 429:
-                        raise HTTPException(
-                            status_code=503,
-                            detail="TMDB rate-limited this request after retries. Please wait briefly and try again.",
-                        )
-
-                response.raise_for_status()
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(12.0, connect=4.0), follow_redirects=True, headers=headers) as client:
+                response = await client.get(f"{TMDB_API_BASE}/{path.lstrip('/')}", params=request_params)
+            last_response = response
+            if 200 <= response.status_code < 300:
+                _provider_key_success(provider, fingerprint)
                 payload = response.json()
-                if not isinstance(payload, dict):
-                    raise HTTPException(status_code=502, detail="TMDB returned an unexpected response.")
+                if isinstance(payload, dict):
+                    return payload
+                last_error = ValueError("TMDB returned non-object JSON")
+                transient_failed.append((kind, credential))
+                return None
+            if response.status_code == 429:
+                _provider_key_failure(provider, fingerprint, _retry_after_seconds(response), "HTTP 429")
+                return None
+            if response.status_code in {401, 403}:
+                _provider_key_failure(provider, fingerprint, 3600, f"HTTP {response.status_code}")
+                return None
+            if response.status_code >= 500:
+                transient_failed.append((kind, credential))
+                return None
+            response.raise_for_status()
+            return None
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(status_code=502, detail=f"TMDB returned HTTP {exc.response.status_code}.") from exc
+        except (httpx.RequestError, ValueError) as exc:
+            last_error = exc
+            logger.info("TMDB request failed for %s credential %s: %s", path,
+                _provider_key_id(provider, fingerprint).rsplit(":", 1)[-1], type(exc).__name__)
+            transient_failed.append((kind, credential))
+            return None
+
+    for kind, credential in ordered:
+        payload = await attempt(kind, credential)
+        if payload is not None:
+            return payload
+    if transient_failed:
+        await asyncio.sleep(0.75)
+        retry_credentials = list(dict.fromkeys(transient_failed))
+        transient_failed.clear()
+        for kind, credential in retry_credentials:
+            payload = await attempt(kind, credential)
+            if payload is not None:
                 return payload
-
-            except HTTPException:
-                raise
-            except httpx.RequestError as exc:
-                last_error = exc
-                is_transient_connection_error = isinstance(
-                    exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError)
-                )
-                logger.warning(
-                    "TMDB network request failed for %s (attempt %s/%s): %s: %s",
-                    path, attempt + 1, max_attempts, type(exc).__name__, str(exc) or "<no message>",
-                )
-
-                # A new client is created on every iteration to allow DNS to
-                # resolve again. Do not rotate credentials for transport errors.
-                if attempt < max_attempts - 1:
-                    backoff_seconds = min(4.0, 0.5 * (2 ** min(attempt, 3))) + (secrets.randbelow(501) / 1000)
-                    await asyncio.sleep(backoff_seconds)
-                    continue
-
-                if is_transient_connection_error:
-                    _tmdb_api_connect_failure_until = max(
-                        _tmdb_api_connect_failure_until,
-                        time.monotonic() + TMDB_API_CONNECT_FAILURE_COOLDOWN_SECONDS,
-                    )
-                    logger.warning(
-                        "TMDB connection failed after %s attempts; opening %ss cooldown",
-                        max_attempts, TMDB_API_CONNECT_FAILURE_COOLDOWN_SECONDS,
-                    )
-                    raise HTTPException(
-                        status_code=503,
-                        detail=(
-                            "TMDB API connections failed after retries. "
-                            "Requests are paused briefly; cached catalogues will be used when available."
-                        ),
-                    ) from exc
-            except httpx.HTTPStatusError as exc:
-                logger.warning("TMDB returned HTTP %s for %s", exc.response.status_code, path)
-                raise HTTPException(status_code=502, detail=f"TMDB returned HTTP {exc.response.status_code}.") from exc
-            except ValueError as exc:
-                logger.warning("TMDB returned invalid JSON for %s: %s", path, exc)
-                raise HTTPException(status_code=502, detail="TMDB returned an invalid response. Try again shortly.") from exc
-
-        if not rejected_credential:
-            # The retry loop should either return a response or raise. Keep a
-            # defensive error rather than silently continuing with bad state.
-            break
-
-    if read_tokens:
-        logger.warning("All configured TMDB bearer tokens were rejected for %s", path)
-        raise HTTPException(
-            status_code=503,
-            detail="TMDB rejected all configured read-access tokens. Check TMDB_READ_ACCESS_TOKENS and TMDB_READ_ACCESS_TOKEN.",
-        )
-
-    logger.warning(
-        "TMDB request exhausted retries for %s: %s",
-        path,
-        (type(last_error).__name__ + ": " + str(last_error)) if last_error else "upstream failure",
-    )
-    raise HTTPException(
-        status_code=502,
-        detail="TMDB is temporarily unreachable from the VPS after three attempts. Please try again shortly.",
-    )
+        for kind, credential in retry_credentials:
+            _provider_key_failure(provider, kind + ":" + credential, 30, "failed twice in one request")
+    if last_response is not None and last_response.status_code == 429:
+        raise HTTPException(status_code=503, detail="All eligible TMDB credentials are rate-limited or cooling down; retry shortly.")
+    if last_response is not None and last_response.status_code in {401, 403}:
+        raise HTTPException(status_code=503, detail="TMDB credentials were rejected or are cooling down. Check the configured keys.")
+    logger.warning("TMDB request exhausted available credentials for %s (%s)", path, type(last_error).__name__ if last_error else "no eligible credential")
+    raise HTTPException(status_code=503, detail="TMDB is temporarily unavailable or all credentials are cooling down. Cached catalogues will be used when available.")
 
 
 async def _tmdb_discovered_company_ids(franchise: str) -> list[str]:
@@ -6513,7 +6468,7 @@ _WATCHMODE_SEARCH_CACHE_TTL = 6 * 60 * 60
 
 @app.get("/api/search/availability")
 async def api_search_availability(q: str = Query(..., min_length=2, max_length=160)):
-    """Return streaming providers without putting Watchmode on the torrent-search critical path."""
+    """Return separate India streaming availability for multiple matching movie titles."""
     query = re.sub(r"\s+", " ", q).strip()
     cache_key = query.casefold()
     now = time.time()
@@ -6521,84 +6476,86 @@ async def api_search_availability(q: str = Query(..., min_length=2, max_length=1
     if cached and now - cached[0] < _WATCHMODE_SEARCH_CACHE_TTL:
         return cached[1]
     if not WATCHMODE_API_KEYS:
-        return {"status": "unavailable", "query": query, "providers": [], "message": "Watchmode is not configured."}
-
-    timeout = httpx.Timeout(10.0, connect=3.0)
+        return {"status": "unavailable", "query": query, "matches": [], "providers": [], "message": "Watchmode is not configured."}
+    timeout = httpx.Timeout(8.0, connect=3.0)
     try:
-        search_response = await _watchmode_get(
-            "/search/",
-            params={"search_field": "name", "search_value": query, "types": "movie,tv_series"},
-            timeout=timeout,
-        )
-        if search_response is None:
-            raise httpx.RequestError("No Watchmode credentials or response")
-        search_response.raise_for_status()
-        search_data = search_response.json()
-        titles = search_data.get("title_results", []) if isinstance(search_data, dict) else []
+        response = await _watchmode_get("/search/",
+            params={"search_field": "name", "search_value": query, "types": "movie"}, timeout=timeout)
+        if response is None or response.status_code >= 400:
+            raise httpx.RequestError("Watchmode search had no successful credential")
+        data = response.json()
+        titles = data.get("title_results", []) if isinstance(data, dict) else []
+        titles = [item for item in titles if isinstance(item, dict) and item.get("id")]
         if not titles:
-            result = {"status": "not_found", "query": query, "providers": []}
+            result = {"status": "not_found", "query": query, "matches": [], "providers": []}
             _watchmode_search_cache[cache_key] = (now, result)
             return result
 
-        # Prefer an exact normalized title match; otherwise use Watchmode's
-        # highest-ranked search result to avoid unrelated provider badges.
-        def norm_title(value: Any) -> str:
+        def norm(value: Any) -> str:
             return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
-        target = norm_title(query)
-        titles = [x for x in titles if isinstance(x, dict) and x.get("id")]
-        if not titles:
-            return {"status": "not_found", "query": query, "providers": []}
-        titles.sort(key=lambda item: (
-            norm_title(item.get("name")) == target,
-            target in norm_title(item.get("name")),
-        ), reverse=True)
-        title = titles[0]
-        sources_response = await _watchmode_get(
-            f"/title/{int(title['id'])}/sources/",
-            params={"regions": "IN"},
-            timeout=timeout,
-        )
-        if sources_response is None:
-            raise httpx.RequestError("No Watchmode credentials or response")
-        sources_response.raise_for_status()
-        sources = sources_response.json()
-        providers = []
-        seen = set()
-        if isinstance(sources, list):
-            for source in sources:
-                if not isinstance(source, dict):
-                    continue
-                name = str(source.get("name") or source.get("source_name") or "").strip()
-                if not name:
-                    continue
-                region = str(source.get("region") or "").upper()
-                kind = str(source.get("type") or "").lower()
-                key = (name.casefold(), region, kind)
-                if key in seen:
-                    continue
-                seen.add(key)
-                providers.append({
-                    "name": name,
-                    "region": region,
-                    "type": kind,
-                    "webUrl": source.get("web_url") or source.get("ios_url") or source.get("android_url") or "",
-                })
-        result = {
-            "status": "ready" if providers else "not_confirmed",
-            "query": query,
-            "title": str(title.get("name") or query),
-            "year": title.get("year"),
-            "providers": providers[:24],
-            "source": "Watchmode",
-        }
+        target = norm(query)
+        titles.sort(key=lambda item: (norm(item.get("name")) == target, target in norm(item.get("name")), bool(item.get("year"))), reverse=True)
+        selected, seen = [], set()
+        for item in titles:
+            wid = str(item.get("id") or "")
+            kind = str(item.get("type") or "").lower()
+            if not wid or wid in seen or (kind and "movie" not in kind and kind not in {"film", "feature"}):
+                continue
+            seen.add(wid)
+            selected.append(item)
+            if len(selected) >= 6:
+                break
+
+        async def resolve(item: dict[str, Any]) -> dict[str, Any]:
+            wid = str(item.get("id") or "")
+            try:
+                resp = await _watchmode_get(f"/title/{quote(wid, safe='')}/sources/",
+                    params={"regions": "IN"}, timeout=timeout)
+                if resp is None or resp.status_code >= 400:
+                    return {"id": wid, "title": str(item.get("name") or query), "year": item.get("year"), "providers": [], "status": "unavailable"}
+                raw = resp.json()
+            except (httpx.HTTPError, ValueError, TypeError):
+                raw = []
+            providers, seen_sources = [], set()
+            if isinstance(raw, list):
+                for source in raw:
+                    if not isinstance(source, dict):
+                        continue
+                    name = str(source.get("name") or source.get("source_name") or "").strip()
+                    if not name:
+                        continue
+                    region = str(source.get("region") or "IN").upper()
+                    kind = str(source.get("type") or "").lower()
+                    identity = (name.casefold(), region, kind)
+                    if identity in seen_sources:
+                        continue
+                    seen_sources.add(identity)
+                    providers.append({"name": name, "region": region, "type": kind,
+                        "webUrl": source.get("web_url") or source.get("ios_url") or source.get("android_url") or ""})
+            return {"id": wid, "title": str(item.get("name") or query), "year": item.get("year"),
+                "type": str(item.get("type") or "movie"), "tmdbId": item.get("tmdb_id"),
+                "providers": providers[:24], "status": "ready" if providers else "not_confirmed", "source": "Watchmode"}
+
+        matches = await asyncio.gather(*(resolve(item) for item in selected))
+        merged, seen_merged = [], set()
+        for match in matches:
+            for provider in match.get("providers") or []:
+                identity = (str(provider.get("name") or "").casefold(), str(provider.get("region") or "IN"), str(provider.get("type") or ""))
+                if identity not in seen_merged:
+                    seen_merged.add(identity)
+                    merged.append(provider)
+        result = {"status": "ready" if any(m.get("providers") for m in matches) else "not_confirmed",
+            "query": query, "title": str(matches[0].get("title") or query) if matches else query,
+            "year": matches[0].get("year") if matches else None, "matches": matches,
+            "providers": merged[:24], "source": "Watchmode"}
         _watchmode_search_cache[cache_key] = (now, result)
         return result
     except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
-        logger.info("Watchmode normal-search availability failed: query=%r error=%s", query, type(exc).__name__)
-        return {"status": "unavailable", "query": query, "providers": [], "message": "Streaming availability is temporarily unavailable."}
+        logger.info("Watchmode normal-search availability failed for query=%r error=%s", query, type(exc).__name__)
+        return {"status": "unavailable", "query": query, "matches": [], "providers": [], "message": "Streaming availability is temporarily unavailable."}
 
 
-@app.get("/api/search")
+@app.get("/api/search")@app.get("/api/search")
 async def api_search(q: str = Query(..., min_length=1), limit: int = Query(50, ge=1, le=50)):
     return await search_1337x(q, limit)
 
