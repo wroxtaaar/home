@@ -395,9 +395,9 @@ export const api = {
       type?: string;
       tmdbId?: number | string;
       status: 'ready' | 'not_found' | 'not_confirmed' | 'unavailable';
-      providers: Array<{ name: string; region: string; type: string; webUrl?: string }>;
+      providers: Array<{ name: string; region: string; type: string; webUrl?: string; logoUrl?: string; providerId?: number | string }>;
     }>;
-    providers: Array<{ name: string; region: string; type: string; webUrl?: string }>;
+    providers: Array<{ name: string; region: string; type: string; webUrl?: string; logoUrl?: string; providerId?: number | string }>;
     message?: string;
   }> {
     const params = new URLSearchParams({ q: query });
