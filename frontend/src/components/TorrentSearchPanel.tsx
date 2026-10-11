@@ -2721,7 +2721,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           title={'IMDb rating' + (imdb.imdbVotes ? ' · ' + imdb.imdbVotes + ' votes' : '')}
                           className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow"
                         >
-                          IMDb {imdb.imdbRating.toFixed(1)}
+                          ⭐ {imdb.imdbRating.toFixed(1)}/10
                         </a>
                       );
                     }
@@ -3063,7 +3063,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           title={'IMDb rating' + (displayImdbRating.imdbVotes ? ' · ' + displayImdbRating.imdbVotes + ' votes' : '')}
                           className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow"
                         >
-                          IMDb {displayImdbRating.imdbRating.toFixed(1)}
+                          ⭐ {displayImdbRating.imdbRating.toFixed(1)}/10
                         </a>
                       )}
                     </div>
@@ -3104,12 +3104,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               ? 'TMDB synopsis is temporarily unavailable.'
                               : 'No synopsis available from TMDB for this title.')}
                       </p>
-
-                      {mediaMetadata?.tmdbUrl && (
-                        <a href={mediaMetadata.tmdbUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[10px] text-cyan-300 hover:text-cyan-200">
-                          TMDB details <ExternalLink className="h-3 w-3" />
-                        </a>
-                      )}
 
                       {compactProviders.length > 0 ? (
                         <div className="flex flex-wrap gap-1" aria-label={'Streaming services for ' + group.title}>
@@ -3218,7 +3212,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             title={'IMDb rating' + (displayImdbRating.imdbVotes ? ' · ' + displayImdbRating.imdbVotes + ' votes' : '')}
                             className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow"
                           >
-                            IMDb {displayImdbRating.imdbRating.toFixed(1)}
+                            ⭐ {displayImdbRating.imdbRating.toFixed(1)}/10
                           </a>
                         )}
                         {result.seeders > 0 && (
@@ -3304,11 +3298,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                     ? 'TMDB synopsis is temporarily unavailable.'
                                     : 'No synopsis available from TMDB for this title.')}
                             </p>
-                            {mediaMetadata?.tmdbUrl && (
-                              <a href={mediaMetadata.tmdbUrl} target="_blank" rel="noreferrer" className="mt-1 inline-flex items-center gap-1 text-[10px] text-cyan-300 hover:text-cyan-200">
-                                TMDB details <ExternalLink className="h-3 w-3" />
-                              </a>
-                            )}
 
                             {(() => {
                               const availability = searchAvailabilityByGroup[group.key];
