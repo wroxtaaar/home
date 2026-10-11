@@ -4366,7 +4366,7 @@ async def _tmdb_poster_lookup(title: str, year: str = "") -> str | None:
     # Strip common season/episode suffixes so "Lanterns S01E08" resolves to
     # the series "Lanterns", not a movie with a similar name.
     search_title = re.sub(
-        r"\\s+(?:s\\d{1,2}e\\d{1,3}|season\\s+\\d{1,2}(?:\\s+episode\\s+\\d{1,3})?|\\d{1,2}x\\d{1,3})\\b.*$",
+        r"\s+(?:s\d{1,2}e\d{1,3}|season\s+\d{1,2}(?:\s+episode\s+\d{1,3})?|\d{1,2}x\d{1,3})\b.*$",
         "",
         clean_title,
         flags=re.IGNORECASE,
@@ -4395,7 +4395,7 @@ async def _tmdb_poster_lookup(title: str, year: str = "") -> str | None:
             name = next((str(row.get(key) or "").strip() for key in title_keys if row.get(key)), "")
             normalized = _poster_normalize_title(name)
             date_value = str(row.get(date_key) or "").strip()
-            candidate_year = date_value[:4] if re.match(r"^\\d{4}-\\d{2}-\\d{2}$", date_value) else ""
+            candidate_year = date_value[:4] if re.match(r"^\d{4}-\d{2}-\d{2}$", date_value) else ""
             poster_path = str(row.get("poster_path") or "").strip()
             if not name or not poster_path or normalized not in wanted_titles:
                 continue
