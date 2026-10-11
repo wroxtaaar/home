@@ -117,11 +117,17 @@ async def _watchmode_get(path: str, *, params: dict[str, Any] | None = None,
                 _provider_key_success(provider, key)
                 return response, True
             if response.status_code == 429:
+                # Respect this account's quota/rate limit; don't try other accounts
+                # as a way to bypass a provider-imposed limit.
                 _provider_key_failure(provider, key, _retry_after_seconds(response), "HTTP 429")
+                return response, True
+            if response.status_code == 401:
+                _provider_key_failure(provider, key, 3600, "HTTP 401")
                 return None, False
-            if response.status_code in {401, 403}:
-                _provider_key_failure(provider, key, 3600, f"HTTP {response.status_code}")
-                return None, False
+            if response.status_code == 403:
+                # A plan/access restriction is not a transient credential failure.
+                _provider_key_failure(provider, key, 3600, "HTTP 403")
+                return response, True
             if response.status_code >= 500:
                 transient_failed.append(key)
                 return None, False
@@ -5981,11 +5987,15 @@ async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None) -> dic
                 transient_failed.append((kind, credential))
                 return None
             if response.status_code == 429:
+                # Respect provider quotas instead of switching accounts to bypass them.
                 _provider_key_failure(provider, fingerprint, _retry_after_seconds(response), "HTTP 429")
+                raise HTTPException(status_code=503, detail="TMDB rate limit reached; retry after the provider cooldown.")
+            if response.status_code == 401:
+                _provider_key_failure(provider, fingerprint, 3600, "HTTP 401")
                 return None
-            if response.status_code in {401, 403}:
-                _provider_key_failure(provider, fingerprint, 3600, f"HTTP {response.status_code}")
-                return None
+            if response.status_code == 403:
+                _provider_key_failure(provider, fingerprint, 3600, "HTTP 403")
+                raise HTTPException(status_code=503, detail="TMDB denied access for this request; check the account's API permissions and plan.")
             if response.status_code >= 500:
                 transient_failed.append((kind, credential))
                 return None
