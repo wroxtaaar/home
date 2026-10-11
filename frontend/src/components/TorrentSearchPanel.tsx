@@ -14,7 +14,7 @@ import {
   SlidersHorizontal,
   Film
 } from 'lucide-react';
-import { api, API_BASE, MovieCatalogueItem, MovieCatalogueKey, MovieCataloguePage, MovieOttAvailability, MovieOttProvider, SearchMediaMetadata, TorrentSearchResult } from '../api/client.ts';
+import { api, API_BASE, ImdbRatingResult, MovieCatalogueItem, MovieCatalogueKey, MovieCataloguePage, MovieOttAvailability, MovieOttProvider, SearchMediaMetadata, TorrentSearchResult } from '../api/client.ts';
 import { formatBytes } from '../utils/formatters.ts';
 import searchLimits from '../../search_limits.json';
 
@@ -136,6 +136,22 @@ function normalizeSavedOttTitle(value: string): string {
     .replace(/\s*\(?((?:19|20)\d{2})\)?\s*$/, '')
     .trim();
   return normalizeGroupTitle(withoutTrailingYear);
+}
+
+function imdbRatingKey(title: string, year?: number | string | null): string {
+  const raw = String(title || '').trim();
+  const embeddedYear = raw.match(/\s*\(?((?:19|20)\d{2})\)?\s*$/)?.[1] || '';
+  const resolvedYear = String(year || embeddedYear || '');
+  const normalizedTitle = normalizeSavedOttTitle(raw).replace(/\bfour\b/g, '4');
+  return normalizedTitle + '|' + resolvedYear;
+}
+
+function imdbRatingQueryTitle(title: string, year?: number | string | null): string {
+  const raw = String(title || '').trim();
+  const embeddedYear = raw.match(/\s*\(?((?:19|20)\d{2})\)?\s*$/)?.[1] || '';
+  const resolvedYear = String(year || embeddedYear || '');
+  const cleanTitle = embeddedYear ? raw.replace(/\s*\(?((?:19|20)\d{2})\)?\s*$/, '').trim() : raw;
+  return cleanTitle + (resolvedYear ? ' (' + resolvedYear + ')' : '');
 }
 
 function searchMetadataForGroup(
@@ -440,6 +456,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [results, setResults] = useState<TorrentSearchResult[]>([]);
   const [searchMetadata, setSearchMetadata] = useState<SearchMediaMetadata[]>([]);
   const [searchMetadataStatus, setSearchMetadataStatus] = useState<'idle' | 'loading' | 'ready' | 'not_found' | 'unavailable'>('idle');
+  const [imdbRatingsByKey, setImdbRatingsByKey] = useState<Record<string, ImdbRatingResult>>({});
+  const imdbRatingRequestedRef = useRef(new Set<string>());
   const [searchAvailabilityByGroup, setSearchAvailabilityByGroup] = useState<Record<string, {
     status: 'ready' | 'not_found' | 'not_confirmed' | 'unavailable' | 'loading';
     query: string;
@@ -1946,6 +1964,49 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     };
   }, [groupedResults]);
 
+  // IMDb ratings are fetched independently after movie cards have rendered.
+  // The backend persists them, so reopening catalogues does not spend another OMDb request.
+  useEffect(() => {
+    const candidates = [
+      ...(movieCatalogue?.results || []).map(item => ({
+        title: String(item.title || '').trim(),
+        year: item.year,
+        mediaType: 'movie',
+      })),
+      ...searchMetadata
+        .filter(item => (item.mediaType || 'movie') === 'movie')
+        .map(item => ({ title: String(item.title || '').trim(), year: item.year, mediaType: item.mediaType })),
+    ].filter(item => item.title);
+
+    const pending = new Map<string, string>();
+    for (const item of candidates) {
+      const key = imdbRatingKey(item.title, item.year);
+      if (!key.startsWith('|') && !imdbRatingRequestedRef.current.has(key)) {
+        pending.set(key, imdbRatingQueryTitle(item.title, item.year));
+      }
+    }
+    const requests = [...pending.entries()].slice(0, 80);
+    if (!requests.length) return;
+    requests.forEach(([key]) => imdbRatingRequestedRef.current.add(key));
+
+    void api.getImdbRatings(requests.map(([, title]) => title)).then(response => {
+      const ratings = Array.isArray(response.results) ? response.results : [];
+      setImdbRatingsByKey(previous => {
+        const next = { ...previous };
+        for (const rating of ratings) {
+          const queryKey = imdbRatingKey(rating.query || rating.title, undefined);
+          const canonicalKey = imdbRatingKey(rating.title, rating.year);
+          next[queryKey] = rating;
+          next[canonicalKey] = rating;
+        }
+        return next;
+      });
+    }).catch(() => {
+      // Ratings are optional metadata; don't interrupt torrent/catalogue rendering.
+      requests.forEach(([key]) => imdbRatingRequestedRef.current.delete(key));
+    });
+  }, [movieCatalogue?.results, searchMetadata]);
+
   const clearTmdbCacheAndReload = async () => {
     const currentCatalogue = movieCatalogue;
     const key = currentCatalogue?.catalogue || tmdbFranchiseKey;
@@ -2573,6 +2634,20 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       ★ {movie.rating.toFixed(1)}
                     </span>
                   )}
+                  {(() => {
+                    const imdb = imdbRatingsByKey[imdbRatingKey(movie.title, movie.year)];
+                    return imdb?.imdbRating != null && imdb.imdbRating > 0 ? (
+                      <a
+                        href={imdb.imdbUrl || (imdb.imdbId ? 'https://www.imdb.com/title/' + imdb.imdbId + '/' : '#')}
+                        target="_blank"
+                        rel="noreferrer"
+                        title={'IMDb rating' + (imdb.imdbVotes ? ' · ' + imdb.imdbVotes + ' votes' : '')}
+                        className="absolute left-2 top-10 rounded-md border border-amber-500/20 bg-slate-950/90 px-2 py-1 text-[10px] font-bold text-amber-300"
+                      >
+                        IMDb {imdb.imdbRating.toFixed(1)}
+                      </a>
+                    ) : null;
+                  })()}
                 </div>
                 <div className="flex flex-1 flex-col gap-2 p-2.5">
                   <div>
@@ -2798,6 +2873,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               const mediaMetadata = searchMetadataForGroup(group, searchMetadata);
               const mediaDisplayTitle = mediaMetadata?.title || group.title.replace(/\s*\((?:19|20)\d{2}\)\s*$/, '');
               const mediaDisplayYear = mediaMetadata?.year || group.year;
+              const displayImdbRating =
+                imdbRatingsByKey[imdbRatingKey(mediaDisplayTitle, mediaDisplayYear)] ||
+                imdbRatingsByKey[imdbRatingKey(group.title, group.year)];
 
               // Normal searches use the same poster-first, compact card flow as
               // the Popular/Trending catalogues. The full torrent/OTT details and
@@ -2892,6 +2970,17 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] sm:text-xs">
                           {mediaDisplayYear && <span className="text-slate-400">{mediaDisplayYear}</span>}
                           {mediaMetadata?.rating ? <span className="text-amber-300">TMDB {mediaMetadata.rating.toFixed(1)}</span> : null}
+                          {displayImdbRating?.imdbRating != null && displayImdbRating.imdbRating > 0 && (
+                            <a
+                              href={displayImdbRating.imdbUrl || (displayImdbRating.imdbId ? 'https://www.imdb.com/title/' + displayImdbRating.imdbId + '/' : '#')}
+                              target="_blank"
+                              rel="noreferrer"
+                              title={'IMDb rating' + (displayImdbRating.imdbVotes ? ' · ' + displayImdbRating.imdbVotes + ' votes' : '')}
+                              className="font-semibold text-amber-300 hover:text-amber-200"
+                            >
+                              IMDb {displayImdbRating.imdbRating.toFixed(1)}
+                            </a>
+                          )}
 
                         </div>
                       </div>
@@ -3068,6 +3157,17 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               <span className="font-semibold text-amber-400">▼ {Number(result.leechers) || 0} peers</span>
                               {(mediaMetadata?.year || group.year) && <span className="text-slate-500">{mediaMetadata?.year || group.year}</span>}
                               {mediaMetadata?.rating ? <span className="text-amber-300">TMDB {mediaMetadata.rating.toFixed(1)}</span> : null}
+                              {displayImdbRating?.imdbRating != null && displayImdbRating.imdbRating > 0 && (
+                                <a
+                                  href={displayImdbRating.imdbUrl || (displayImdbRating.imdbId ? 'https://www.imdb.com/title/' + displayImdbRating.imdbId + '/' : '#')}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  title={'IMDb rating' + (displayImdbRating.imdbVotes ? ' · ' + displayImdbRating.imdbVotes + ' votes' : '')}
+                                  className="font-semibold text-amber-300 hover:text-amber-200"
+                                >
+                                  IMDb {displayImdbRating.imdbRating.toFixed(1)}
+                                </a>
+                              )}
                             </div>
 
                             <p className="mt-2 line-clamp-3 text-[10px] leading-relaxed text-slate-400">
