@@ -6394,7 +6394,7 @@ _WATCHMODE_SEARCH_CACHE_TTL = 6 * 60 * 60
 @app.get("/api/search/availability")
 async def api_search_availability(q: str = Query(..., min_length=2, max_length=160)):
     """Return streaming providers without putting Watchmode on the torrent-search critical path."""
-    query = re.sub(r"\\s+", " ", q).strip()
+    query = re.sub(r"\s+", " ", q).strip()
     cache_key = query.casefold()
     now = time.time()
     cached = _watchmode_search_cache.get(cache_key)
