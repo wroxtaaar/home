@@ -20,6 +20,24 @@ import searchLimits from '../../search_limits.json';
 
 type MovieOttCardState = MovieOttAvailability | { status: 'loading' | 'error'; message?: string };
 
+function isPresetSearchLabel(value: string): boolean {
+  const normalized = String(value || '').trim().toLowerCase().replace(/\\s+/g, ' ');
+  return new Set([
+    'popular bollywood movies',
+    'bollywood movies',
+    'marvel movies (english)',
+    'marvel movies (hindi)',
+    'dc live-action movies (english)',
+    'dc live-action movies (hindi)',
+    'dc animated movies',
+    'popular hollywood movies',
+    'trending hollywood movies',
+    'trending bollywood movies',
+    'latest hollywood',
+    'latest bollywood',
+  ]).has(normalized);
+}
+
 function providerNames(providers: MovieOttProvider[]): React.ReactNode {
   const shown = providers.slice(0, 3);
   return (
@@ -755,7 +773,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       const saved = localStorage.getItem('seedflow_recent_searches');
       const parsed = saved ? JSON.parse(saved) : [];
       return Array.isArray(parsed)
-        ? parsed.filter((value): value is string => typeof value === 'string').slice(0, 10)
+        ? parsed.filter((value): value is string => typeof value === 'string' && !isPresetSearchLabel(value)).slice(0, 10)
         : [];
     } catch {
       return [];
@@ -770,7 +788,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       .then(data => {
         if (cancelled) return;
         const serverRecents = Array.isArray(data?.searches)
-          ? data.searches.filter((value: unknown): value is string => typeof value === 'string').slice(0, 7)
+          ? data.searches.filter((value: unknown): value is string => typeof value === 'string' && !isPresetSearchLabel(value)).slice(0, 7)
           : [];
         if (serverRecents.length > 0) {
           setRecentSearches(serverRecents);
