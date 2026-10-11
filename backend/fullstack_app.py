@@ -1,7 +1,8 @@
 """Serve the built Vite frontend from the same FastAPI process.
 
-This module imports the existing API application, then adds a final SPA
-fallback route. API routes remain unchanged and continue to take precedence.
+This module imports the existing API application, adds the experimental
+NexStream resolver, then adds a final SPA fallback route. API routes remain
+unchanged and continue to take precedence.
 """
 
 from pathlib import Path
@@ -10,6 +11,9 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse
 
 from main import app
+from nexstream import router as nexstream_router
+
+app.include_router(nexstream_router)
 
 # main.py already exposes "/" as the API health endpoint. In the full-stack
 # container that route would win before the SPA route below, so replace only
