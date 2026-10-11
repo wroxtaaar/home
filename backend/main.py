@@ -7176,26 +7176,28 @@ async def api_search_availability(q: str = Query(..., min_length=2, max_length=1
         except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
             primary_errors.append("Watchmode " + type(exc).__name__)
 
-    # Primary source 2: TMDB searches movies and TV independently, then asks TMDB
-    # for the regional provider list using the correct media-specific endpoint.
+    # Primary source 2: search movies and TV concurrently. A movie miss or a
+    # movie with no providers must not delay or suppress the TV-series lookup.
     if TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS:
-        for media_type, search_path, title_key, date_key in (
+        media_specs = (
             ("movie", "search/movie", "title", "release_date"),
             ("tv", "search/tv", "name", "first_air_date"),
-        ):
+        )
+
+        async def search_tmdb_media(spec: tuple[str, str, str, str]) -> tuple[str, str, str, list[dict[str, Any]]]:
+            media_type, search_path, title_key, date_key = spec
             try:
                 payload = await _tmdb_get_json(search_path, {
                     "query": query, "include_adult": "false", "language": "en-US", "page": 1
                 })
             except Exception as exc:
                 primary_errors.append("TMDB " + type(exc).__name__)
-                continue
+                return media_type, title_key, date_key, []
             rows = []
             for row in payload.get("results") or []:
                 if not isinstance(row, dict) or not row.get("id"):
                     continue
                 title = str(row.get(title_key) or "").strip()
-                normalized = _availability_normalize_title(title)
                 if not title or not _availability_title_is_relevant(query, title):
                     continue
                 rows.append(row)
@@ -7204,29 +7206,48 @@ async def api_search_availability(q: str = Query(..., min_length=2, max_length=1
                 bool(row.get(date_key)),
                 float(row.get("popularity") or 0),
             ), reverse=True)
-            for row in rows[:3]:
-                tmdb_id = int(row["id"])
-                try:
-                    provider_data = await _tmdb_get_json(
-                        f"{media_type}/{tmdb_id}/watch/providers", {})
-                except Exception as exc:
-                    primary_errors.append("TMDB providers " + type(exc).__name__)
-                    provider_data = {}
-                region_data = (provider_data.get("results") or {}).get("IN") or {}
-                providers = []
-                for category, kind in (("flatrate", "subscription"), ("free", "free"),
-                                       ("ads", "ads"), ("rent", "rent"), ("buy", "buy")):
-                    for provider in region_data.get(category) or []:
-                        name = str(provider.get("provider_name") or "").strip()
-                        if name:
-                            providers.append({"name": name, "region": "IN", "type": kind,
-                                "webUrl": region_data.get("link") or ""})
-                title = str(row.get(title_key) or query)
-                primary_matches.append({
-                    "id": str(tmdb_id), "title": title, "year": str(row.get(date_key) or "")[:4] or None,
-                    "type": media_type, "tmdbId": tmdb_id, "providers": providers[:24],
-                    "status": "ready" if providers else "not_confirmed", "source": "TMDB",
-                })
+            return media_type, title_key, date_key, rows[:3]
+
+        searched_media = await asyncio.gather(*(search_tmdb_media(spec) for spec in media_specs))
+
+        async def resolve_tmdb_match(
+            media_type: str, title_key: str, date_key: str, row: dict[str, Any]
+        ) -> dict[str, Any]:
+            tmdb_id = int(row["id"])
+            try:
+                provider_data = await _tmdb_get_json(f"{media_type}/{tmdb_id}/watch/providers", {})
+            except Exception as exc:
+                primary_errors.append("TMDB providers " + type(exc).__name__)
+                provider_data = {}
+            region_data = (provider_data.get("results") or {}).get("IN") or {}
+            providers = []
+            for category, kind in (("flatrate", "subscription"), ("free", "free"),
+                                   ("ads", "ads"), ("rent", "rent"), ("buy", "buy")):
+                for provider in region_data.get(category) or []:
+                    name = str(provider.get("provider_name") or "").strip()
+                    if name:
+                        providers.append({"name": name, "region": "IN", "type": kind,
+                            "webUrl": region_data.get("link") or ""})
+            return {
+                "id": str(tmdb_id), "title": str(row.get(title_key) or query),
+                "year": str(row.get(date_key) or "")[:4] or None,
+                "type": media_type, "tmdbId": tmdb_id, "providers": providers[:24],
+                "status": "ready" if providers else "not_confirmed", "source": "TMDB",
+            }
+
+        # Resolve providers concurrently too. This makes the fallback quick when
+        # the exact movie has no listing: the TV-series provider result can win
+        # without waiting for every unrelated movie candidate.
+        tmdb_candidates = [
+            (media_type, title_key, date_key, row)
+            for media_type, title_key, date_key, rows in searched_media
+            for row in rows
+        ]
+        if tmdb_candidates:
+            primary_matches.extend(await asyncio.gather(*(
+                resolve_tmdb_match(media_type, title_key, date_key, row)
+                for media_type, title_key, date_key, row in tmdb_candidates
+            )))
 
     # De-duplicate same title/media/ID across sources; merge their provider entries.
     deduped: list[dict[str, Any]] = []
