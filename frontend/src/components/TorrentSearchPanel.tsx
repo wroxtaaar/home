@@ -417,8 +417,38 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     let changed = false;
     for (const movie of movies) {
       const movieId = String(movie.id);
-      if (!/^\d+$/.test(movieId) || ottQueuedIdsRef.current.has(movieId)) continue;
+      if (!/^\\d+$/.test(movieId) || ottQueuedIdsRef.current.has(movieId)) continue;
       const existing = next[movieId];
+      if (existing && !(retryErrors && existing.status === 'error')) continue;
+
+      // The backend merges the already-enriched Marvel/DC catalogue data into
+      // these cards. Render it immediately and never queue a redundant OTT scan.
+      const saved = movie.ottAvailability;
+      if (saved && typeof saved === 'object') {
+        const savedStatus = String(saved.status || '');
+        const mapProviders = (items: MovieOttProvider[] | undefined) =>
+          (Array.isArray(items) ? items : []).filter(provider => provider && provider.name);
+        next[movieId] = {
+          movieId: Number(movie.tmdbId || movie.id),
+          region: String(saved.region || 'IN'),
+          status: (savedStatus === 'streaming' ? 'streaming'
+            : savedStatus === 'rent_buy' ? 'rent_buy'
+            : savedStatus === 'digital_scheduled' ? 'digital_scheduled'
+            : savedStatus === 'digital_release_known' ? 'digital_release_known'
+            : 'not_confirmed'),
+          streamingProviders: mapProviders(saved.streamingProviders),
+          rentProviders: mapProviders(saved.rentProviders),
+          buyProviders: mapProviders(saved.buyProviders),
+          providerLink: String(saved.providerLink || ''),
+          checkedAt: String(saved.checkedAt || ''),
+          source: String(saved.source || 'saved-catalogue'),
+          providerAttribution: String(saved.providerAttribution || ''),
+          attribution: String(saved.attribution || ''),
+        };
+        changed = true;
+        continue;
+      }
+
       if (existing && !(retryErrors && existing.status === 'error')) continue;
       ottQueuedIdsRef.current.add(movieId);
       ottQueueRef.current.push(movieId);
