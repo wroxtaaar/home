@@ -170,6 +170,35 @@ const apiFetch = (input: RequestInfo | URL, init?: RequestInit) => {
 };
 
 export const api = {
+  async searchSavedOtt(titles: string[], signal?: AbortSignal): Promise<{
+    status: string;
+    results: Array<{ query: string; found: boolean; entries: Array<{
+      title: string;
+      year?: string | null;
+      tmdbId?: number | string;
+      ottAvailability: {
+        region?: string;
+        status?: string;
+        streamingProviders?: unknown[];
+        rentProviders?: unknown[];
+        buyProviders?: unknown[];
+        providerLink?: string;
+        source?: string;
+      };
+    }> }>;
+  }> {
+    const params = new URLSearchParams();
+    titles.slice(0, 80).forEach(title => params.append('titles', title));
+    const res = await fetch(API_BASE + '/api/catalogue/ott/search?' + params.toString(), {
+      signal, credentials: 'include', cache: 'no-store',
+    });
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch {}
+    if (!res.ok) throw new Error(data?.detail || body || ('Saved OTT lookup failed (HTTP ' + res.status + ')'));
+    return data;
+  },
+
   async getMarvelCatalogue(signal?: AbortSignal): Promise<MarvelCatalogueResponse> {
     const res = await fetch(API_BASE + '/api/catalogue/marvel', {
       signal,
