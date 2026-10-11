@@ -189,6 +189,10 @@ function searchMetadataForGroup(
   if (year) {
     const sameYear = candidates.find(item => String(item.year || '') === year);
     if (sameYear) return sameYear;
+    const noYear = candidates.filter(item => !item.year);
+    // Unknown-year records can be used when uniquely identifiable, but never
+    // substitute a different known release year (remakes often share titles).
+    return noYear.length === 1 ? noYear[0] : undefined;
   }
   const noYear = candidates.filter(item => !item.year);
   if (noYear.length === 1) return noYear[0];
@@ -706,6 +710,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   // at once so this never becomes a search bottleneck.
   const [posterOverrides, setPosterOverrides] = useState<Record<string, string>>({});
   const posterLoadedRef = useRef(new Set<string>());
+  const posterMetadataFailedRef = useRef(new Set<string>());
   const posterBackgroundQueueRef = useRef<Array<{ key: string; result: TorrentSearchResult }>>([]);
   const posterBackgroundQueuedRef = useRef(new Set<string>());
   const posterBackgroundActiveRef = useRef(0);
@@ -1186,6 +1191,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       setExpandedSearchGroupKey(null);
       setSearched(false);
       setPosterOverrides({});
+      posterMetadataFailedRef.current.clear();
       posterLoadedRef.current.clear();
       posterBackgroundQueueRef.current = [];
       posterBackgroundQueuedRef.current.clear();
@@ -1827,6 +1833,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       setExpandedSearchGroupKey(null);
       setSearched(false);
       setPosterOverrides({});
+      posterMetadataFailedRef.current.clear();
       posterLoadedRef.current.clear();
       posterBackgroundQueueRef.current = [];
       posterBackgroundQueuedRef.current.clear();
@@ -2724,20 +2731,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       </span>
                     ) : null;
                   })()}
-                  {(() => {
-                    const imdb = imdbRatingsByKey[imdbRatingKey(movie.title, movie.year)];
-                    return imdb?.imdbRating != null && imdb.imdbRating > 0 ? (
-                      <a
-                        href={imdb.imdbUrl || (imdb.imdbId ? 'https://www.imdb.com/title/' + imdb.imdbId + '/' : '#')}
-                        target="_blank"
-                        rel="noreferrer"
-                        title={'IMDb rating' + (imdb.imdbVotes ? ' · ' + imdb.imdbVotes + ' votes' : '')}
-                        className="absolute left-2 top-10 rounded-md border border-amber-500/20 bg-slate-950/90 px-2 py-1 text-[10px] font-bold text-amber-300"
-                      >
-                        IMDb {imdb.imdbRating.toFixed(1)}
-                      </a>
-                    ) : null;
-                  })()}
                 </div>
                 <div className="flex flex-1 flex-col gap-2 p-2.5">
                   <div>
@@ -2973,6 +2966,11 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 imdbRatingsByKey[imdbRatingKey(imdbDisplayTitle, imdbDisplayYear, imdbDisplayType)] ||
                 imdbRatingsByKey[imdbRatingKey(mediaMetadata?.title || imdbDisplayTitle, mediaMetadata?.year || imdbDisplayYear, imdbDisplayType)] ||
                 imdbRatingsByKey[imdbRatingKey(group.title, group.year, imdbDisplayType)];
+              const groupPosterKey = posterKeyFor(posterResult);
+              const canonicalPosterUrl = String(mediaMetadata?.posterUrl || '').trim();
+              const resolvedPosterUrl = posterMetadataFailedRef.current.has(groupPosterKey)
+                ? (posterOverrides[groupPosterKey] || rawPosterUrlFor(posterResult) || '')
+                : (canonicalPosterUrl || posterOverrides[groupPosterKey] || rawPosterUrlFor(posterResult) || '');
 
               // Normal searches use the same poster-first, compact card flow as
               // the Popular/Trending catalogues. The full torrent/OTT details and
@@ -2994,9 +2992,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 // Prefer the same poster-resolver URL as the expanded torrent card. It is
                 // backed by the existing poster cache, so switching card modes reuses it
                 // instead of starting with a separate direct TMDB image request.
-                const posterKey = posterKeyFor(posterResult);
-                const canonicalPosterUrl = String(mediaMetadata?.posterUrl || '').trim();
-                const compactPosterUrl = posterOverrides[posterKey] || canonicalPosterUrl || rawPosterUrlFor(posterResult) || '';
+                const posterKey = groupPosterKey;
+                const compactPosterUrl = resolvedPosterUrl;
 
                 return (
                   <article
@@ -3033,6 +3030,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               }
 
                               const key = posterKeyFor(posterResult);
+                              if (canonicalPosterUrl && compactPosterUrl === canonicalPosterUrl) {
+                                posterMetadataFailedRef.current.add(key);
+                              }
                               posterLoadedRef.current.delete(key);
                               image.style.display = 'none';
                               image.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.remove('hidden');
@@ -3168,10 +3168,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   <div className="min-w-0 flex-1 lg:w-full">
                     <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-2 sm:gap-3 lg:flex-col lg:gap-0">
                       <div className="relative w-full sm:w-24 shrink-0 aspect-[2/3] rounded-lg overflow-hidden border border-slate-800 bg-slate-950 shadow-md lg:w-full lg:rounded-none lg:border-0 lg:shadow-none">
-                        {posterOverrides[posterKeyFor(posterResult)] || mediaMetadata?.posterUrl || rawPosterUrlFor(posterResult) ? (
+                        {resolvedPosterUrl ? (
                           <>
                             <img
-                              src={posterOverrides[posterKeyFor(posterResult)] || mediaMetadata?.posterUrl || rawPosterUrlFor(posterResult)}
+                              src={resolvedPosterUrl}
                               alt={group.title}
                               loading="lazy"
                               className="w-full h-full object-cover"
@@ -3183,6 +3183,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               }}
                               onError={(event) => {
                                 const key = posterKeyFor(posterResult);
+                                if (canonicalPosterUrl && resolvedPosterUrl === canonicalPosterUrl) {
+                                  posterMetadataFailedRef.current.add(key);
+                                }
                                 posterLoadedRef.current.delete(key);
                                 event.currentTarget.style.display = 'none';
                                 event.currentTarget.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.remove('hidden');
