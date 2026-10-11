@@ -73,13 +73,26 @@ jobs:
           cd "$APP_DIR"
           export HOME_DATA_DIR="$DATA_DIR"
           echo "Cleaning 3D releases, excluded animated titles, poster mappings, and default catalogue order..."
-          python3 "$CLEAN_SCRIPT" 2>&1 | tee "$DATA_DIR/catalogue_cleanup_run.log"
+          sudo -n python3 "$CLEAN_SCRIPT" 2>&1 | tee "$DATA_DIR/catalogue_cleanup_run.log"
 
           echo "Resolving and enriching missing OTT entries in the five persistent Marvel/DC catalogues..."
-          python3 "$SCRIPT" 2>&1 | tee "$LOG"
+          sudo -n python3 "$SCRIPT" 2>&1 | tee "$LOG"
 
           echo "Refreshing provider lookups for every remaining unique franchise movie without provider data..."
           docker exec home python /app/refresh_franchise_ott.py --delay 0.75 2>&1 | tee "$DATA_DIR/catalogue_ott_refresh_run.log"
+
+          # The Docker container may write these cache files as root. Let the runner user
+          # read them for the subsequent scp-to-GitHub snapshot step.
+          for name in \
+            marvel_catalogue.json \
+            marvel_hindi_catalogue.json \
+            dc_live_action_catalogue.json \
+            dc_live_action_hindi_catalogue.json \
+            dc_animated_catalogue.json \
+            latest_hollywood_catalogue.json \
+            latest_bollywood_catalogue.json; do
+            if test -f "$DATA_DIR/$name"; then sudo -n chmod 644 "$DATA_DIR/$name"; fi
+          done
           REMOTE
 
       - name: Sync enriched catalogues back to GitHub cache snapshots
