@@ -7379,6 +7379,104 @@ async def _api_search_availability_impl(q: str) -> dict[str, Any]:
     return result
 
 
+
+# Small, independent TMDB lookup for the quick search cards. This intentionally
+# does not wait for torrent metadata or Watchmode source resolution.
+_TMDB_SEARCH_METADATA_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_TMDB_SEARCH_METADATA_CACHE_TTL = 1800.0
+
+
+@app.get("/api/search/metadata")
+async def api_search_metadata(q: str = Query(..., min_length=2, max_length=160)):
+    """Return poster, synopsis, release year and TMDB link for fast search cards."""
+    query = re.sub(r"\s+", " ", q).strip()
+    cache_key = query.casefold()
+    now = time.time()
+    cached = _TMDB_SEARCH_METADATA_CACHE.get(cache_key)
+    if cached and now - cached[0] < _TMDB_SEARCH_METADATA_CACHE_TTL:
+        return cached[1]
+
+    if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
+        return {"status": "unavailable", "query": query, "source": "TMDB", "results": []}
+
+    try:
+        payload = await asyncio.wait_for(
+            _tmdb_get_json("search/multi", {
+                "query": query,
+                "include_adult": "false",
+                "language": "en-US",
+                "page": 1,
+            }),
+            timeout=8.0,
+        )
+    except Exception as exc:
+        logger.info("TMDB quick metadata search failed for %r: %s", query, type(exc).__name__)
+        return {"status": "unavailable", "query": query, "source": "TMDB", "results": []}
+
+    results: list[dict[str, Any]] = []
+    for item in payload.get("results") or []:
+        if not isinstance(item, dict):
+            continue
+        media_type = str(item.get("media_type") or "").lower()
+        if media_type not in {"movie", "tv"} or not item.get("id"):
+            continue
+        title = str(item.get("title") if media_type == "movie" else item.get("name") or "").strip()
+        if not title:
+            title = str(item.get("name") or item.get("title") or "").strip()
+        if not title or not _availability_title_is_relevant(query, title):
+            continue
+        release_date = str(
+            item.get("release_date") if media_type == "movie" else item.get("first_air_date") or ""
+        ).strip()
+        # Parentheses matter here: both media types use the corresponding release field.
+        if media_type == "movie":
+            release_date = str(item.get("release_date") or "").strip()
+        else:
+            release_date = str(item.get("first_air_date") or "").strip()
+        year_match = re.match(r"^(\d{4})", release_date)
+        poster_path = str(item.get("poster_path") or "").strip()
+        backdrop_path = str(item.get("backdrop_path") or "").strip()
+        tmdb_id = int(item["id"])
+        results.append({
+            "id": tmdb_id,
+            "tmdbId": tmdb_id,
+            "title": title,
+            "year": int(year_match.group(1)) if year_match else None,
+            "mediaType": media_type,
+            "overview": str(item.get("overview") or "").strip(),
+            "posterUrl": TMDB_IMAGE_BASE + poster_path if poster_path else "",
+            "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop_path if backdrop_path else "",
+            "rating": float(item.get("vote_average") or 0),
+            "tmdbUrl": f"https://www.themoviedb.org/{media_type}/{tmdb_id}",
+            "source": "TMDB",
+        })
+
+    target = _availability_normalize_title(query)
+    results.sort(key=lambda item: (
+        _availability_normalize_title(item["title"]) == target,
+        bool(item.get("year")),
+        float(item.get("rating") or 0),
+    ), reverse=True)
+    response = {
+        "status": "ready" if results else "not_found",
+        "query": query,
+        "source": "TMDB",
+        "results": results[:30],
+    }
+    if response["status"] == "ready":
+        if len(_TMDB_SEARCH_METADATA_CACHE) > 300:
+            expired_keys = [
+                key for key, value in _TMDB_SEARCH_METADATA_CACHE.items()
+                if now - value[0] >= _TMDB_SEARCH_METADATA_CACHE_TTL
+            ]
+            for key in expired_keys:
+                _TMDB_SEARCH_METADATA_CACHE.pop(key, None)
+            if len(_TMDB_SEARCH_METADATA_CACHE) > 300:
+                _TMDB_SEARCH_METADATA_CACHE.pop(next(iter(_TMDB_SEARCH_METADATA_CACHE)), None)
+        _TMDB_SEARCH_METADATA_CACHE[cache_key] = (now, response)
+    return response
+
+
 @app.get("/api/search")
 async def api_search(q: str = Query(..., min_length=1), limit: int = Query(50, ge=1, le=50)):
     return await search_1337x(q, limit)
