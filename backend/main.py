@@ -6523,7 +6523,7 @@ async def api_tmdb_movie_catalogue(
             stale_response = dict(stale_payload)
             stale_response["stale"] = True
             stale_response["cacheWarning"] = "TMDB is temporarily unavailable; showing the last cached catalogue."
-            return stale_response
+            return _attach_saved_ott_enrichment(catalogue_key, stale_response)
         raise HTTPException(status_code=502, detail="Could not load the movie catalogue from TMDB.") from exc
     finally:
         if task.done() and _tmdb_movie_catalogue_inflight.get(cache_key) is task:
