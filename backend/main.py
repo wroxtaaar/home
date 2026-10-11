@@ -7978,10 +7978,8 @@ def _search_metadata_cache_candidate(raw: dict[str, Any]) -> dict[str, Any] | No
     except (TypeError, ValueError):
         numeric_id = 0
     overview = re.sub(r"\s+", " ", str(raw.get("overview") or "")).strip()
-    # A title with no overview is not useful as a synopsis-cache hit. Let the
-    # original quick TMDB search handle it instead of masking a better result.
-    if not overview:
-        return None
+    # Keep rows with a known TMDB ID even when overview is empty. The batch
+    # endpoint can hydrate those rows from TMDB's movie-details endpoint.
 
     def _number(value: Any) -> float:
         try:
@@ -8012,6 +8010,159 @@ def _search_metadata_cache_candidate(raw: dict[str, Any]) -> dict[str, Any] | No
         "tmdbUrl": tmdb_url,
         "source": str(raw.get("source") or "VPS catalogue cache"),
     }
+
+
+def _persist_search_metadata_overview(tmdb_id: int, overview: str) -> int:
+    """Persist a newly fetched overview into any matching runtime catalogue row."""
+    overview = re.sub(r"\s+", " ", str(overview or "")).strip()
+    if tmdb_id < 1 or not overview:
+        return 0
+
+    updated_rows = 0
+    now = int(time.time())
+    for _name, path in _synopsis_cache_paths():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        rows = payload.get("results", []) if isinstance(payload, dict) else []
+        if not isinstance(rows, list):
+            continue
+        changed = False
+        for row in rows:
+            if not isinstance(row, dict) or str(row.get("overview") or "").strip():
+                continue
+            try:
+                row_id = int(row.get("tmdbId") or row.get("id") or 0)
+            except (TypeError, ValueError):
+                row_id = 0
+            if row_id != tmdb_id:
+                continue
+            row["overview"] = overview
+            row["synopsisCheckedAt"] = now
+            changed = True
+            updated_rows += 1
+        if changed:
+            try:
+                _write_synopsis_cache(path, payload)
+                logger.info("Saved fetched TMDB synopsis for ID %s into %s", tmdb_id, path.name)
+            except OSError as exc:
+                logger.warning("Could not persist synopsis for TMDB ID %s in %s: %s", tmdb_id, path.name, exc)
+
+    # Popular/Trending/Latest responses are stored in a separate persistent file.
+    try:
+        disk = json.loads(TMDB_CATALOGUE_CACHE_FILE.read_text(encoding="utf-8"))
+        if not isinstance(disk, dict):
+            disk = {}
+    except (OSError, ValueError, TypeError):
+        disk = {}
+    catalogues = disk.get("catalogues", {})
+    disk_changed = False
+    if isinstance(catalogues, dict):
+        for envelope in catalogues.values():
+            payload = envelope.get("payload") if isinstance(envelope, dict) else None
+            rows = payload.get("results", []) if isinstance(payload, dict) else []
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict) or str(row.get("overview") or "").strip():
+                    continue
+                try:
+                    row_id = int(row.get("tmdbId") or row.get("id") or 0)
+                except (TypeError, ValueError):
+                    row_id = 0
+                if row_id == tmdb_id:
+                    row["overview"] = overview
+                    row["synopsisCheckedAt"] = now
+                    updated_rows += 1
+                    disk_changed = True
+
+    if disk_changed:
+        temporary: Path | None = None
+        try:
+            TMDB_CATALOGUE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8",
+                prefix=TMDB_CATALOGUE_CACHE_FILE.stem + "-synopsis-",
+                suffix=".tmp", dir=str(TMDB_CATALOGUE_CACHE_FILE.parent), delete=False,
+            ) as handle:
+                temporary = Path(handle.name)
+                json.dump(disk, handle, ensure_ascii=False, separators=(",", ":"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, TMDB_CATALOGUE_CACHE_FILE)
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning("Could not persist dynamic catalogue synopsis for TMDB ID %s: %s", tmdb_id, exc)
+        finally:
+            if temporary is not None and temporary.exists():
+                try:
+                    temporary.unlink()
+                except OSError:
+                    pass
+
+    # Keep in-memory catalogue responses consistent with the disk cache.
+    for cache_key, entry in list(_tmdb_movie_catalogue_cache.items()):
+        payload = entry[1]
+        rows = payload.get("results", []) if isinstance(payload, dict) else []
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict) or str(row.get("overview") or "").strip():
+                continue
+            try:
+                row_id = int(row.get("tmdbId") or row.get("id") or 0)
+            except (TypeError, ValueError):
+                row_id = 0
+            if row_id == tmdb_id:
+                row["overview"] = overview
+                row["synopsisCheckedAt"] = now
+    return updated_rows
+
+
+async def _lookup_search_metadata_by_tmdb_id(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Fetch a missing synopsis using the cached row's authoritative TMDB ID."""
+    try:
+        tmdb_id = int(item.get("tmdbId") or item.get("id") or 0)
+    except (TypeError, ValueError):
+        tmdb_id = 0
+    if tmdb_id < 1:
+        return None
+
+    details: dict[str, Any] | None = None
+    for language in ("en-US", "en"):
+        try:
+            details = await asyncio.wait_for(
+                _tmdb_get_json(
+                    f"movie/{tmdb_id}",
+                    {"language": language},
+                    request_timeout=3.0,
+                ),
+                timeout=4.5,
+            )
+        except Exception as exc:
+            logger.info("On-demand synopsis lookup failed for TMDB ID %s (%s): %s",
+                tmdb_id, language, type(exc).__name__)
+            continue
+        overview = re.sub(r"\s+", " ", str(details.get("overview") or "")).strip()
+        if overview:
+            return {
+                "overview": overview,
+                "tmdbId": tmdb_id,
+                "tmdbUrl": f"https://www.themoviedb.org/movie/{tmdb_id}",
+                "rating": float(details.get("vote_average") or item.get("rating") or 0),
+                "posterUrl": (
+                    TMDB_IMAGE_BASE + str(details.get("poster_path")).strip()
+                    if str(details.get("poster_path") or "").strip()
+                    else str(item.get("posterUrl") or "")
+                ),
+                "backdropUrl": (
+                    "https://image.tmdb.org/t/p/w780" + str(details.get("backdrop_path")).strip()
+                    if str(details.get("backdrop_path") or "").strip()
+                    else str(item.get("backdropUrl") or "")
+                ),
+            }
+        # Only issue the alternate-language request if TMDB answered but had no overview.
+    return None
 
 
 def _read_search_metadata_catalogue_rows() -> list[dict[str, Any]]:
@@ -8069,6 +8220,7 @@ async def api_search_metadata_batch(
             candidates.append(item)
 
     matched: list[dict[str, Any]] = []
+    missing_synopsis_candidates: dict[int, dict[str, Any]] = {}
     seen_matches: set[tuple[str, int, str]] = set()
     for requested_title in requested:
         year_match = re.search(r"\s*\(?((?:19|20)\d{2})\)?\s*$", requested_title)
@@ -8106,6 +8258,52 @@ async def api_search_metadata_batch(
         if match_key not in seen_matches:
             seen_matches.add(match_key)
             matched.append(best)
+        if not str(best.get("overview") or "").strip():
+            try:
+                missing_id = int(best.get("tmdbId") or best.get("id") or 0)
+            except (TypeError, ValueError):
+                missing_id = 0
+            if missing_id > 0:
+                missing_synopsis_candidates.setdefault(missing_id, best)
+
+    # The saved catalogues can know a movie's TMDB ID even when the discover/search
+    # list originally supplied no overview. Hydrate a small batch of those misses by
+    # ID, then write the successful synopsis back into the persistent JSON caches.
+    # Bound concurrency/work so a large catalogue search does not turn into a slow scan.
+    semaphore = asyncio.Semaphore(4)
+    async def hydrate_missing(item_id: int, item: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
+        async with semaphore:
+            metadata = await _lookup_search_metadata_by_tmdb_id(item)
+            return item_id, metadata
+
+    selected_missing = list(missing_synopsis_candidates.items())[:12]
+    if selected_missing:
+        hydrated = await asyncio.gather(
+            *(hydrate_missing(item_id, item) for item_id, item in selected_missing),
+            return_exceptions=True,
+        )
+        for value in hydrated:
+            if isinstance(value, Exception) or not isinstance(value, tuple):
+                continue
+            item_id, metadata = value
+            if not metadata or not str(metadata.get("overview") or "").strip():
+                continue
+            for item in matched:
+                try:
+                    existing_id = int(item.get("tmdbId") or item.get("id") or 0)
+                except (TypeError, ValueError):
+                    existing_id = 0
+                if existing_id != item_id:
+                    continue
+                item.update(metadata)
+                item["source"] = "TMDB movie details"
+            saved_rows = _persist_search_metadata_overview(item_id, metadata["overview"])
+            logger.info("Hydrated missing search-card synopsis for TMDB ID %s; persisted rows=%s",
+                item_id, saved_rows)
+
+    # Never send blank synopsis entries if no details lookup could recover them;
+    # this keeps the response list focused on usable saved metadata.
+    matched = [item for item in matched if str(item.get("overview") or "").strip()]
 
     return {
         "status": "ready",
