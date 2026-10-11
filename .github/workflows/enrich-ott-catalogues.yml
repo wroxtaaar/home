@@ -73,7 +73,7 @@ jobs:
           cd "$APP_DIR"
           export HOME_DATA_DIR="$DATA_DIR"
           echo "Cleaning 3D releases, excluded animated titles, poster mappings, and default catalogue order..."
-          sudo -n python3 "$CLEAN_SCRIPT" 2>&1 | tee "$DATA_DIR/catalogue_cleanup_run.log"
+          sudo -n env HOME_DATA_DIR="$DATA_DIR" python3 "$CLEAN_SCRIPT" 2>&1 | tee "$DATA_DIR/catalogue_cleanup_run.log"
 
           echo "Resolving and enriching missing OTT entries in the five persistent Marvel/DC catalogues..."
           sudo -n python3 "$SCRIPT" 2>&1 | tee "$LOG"
