@@ -38,7 +38,7 @@ TMDB_API_KEY = os.getenv("TMDB_API_KEY", "").strip()
 TMDB_READ_ACCESS_TOKENS = list(dict.fromkeys(
     token.strip()
     for token in (
-        os.getenv("TMDB_READ_ACCESS_TOKENS", "").replace("\\n", "\n").replace(",", "\n").splitlines()
+        os.getenv("TMDB_READ_ACCESS_TOKENS", "").replace("\n", "\n").replace(",", "\n").splitlines()
         + [
             os.getenv("TMDB_READ_ACCESS_TOKEN", "").strip(),
             os.getenv("TMDB_BEARER_TOKEN", "").strip(),
