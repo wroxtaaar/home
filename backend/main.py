@@ -5259,7 +5259,17 @@ def _seed_bundled_catalogue_caches() -> None:
             logger.warning("Could not seed catalogue cache %s: %s", filename, exc)
 
 
-app.router.add_event_handler("startup", _seed_bundled_catalogue_caches)
+def _initialize_catalogue_caches() -> None:
+    # Seed missing files first, then normalize the real persistent VPS JSON files
+    # before the API starts serving catalogue requests. The readers write sorted
+    # results back atomically whenever the on-disk order needs to change.
+    _seed_bundled_catalogue_caches()
+    _read_marvel_catalogue()
+    for key in ("marvel-hindi", "dc-live-action", "dc-live-action-hindi", "dc-animated"):
+        _read_extra_catalogue(key)
+
+
+app.router.add_event_handler("startup", _initialize_catalogue_caches)
 _extra_catalogue_tasks: dict[str, asyncio.Task | None] = {key: None for key in _EXTRA_CATALOGUES}
 _extra_catalogue_retry_after: dict[str, float] = {}
 _extra_catalogue_states: dict[str, dict[str, Any]] = {
