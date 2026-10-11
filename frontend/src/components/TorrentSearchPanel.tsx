@@ -1034,6 +1034,52 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       }
       setCatalogueBuildProgress('');
 
+      // Search the persistent torrent catalogues in parallel with live indexers.
+      // Cached matches are shown as soon as they arrive; live results are merged in later.
+      const cachedSearchPromise: Promise<TorrentSearchResult[]> = searchMode
+        ? Promise.resolve([])
+        : Promise.allSettled([
+            api.getMarvelCatalogue(controller.signal),
+            ...[
+              'marvel-hindi',
+              'dc-live-action',
+              'dc-live-action-hindi',
+              'dc-animated',
+              'latest-hollywood',
+              'latest-bollywood',
+            ].map(key => api.getCatalogue(key, controller.signal)),
+          ]).then(responses => {
+            const compactQuery = normalizeGroupTitle(trimmed).replace(/\\s+/g, '');
+            const cachedRows = responses.flatMap(response =>
+              response.status === 'fulfilled' && response.value.status === 'ready'
+                ? response.value.results
+                : []
+            );
+            const seen = new Set<string>();
+            return cachedRows.filter(row => {
+              const identity = torrentMediaIdentity(row);
+              const titleKey = identity.normalized.replace(/\\s+/g, '');
+              if (!titleKey.includes(compactQuery) && !compactQuery.includes(titleKey)) return false;
+              const key = torrentResultKey(row);
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            });
+          }).catch(() => []);
+
+      if (!searchMode) {
+        void cachedSearchPromise.then(cached => {
+          if (generation !== searchGenerationRef.current || !cached.length) return;
+          setResults(previous => {
+            const byKey = new Map<string, TorrentSearchResult>();
+            [...cached, ...previous].forEach(row => byKey.set(torrentResultKey(row), row));
+            return Array.from(byKey.values());
+          });
+          setSearched(true);
+          startPosterBackgroundSearch(cached);
+        });
+      }
+
       let data: TorrentSearchResult[];
       if (searchMode) {
         const labels: Record<string, string> = {
@@ -1063,7 +1109,18 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         data = catalogue.results;
         setCatalogueBuildProgress(catalogue.refreshing ? 'Showing cached results while the monthly refresh runs in the background.' : '');
       } else {
-        data = await api.searchTorrents(trimmed, 50, controller.signal);
+        const livePromise = api.searchTorrents(trimmed, 50, controller.signal);
+        const [liveResults, cachedResults] = await Promise.all([
+          livePromise,
+          cachedSearchPromise,
+        ]);
+        data = [...cachedResults, ...liveResults];
+        const unique = new Map<string, TorrentSearchResult>();
+        data.forEach(row => {
+          const key = torrentResultKey(row);
+          if (!unique.has(key)) unique.set(key, row);
+        });
+        data = Array.from(unique.values());
       }
 
       // The backend owns low-result TV/season fallback. Keeping that logic
@@ -2222,7 +2279,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     </div>
                   )}
                   {movie.rating != null && movie.rating > 0 && (
-                    <span className="absolute left-2 top-2 rounded-md bg-slate-950/90 px-2 py-1 text-[10px] font-bold text-emerald-300">
+                    <span className="absolute left-2 top-2 rounded-md border border-amber-400/50 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow-sm shadow-amber-500/20">
                       ★ {movie.rating.toFixed(1)}
                     </span>
                   )}
@@ -2442,7 +2499,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
 
           <div
-            className="grid grid-cols-2 gap-2 sm:block sm:rounded-2xl sm:border sm:border-slate-800 sm:overflow-hidden sm:bg-slate-900 sm:divide-y sm:divide-slate-800/80 lg:grid lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 lg:gap-4 lg:w-full lg:max-w-none lg:mx-0 lg:p-0 lg:border-0 lg:bg-transparent lg:divide-y-0 lg:overflow-visible"
+            className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 lg:rounded-2xl lg:border-0 lg:bg-transparent lg:gap-4 lg:w-full lg:max-w-none lg:mx-0 lg:p-0 lg:divide-y-0 lg:overflow-visible"
           >
             {groupedResults.map((group, index) => {
               const selectedKey = selectedQualityByGroup[group.key];
