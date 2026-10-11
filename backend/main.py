@@ -6126,9 +6126,15 @@ def _tmdb_payload_needs_synopsis(payload: dict[str, Any] | None) -> bool:
             continue
         try:
             checked_at = int(item.get("synopsisCheckedAt") or 0)
+            lookup_version = int(item.get("synopsisLookupVersion") or 0)
         except (TypeError, ValueError):
             checked_at = 0
-        if not checked_at or now - checked_at >= _TMDB_CATALOGUE_SYNOPSIS_RECHECK_SECONDS:
+            lookup_version = 0
+        if (
+            lookup_version < TMDB_SYNOPSIS_LOOKUP_VERSION
+            or not checked_at
+            or now - checked_at >= _TMDB_CATALOGUE_SYNOPSIS_RECHECK_SECONDS
+        ):
             return True
     return False
 
@@ -7981,13 +7987,48 @@ async def api_search_metadata(q: str = Query(..., min_length=2, max_length=160))
         query_saved_at = 0
     if (
         isinstance(query_entry, dict)
-        and isinstance(query_entry.get("response"), dict)
         and now - query_saved_at < TMDB_SEARCH_METADATA_QUERY_TTL_SECONDS
-        and query_entry["response"].get("status") == "ready"
     ):
-        cached_response = query_entry["response"]
-        _TMDB_SEARCH_METADATA_CACHE[cache_key] = (now, cached_response)
-        return cached_response
+        # Read newer reference-only envelopes; continue to support any legacy
+        # envelope from a previous deployment.
+        cached_response = query_entry.get("response")
+        if isinstance(cached_response, dict) and cached_response.get("status") == "ready":
+            _TMDB_SEARCH_METADATA_CACHE[cache_key] = (now, cached_response)
+            return cached_response
+        key_rows = query_entry.get("keys", [])
+        requested_keys = {
+            (
+                str(key.get("title") or ""),
+                int(key.get("year") or 0),
+                str(key.get("mediaType") or "movie"),
+                str(key.get("tmdbId") or ""),
+            )
+            for key in key_rows if isinstance(key, dict)
+        } if isinstance(key_rows, list) else set()
+        cached_results: list[dict[str, Any]] = []
+        for raw in persistent_cache.get("results", []):
+            if not isinstance(raw, dict):
+                continue
+            candidate = _search_metadata_cache_candidate(raw)
+            if not candidate:
+                continue
+            row_key = (
+                _normalize_title(candidate["title"]),
+                int(candidate.get("year") or 0),
+                str(candidate.get("mediaType") or "movie"),
+                str(candidate.get("tmdbId") or ""),
+            )
+            if row_key in requested_keys:
+                cached_results.append(candidate)
+        if cached_results:
+            cached_response = {
+                "status": "ready",
+                "query": query,
+                "source": "Persistent synopsis cache",
+                "results": cached_results[:30],
+            }
+            _TMDB_SEARCH_METADATA_CACHE[cache_key] = (now, cached_response)
+            return cached_response
 
     if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
         return {"status": "unavailable", "query": query, "source": "TMDB", "results": []}
@@ -8135,6 +8176,8 @@ def _search_metadata_cache_candidate(raw: dict[str, Any]) -> dict[str, Any] | No
         "rating": _number(raw.get("rating") or raw.get("vote_average")),
         "tmdbUrl": tmdb_url,
         "source": str(raw.get("source") or "VPS catalogue cache"),
+        "synopsisCheckedAt": raw.get("synopsisCheckedAt"),
+        "synopsisLookupVersion": raw.get("synopsisLookupVersion"),
     }
 
 
@@ -8162,7 +8205,7 @@ def _persist_search_metadata_cache_rows(
     query: str | None = None,
     query_response: dict[str, Any] | None = None,
 ) -> int:
-    """Persist useful title metadata permanently; blank refreshes never erase saved synopsis text."""
+    """Persist per-title metadata permanently without duplicating synopsis text in query envelopes."""
     disk = _read_persistent_search_metadata_cache()
     rows = disk.get("results", [])
     if not isinstance(rows, list):
@@ -8184,6 +8227,8 @@ def _persist_search_metadata_cache_rows(
 
     now = int(time.time())
     added = 0
+    query_keys: list[dict[str, Any]] = []
+    seen_query_keys: set[tuple[str, int, str, str]] = set()
     for raw in raw_rows:
         if not isinstance(raw, dict):
             continue
@@ -8207,6 +8252,14 @@ def _persist_search_metadata_cache_rows(
         if not previous or merged != previous:
             added += 1
         index[key] = merged
+        if query and query_response and query_response.get("status") == "ready" and key not in seen_query_keys:
+            seen_query_keys.add(key)
+            query_keys.append({
+                "title": key[0],
+                "year": key[1],
+                "mediaType": key[2],
+                "tmdbId": key[3],
+            })
 
     if query and query_response and query_response.get("status") == "ready":
         queries = disk.get("queries", {})
@@ -8214,10 +8267,10 @@ def _persist_search_metadata_cache_rows(
             queries = {}
         queries[re.sub(r"\s+", " ", query).strip().casefold()] = {
             "savedAt": now,
-            "response": query_response,
+            "keys": query_keys,
         }
-        # Keep the query-envelope cache bounded; the per-title synopsis rows do
-        # not expire, even when an old exact-query envelope is eventually trimmed.
+        # Query envelopes only store references; actual synopsis text exists once
+        # per title in results and is retained permanently.
         if len(queries) > 1000:
             queries = dict(sorted(
                 queries.items(),
