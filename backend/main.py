@@ -6811,7 +6811,7 @@ async def _fallback_tvmaze_search(query: str, timeout: httpx.Timeout) -> list[di
         if not title:
             continue
         normalized = _availability_normalize_title(title)
-        if normalized != target and target not in normalized and normalized not in target:
+        if not _availability_title_is_relevant(query, title):
             continue
         premiered = str(show.get("premiered") or "")
         network = show.get("network") or show.get("webChannel") or {}
@@ -6896,7 +6896,8 @@ async def api_search_availability(q: str = Query(..., min_length=2, max_length=1
             if response is not None and response.status_code < 400:
                 data = response.json()
                 titles = data.get("title_results", []) if isinstance(data, dict) else []
-                titles = [item for item in titles if isinstance(item, dict) and item.get("id")]
+                titles = [item for item in titles if isinstance(item, dict) and item.get("id")
+                    and _availability_title_is_relevant(query, item.get("name"))]
                 titles.sort(key=lambda item: (
                     _availability_normalize_title(item.get("name")) == target,
                     bool(item.get("year")),
