@@ -1184,7 +1184,15 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       // when a slow 1337x fallback finishes after a later click.
       if (generation !== searchGenerationRef.current) return;
 
-      setResults(data);
+      // Preserve any catalogue matches that arrived while live indexers were running.
+      setResults(previous => {
+        const byKey = new Map<string, TorrentSearchResult>();
+        [...previous, ...data].forEach(row => {
+          const key = torrentResultKey(row);
+          if (!byKey.has(key)) byKey.set(key, row);
+        });
+        return Array.from(byKey.values());
+      });
       setSearched(true);
       startPosterBackgroundSearch(data);
 
