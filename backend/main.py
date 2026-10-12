@@ -7382,13 +7382,38 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_on
                 "page": page,
                 "include_adult": "false",
             })
+            # The global trending feed can be dominated by other languages.
+            # Fetch a couple of adjacent pages when needed so regional trending
+            # lists don't appear nearly empty, while retaining TMDB's ranking.
+            trend_rows = list(payload.get("results") or [])
+            trend_pages = max(1, min(500, int(payload.get("total_pages") or 1)))
+            matching_count = sum(
+                1 for row in trend_rows
+                if isinstance(row, dict) and str(row.get("original_language") or "").lower() == language_code
+            )
+            next_page = page + 1
+            while matching_count < 8 and next_page <= min(trend_pages, page + 2):
+                extra = await _tmdb_get_json("trending/movie/week", {
+                    "language": "en-US",
+                    "page": next_page,
+                    "include_adult": "false",
+                })
+                extra_rows = list(extra.get("results") or [])
+                trend_rows.extend(extra_rows)
+                matching_count += sum(
+                    1 for row in extra_rows
+                    if isinstance(row, dict) and str(row.get("original_language") or "").lower() == language_code
+                )
+                next_page += 1
+            payload = {**payload, "results": trend_rows, "total_pages": trend_pages}
         else:
             params["with_original_language"] = language_code
             params["sort_by"] = "popularity.desc" if mode == "popular" else "primary_release_date.desc"
             if mode == "latest":
                 # Limit "latest" to recent release dates, avoiding an endless
                 # catalogue of old titles with incomplete dates.
-                params["primary_release_date.gte"] = (datetime.now(timezone.utc).date().replace(year=max(1900, datetime.now(timezone.utc).year - 2))).isoformat()
+                recent_cutoff = datetime.now(timezone.utc).date()
+                params["primary_release_date.gte"] = date.fromordinal(max(1, recent_cutoff.toordinal() - 730)).isoformat()
             payload = await _tmdb_get_json("discover/movie", params)
     else:
         raise HTTPException(status_code=404, detail="Unknown movie catalogue.")
@@ -7809,7 +7834,7 @@ async def api_tmdb_movie_catalogue(
     # Keep released-only and include-upcoming responses in separate cache slots.
     cache_key = (catalogue_key + ("|released-v4" if released_only else "|upcoming-v3"), page)
     now = time.monotonic()
-    cache_ttl = TMDB_CATALOGUE_CACHE_SECONDS
+    cache_ttl = min(TMDB_CATALOGUE_CACHE_SECONDS, 900) if catalogue_key.startswith("trending-") else TMDB_CATALOGUE_CACHE_SECONDS
     cached = _tmdb_movie_catalogue_cache.get(cache_key)
     if cached and now - cached[0] < cache_ttl:
         _schedule_tmdb_catalogue_synopsis_enrichment(cached[1])
