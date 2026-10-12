@@ -7680,7 +7680,7 @@ async def api_tmdb_movie_catalogue(
         # Bulk matching runs out of band; browsing never launches thousands of live searches.
         metadata_path = Path(os.getenv(
             "BOLLYWOOD_TORRENT_CATALOGUE_PATH",
-            str(_CACHE_SEED_DIR / "bollywood_torrent_matched_catalogue.json"),
+            str(Path(os.getenv("APP_DATA_DIR", "/app/data")) / "bollywood_torrent_matched_catalogue.json"),
         ))
         try:
             metadata_payload = json.loads(metadata_path.read_text(encoding="utf-8"))
