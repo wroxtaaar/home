@@ -1915,7 +1915,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         </div>
       )}
 
-      {!movieCatalogue && (nexStreamLoading || nexStreamResults.length > 0 || nexStreamError || nexStreamPlayer) && (
+      {!movieCatalogue && nexStreamPlayer && (
         <section className="space-y-3 rounded-2xl border border-violet-500/30 bg-slate-900/70 p-3 sm:p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
@@ -1929,40 +1929,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">{nexStreamError}</div>
           )}
 
-          {nexStreamResults.length > 0 && (
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {nexStreamResults.map(item => {
-                const resolving = nexStreamResolvingId === item.type + ':' + item.id;
-                const year = String(item.date || '').slice(0, 4);
-                return (
-                  <article key={item.type + ':' + item.id} className="flex min-w-0 gap-3 rounded-xl border border-slate-800 bg-slate-950/70 p-2.5">
-                    {item.poster ? (
-                      <img src={item.poster} alt="" loading="lazy" className="h-[92px] w-[62px] shrink-0 rounded-md bg-slate-800 object-cover" />
-                    ) : (
-                      <div className="flex h-[92px] w-[62px] shrink-0 items-center justify-center rounded-md bg-slate-800"><Film className="h-5 w-5 text-slate-500" /></div>
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <div className="line-clamp-2 text-xs font-bold text-slate-100">{item.title}</div>
-                      <div className="mt-1 text-[10px] text-slate-400">{year ? year + ' · ' : ''}{item.type === 'tv' ? 'TV series' : 'Movie'}</div>
-                      {item.overview && <p className="mt-1 line-clamp-3 text-[10px] leading-4 text-slate-500">{item.overview}</p>}
-                      <button
-                        type="button"
-                        disabled={nexStreamResolvingId !== null}
-                        onClick={() => void playWithNexStream(item)}
-                        className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-violet-400 px-2.5 py-1.5 text-[11px] font-bold text-slate-950 hover:bg-violet-300 disabled:cursor-wait disabled:opacity-60"
-                      >
-                        {resolving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-                        {resolving ? 'Resolving…' : 'Play with NexStream'}
-                      </button>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-          )}
-
-          {!nexStreamLoading && !nexStreamError && nexStreamResults.length === 0 && (
-            <p className="text-xs text-slate-500">No NexStream matches found for this search.</p>
+          {!nexStreamLoading && nexStreamResults.length > 0 && (
+            <p className="text-xs text-slate-400">NexStream playback options are attached to matching torrent title cards below.</p>
           )}
 
           {nexStreamPlayer && (
@@ -1990,6 +1958,13 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             </div>
           )}
         </section>
+      )}
+
+      {!movieCatalogue && !nexStreamPlayer && (nexStreamLoading || nexStreamError) && (
+        <div className="rounded-xl border border-violet-500/20 bg-slate-900/60 px-3 py-2 text-xs text-slate-300">
+          {nexStreamLoading && <span className="inline-flex items-center gap-2"><Loader2 className="h-3.5 w-3.5 animate-spin" />Looking for NexStream playback options…</span>}
+          {nexStreamError && <span className="ml-2 text-amber-200">{nexStreamError}</span>}
+        </div>
       )}
 
       {movieCatalogue && (
@@ -2458,6 +2433,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               const selectedKey = selectedQualityByGroup[group.key];
               const result = group.variants.find(variant => torrentResultKey(variant) === selectedKey) || group.variants[0];
               const posterResult = group.posterResult;
+              const normalizedCardTitle = normalizeGroupTitle(group.title.replace(/\\s*\\((?:19|20)\\d{2}\\)\\s*$/, ''));
+              const nexStreamMatches = nexStreamResults.filter(item =>
+                normalizeGroupTitle(item.title) === normalizedCardTitle
+              );
               return (
               <div
                 key={group.key || (group.title + '-' + index)}
@@ -2611,6 +2590,25 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               }
                               return null;
                             })()}
+
+                            {nexStreamMatches.length > 0 && (
+                              <div className="mt-2 flex flex-wrap gap-1.5" aria-label={'NexStream playback options for ' + group.title}>
+                                {nexStreamMatches.map(item => (
+                                  <button
+                                    key={item.type + ':' + item.id}
+                                    type="button"
+                                    disabled={nexStreamResolvingId !== null}
+                                    onClick={() => void playWithNexStream(item)}
+                                    className="inline-flex items-center gap-1.5 rounded-lg border border-violet-400/40 bg-violet-500/15 px-2.5 py-1.5 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-60"
+                                  >
+                                    {nexStreamResolvingId === item.type + ':' + item.id
+                                      ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                      : <Play className="h-3.5 w-3.5" />}
+                                    Play with NexStream
+                                  </button>
+                                ))}
+                              </div>
+                            )}
 
                             {group.variants.length > 1 && (
                               <select
