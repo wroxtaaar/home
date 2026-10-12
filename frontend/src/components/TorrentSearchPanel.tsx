@@ -118,6 +118,13 @@ function prefetchNexStreamEpisodeMetadata(
 
 type NexStreamTitleLike = { id: number; type: 'movie' | 'tv' };
 
+function normalizeTorrentTitleForNexStream(value: string): string {
+  return normalizeGroupTitle(String(value || '')
+    .replace(/\\b(?:19|20)\\d{2}\\b/g, ' ')
+    .replace(/\\b(?:s\\d{1,2}(?:e\\d{1,2})?|season\\s*\\d+|complete\\s*(?:series|season)?|all\\s*episodes|episodes?)\\b/gi, ' ')
+    .replace(/\\b(?:2160p|1080p|720p|480p|4k|uhd|hdr|bluray|blu[ -]?ray|brrip|bdrip|web[ -]?dl|webrip|hdtv|x264|x265|hevc|aac|proper|repack|extended|remastered)\\b/gi, ' ')
+    .replace(/\\[[^\\]]*\\]|\\([^)]*\\)/g, ' '));
+}
 
 function isPresetSearchLabel(value: string): boolean {
   const normalized = String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
