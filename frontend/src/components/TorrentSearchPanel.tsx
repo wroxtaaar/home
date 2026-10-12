@@ -1408,7 +1408,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     }
   };
 
-  const playWithNexStream = async (item: NexStreamTitle, chosenSeason?: number, chosenEpisode?: number) => {
+  const playWithNexStream = async (item: NexStreamTitle, chosenSeason?: number, chosenEpisode?: number, openInNewWindow = false) => {
+    const popup = openInNewWindow ? window.open('about:blank', '_blank') : null;
     if (item.type === 'tv' && (chosenSeason === undefined || chosenEpisode === undefined)) {
       setNexStreamEpisodePicker(item);
       setNexStreamEpisodes([]);
@@ -1446,14 +1447,20 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         }
       });
       if (!source) throw new Error('NexStream returned no supported player source.');
-      setNexStreamPlayer({
-        title: item.title,
-        sourceName: String(source.name || 'NexStream'),
-        url: String(source.url),
-        type: item.type,
-        season,
-        episode,
-      });
+      if (popup) {
+        popup.location.href = String(source.url);
+      } else if (openInNewWindow) {
+        setNexStreamError('Your browser blocked the new window. Allow pop-ups and try again.');
+      } else {
+        setNexStreamPlayer({
+          title: item.title,
+          sourceName: String(source.name || 'NexStream'),
+          url: String(source.url),
+          type: item.type,
+          season,
+          episode,
+        });
+      }
       setNexStreamError('');
     } catch (error: any) {
       setNexStreamError(String(error?.message || 'Could not start NexStream playback.'));
@@ -3280,7 +3287,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             overview: movie.overview || '',
                             poster: movie.posterUrl || null,
                             type: 'movie',
-                          });
+                          }, undefined, undefined, true);
                         }}
                         className="w-full rounded-lg border border-violet-400/50 bg-violet-500/15 px-2 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-50"
                       >
