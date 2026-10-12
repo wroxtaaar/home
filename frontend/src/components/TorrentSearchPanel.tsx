@@ -4248,7 +4248,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
                       return (
                         <div className="min-w-0 max-w-full">
-                          <div className="flex items-center gap-2">
+                          <div className="flex w-full items-center justify-between gap-2">
                           <button
                             type="button"
                             disabled={nexStreamResolvingId !== null || (nexStreamLoading && normalizeGroupTitle(nexStreamLoadingTitle) === normalizeGroupTitle(mediaDisplayTitle || group.title))}
@@ -4271,7 +4271,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                 void searchNexStreamTitles(mediaDisplayTitle || group.title, 'movie');
                               }
                             }}
-                            className="w-full rounded-lg border border-violet-400/40 bg-violet-500/15 px-2.5 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-60"
+                            className="min-w-0 flex-1 whitespace-nowrap rounded-lg border border-violet-400/40 bg-violet-500/15 px-1.5 py-1.5 text-[10px] font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-60"
                           >
                             {nexStreamResolvingId !== null
                               ? 'Resolving…'
@@ -4279,7 +4279,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                 ? 'Searching…'
                                 : 'Direct Stream'}
                           </button>
-                          <div className="min-w-0 flex-1 flex justify-end">
+                          <div className="shrink-0">
                             <button
                               type="button"
                               disabled={!source || isPreparing}
@@ -4327,7 +4327,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                 setPreparingTorrentKey(current => current === torrentKey ? null : current);
                               }
                             }}
-                            className="shrink-0 px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 disabled:opacity-60 disabled:cursor-not-allowed text-slate-950 text-[11px] font-bold transition"
+                            className="shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 disabled:opacity-60 disabled:cursor-not-allowed text-slate-950 text-[11px] font-bold transition"
                           >
                             {isPreparing ? 'Preparing…' : 'Prepare'}
                           </button>
