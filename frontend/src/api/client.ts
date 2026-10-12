@@ -32,6 +32,28 @@ export interface MarvelCatalogueResponse {
   error?: string;
 }
 
+export interface TvCatalogueItem {
+  id: number | string;
+  title: string;
+  year?: number | null;
+  releaseDate?: string;
+  overview?: string;
+  posterUrl?: string;
+  backdropUrl?: string;
+  rating?: number;
+  tmdbUrl?: string;
+  source?: string;
+}
+
+export interface TvCataloguePage {
+  catalogue: string;
+  page: number;
+  totalPages: number;
+  totalResults: number;
+  provider: string;
+  results: TvCatalogueItem[];
+}
+
 export type MovieCatalogueKey =
   | 'marvel'
   | 'dc-live-action'
@@ -351,6 +373,18 @@ export const api = {
       throw new Error(data?.detail || data?.error || body || ('Movie catalogue failed (HTTP ' + res.status + ')'));
     }
     return data as MarvelCatalogueResponse;
+  },
+
+  async getTvCatalogue(key: string, page = 1, signal?: AbortSignal): Promise<TvCataloguePage> {
+    const params = new URLSearchParams({ page: String(Math.min(Math.max(page, 1), 500)) });
+    const res = await fetch(API_BASE + '/api/tv/catalogue/' + encodeURIComponent(key) + '?' + params.toString(), {
+      signal, credentials: 'include', cache: 'no-store',
+    });
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch {}
+    if (!res.ok) throw new Error(data?.detail || data?.error || body || ('TV catalogue failed (HTTP ' + res.status + ')'));
+    return data as TvCataloguePage;
   },
 
   async getMovieCatalogue(
