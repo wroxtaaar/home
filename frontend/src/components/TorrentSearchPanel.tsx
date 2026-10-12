@@ -4160,11 +4160,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           </div>
                         </div>
                         <div className="mt-2 flex items-center justify-between gap-2">
-                          <span className="shrink-0 font-mono text-[10px] sm:text-[11px] text-slate-300">
-                            {formatBytes(result.size)}
-                          </span>
-
-                    {(() => {
+                          {(() => {
                       const source = result.magnetUrl || result.downloadUrl || result.sourceUrl;
                       const torrentKey = result.infoHash || source || result.title;
                       const isPreparing = preparingTorrentKey === torrentKey;
@@ -4235,7 +4231,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       }
 
                       return (
-                        <div className="min-w-0 max-w-full flex flex-col items-stretch gap-2">
+                        <div className="min-w-0 max-w-full">
+                          <div className="flex items-center gap-2">
                           <button
                             type="button"
                             disabled={nexStreamResolvingId !== null || (nexStreamLoading && normalizeGroupTitle(nexStreamLoadingTitle) === normalizeGroupTitle(mediaDisplayTitle || group.title))}
@@ -4261,12 +4258,12 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             className="w-full rounded-lg border border-violet-400/40 bg-violet-500/15 px-2.5 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-60"
                           >
                             {nexStreamResolvingId !== null
-                              ? 'Resolving stream…'
+                              ? 'Resolving…'
                               : nexStreamLoading && normalizeGroupTitle(nexStreamLoadingTitle) === normalizeGroupTitle(mediaDisplayTitle || group.title)
-                                ? 'Searching NexStream…'
+                                ? 'Searching…'
                                 : 'Direct Stream'}
                           </button>
-                          <div className="min-w-0 max-w-full flex flex-wrap items-center justify-end gap-1.5">
+                          <div className="min-w-0 flex-1 flex justify-end">
                             <button
                               type="button"
                               disabled={!source || isPreparing}
@@ -4319,7 +4316,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             {isPreparing ? 'Preparing…' : 'Prepare'}
                           </button>
                           </div>
-                        </div>
+                          </div>
                       );
                     })()}
                         </div>
