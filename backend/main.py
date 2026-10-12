@@ -7676,20 +7676,22 @@ async def api_tmdb_movie_catalogue(
     # This is a separate metadata-only library sourced from the refreshed export.
     # It never reads or writes the existing torrent-result catalogues.
     if catalogue_key == "bollywood-library":
+        # This catalogue contains only titles with a cached, plausible torrent-provider match.
+        # Bulk matching runs out of band; browsing never launches thousands of live searches.
         metadata_path = Path(os.getenv(
-            "BOLLYWOOD_METADATA_CATALOGUE_PATH",
-            str(_CACHE_SEED_DIR / "bollywood_tmdb_updated_metadata.json"),
+            "BOLLYWOOD_TORRENT_CATALOGUE_PATH",
+            str(_CACHE_SEED_DIR / "bollywood_torrent_matched_catalogue.json"),
         ))
         try:
             metadata_payload = json.loads(metadata_path.read_text(encoding="utf-8"))
             source_rows = metadata_payload.get("records", [])
             if not isinstance(source_rows, list):
-                raise ValueError("metadata records must be a list")
+                raise ValueError("matched catalogue records must be a list")
         except (OSError, ValueError, TypeError) as exc:
-            logger.warning("Bollywood metadata library unavailable: %s", type(exc).__name__)
+            logger.warning("Bollywood torrent-matched library unavailable: %s", type(exc).__name__)
             raise HTTPException(
                 status_code=503,
-                detail="Bollywood metadata library is not available in this test deployment yet.",
+                detail="The torrent-matched Bollywood cache has not been generated yet.",
             ) from exc
 
         today = datetime.now(timezone.utc).date().isoformat()
@@ -7730,9 +7732,11 @@ async def api_tmdb_movie_catalogue(
                 "verified": tmdb_id is not None,
                 "tmdbUrl": f"https://www.themoviedb.org/movie/{tmdb_id}" if tmdb_id is not None else "",
                 "imdbUrl": f"https://www.imdb.com/title/{source_row.get('imdbId')}/" if source_row.get("imdbId") else "",
+                "torrentMatch": source_row.get("torrentMatch") if isinstance(source_row.get("torrentMatch"), dict) else {},
+                "torrentCheckedAt": source_row.get("torrentCheckedAt") or "",
             })
 
-        # TMDB-enriched records first, then newest release dates; stable title ordering
+        # Only matched titles are present; newest releases appear first.
         # keeps pages consistent when records share a date or have no release date.
         rows.sort(key=lambda item: (
             bool(item.get("tmdbId")),
@@ -7745,13 +7749,13 @@ async def api_tmdb_movie_catalogue(
         start = (page - 1) * page_size
         return {
             "catalogue": catalogue_key,
-            "provider": "TMDB + historical IMDb seed",
+            "provider": "TMDB + cached torrent-provider matches",
             "page": page,
             "totalPages": total_pages,
             "totalResults": total_results,
             "releasedOnly": released_only,
             "results": rows[start:start + page_size],
-            "attribution": "Metadata from TMDB and the preserved historical IMDb seed; unmatched historical records are marked unverified.",
+            "attribution": "TMDB metadata filtered to titles with cached torrent-provider matches.",
         }
 
     # Keep released-only and include-upcoming responses in separate cache slots.
