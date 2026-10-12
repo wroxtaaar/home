@@ -3287,7 +3287,16 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 <div className="flex flex-1 flex-col gap-2 p-2.5">
                   <div>
                     <h3 className="text-sm font-bold leading-snug text-slate-100">{movie.title}</h3>
-                    <p className="mt-0.5 text-xs text-slate-500">{movie.year || 'Release year unknown'}</p>
+                    <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                      <span className="text-slate-500">{movie.year || 'Release year unknown'}</span>
+                      {(() => {
+                        const imdb = imdbRatingsByKey[imdbRatingKey(movie.title, movie.year)];
+                        if (imdb?.imdbRating != null && imdb.imdbRating > 0) {
+                          return <a href={imdb.imdbUrl || (imdb.imdbId ? 'https://www.imdb.com/title/' + imdb.imdbId + '/' : '#')} target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()} className="font-semibold text-amber-300 hover:text-amber-200">IMDb {imdb.imdbRating.toFixed(1)}</a>;
+                        }
+                        return movie.rating != null && movie.rating > 0 ? <span className="font-semibold text-amber-300">TMDB {movie.rating.toFixed(1)}</span> : null;
+                      })()}
+                    </div>
                     {(() => {
                       const ott = ottAvailability[String(movie.id)];
                       if (!ott || ott.status === 'loading') {
@@ -3360,9 +3369,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       );
                     })()}
                   </div>
-                  {movie.overview && (
-                    <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{movie.overview}</p>
-                  )}
+                  <div className="min-h-[3.75rem]">
+                    {movie.overview && <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{movie.overview}</p>}
+                  </div>
                   {movieCatalogue.catalogue === 'bollywood-library' && expandedBollywoodMovieKey === String(movie.tmdbId || movie.id) && (
                     <div className="space-y-2 rounded-lg border border-cyan-500/30 bg-slate-950/80 p-2.5" onClick={event => event.stopPropagation()}>
                       <div className="text-xs font-bold text-slate-100">Prepare {movie.title}</div>
