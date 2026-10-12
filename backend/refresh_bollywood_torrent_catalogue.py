@@ -23,7 +23,7 @@ import main
 BASE_DIR = Path(__file__).resolve().parent
 METADATA_PATH = Path(os.getenv(
     "BOLLYWOOD_METADATA_CATALOGUE_PATH",
-    str(BASE_DIR / "cache-seed" / "bollywood_tmdb_updated_metadata.json"),
+    str(Path(os.getenv("APP_DATA_DIR", "/app/data")) / "bollywood_tmdb_updated_metadata.json"),
 ))
 OUTPUT_PATH = Path(os.getenv(
     "BOLLYWOOD_TORRENT_CATALOGUE_PATH",
@@ -75,7 +75,13 @@ def atomic_write(path: Path, payload: Any) -> None:
 
 async def run() -> int:
     metadata = load_json(METADATA_PATH, {})
-    source_rows = metadata.get("records", []) if isinstance(metadata, dict) else []
+    # Bootstrap from the bundled export on the first run; subsequent runs use the
+    # persistent APP_DATA_DIR copy refreshed by the scheduled metadata job.
+    if not isinstance(metadata, dict) or not isinstance(metadata.get("records"), list):
+        bundled_path = BASE_DIR / "cache-seed" / "bollywood_tmdb_updated_metadata.json"
+        metadata = load_json(bundled_path, {})
+        if isinstance(metadata, dict) and isinstance(metadata.get("records"), list):
+            atomic_write(METADATA_PATH, metadata)
     if not isinstance(source_rows, list) or not source_rows:
         print(f"ERROR: metadata catalogue missing or empty: {METADATA_PATH}", file=sys.stderr)
         return 2
