@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Build a persistent shared cache for Home's six Bollywood/Hollywood sections.
+"""Build a persistent cache for six regional movie catalogues and their torrent searches.
 
-Run inside the VPS host with the Home API reachable at 127.0.0.1:10000.
-Resumable checkpoints are written after each title; the last good cache is kept
-if a provider fails. Intended for a weekly cron job.
+Each catalogue is filled independently to at least 50 movies when the API can
+supply them. Titles may intentionally occur in multiple catalogues. A failed
+page does not abort the other catalogues, and a previously good snapshot is
+retained when a refresh fails.
 """
 import json, os, re, time, urllib.parse, urllib.request
 from datetime import datetime, timezone
@@ -17,15 +18,18 @@ CATALOGUES = (
     "popular-bollywood", "trending-bollywood", "latest-bollywood",
     "popular-hollywood", "trending-hollywood", "latest-hollywood",
 )
-PAGE_LIMIT = int(os.getenv("REGIONAL_CACHE_PAGES", "3"))
+TARGET_PER_CATALOGUE = int(os.getenv("REGIONAL_CACHE_MOVIES_PER_CATALOGUE", "50"))
+PAGE_LIMIT = int(os.getenv("REGIONAL_CACHE_PAGES", "15"))
 TORRENT_LIMIT = 50
 MAX_SIZE = 5 * 1024**3
 BAD_QUALITY = re.compile(r"(?:camrip|hdcam|telesync|telecine|dvdscr|screener|workprint)", re.I)
 
+
 def request(path, timeout=90):
-    req = urllib.request.Request(API + path, headers={"Accept":"application/json","User-Agent":"HomeRegionalCacheBuilder/1.0"})
+    req = urllib.request.Request(API + path, headers={"Accept": "application/json", "User-Agent": "HomeRegionalCacheBuilder/2.0"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8"))
+
 
 def atomic_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -33,78 +37,169 @@ def atomic_json(path, data):
     tmp.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     os.replace(tmp, path)
 
+
 def norm(s):
     return re.sub(r"[^a-z0-9]+", "", str(s or "").casefold())
+
+
+def movie_key(movie):
+    return norm(movie.get("title")) + "|" + str(movie.get("year") or "")
+
 
 def main():
     old = {}
     if CACHE.exists():
-        try: old = json.loads(CACHE.read_text(encoding="utf-8"))
-        except Exception: old = {}
+        try:
+            old = json.loads(CACHE.read_text(encoding="utf-8"))
+        except Exception:
+            old = {}
     state = {}
     if STATE.exists():
-        try: state = json.loads(STATE.read_text(encoding="utf-8"))
-        except Exception: state = {}
-    cache = {"version":1,"builtAt":old.get("builtAt"),"catalogues":old.get("catalogues",{}),"movies":old.get("movies",{}),"status":"building"}
+        try:
+            state = json.loads(STATE.read_text(encoding="utf-8"))
+        except Exception:
+            state = {}
+
+    cache = {
+        "version": 2,
+        "builtAt": old.get("builtAt"),
+        "catalogues": old.get("catalogues", {}),
+        "movies": old.get("movies", {}),
+        "status": "building",
+        "targetPerCatalogue": TARGET_PER_CATALOGUE,
+    }
+    failed_catalogues = []
+
+    # Build each catalogue independently. Do not deduplicate between catalogues:
+    # a movie may correctly belong to Popular and Trending, for example.
     for cat in CATALOGUES:
-        prior = cache["catalogues"].get(cat,{})
+        prior = cache["catalogues"].get(cat, {})
         pages = []
+        seen = set()
+        count = 0
+        total_pages = PAGE_LIMIT
+        failed = False
+
         for page in range(1, PAGE_LIMIT + 1):
+            data = None
+            error = None
+            for attempt in range(1, 4):
+                try:
+                    data = request("/api/movies/catalogue/" + cat + "?page=" + str(page) + "&released_only=true")
+                    break
+                except Exception as exc:
+                    error = str(exc)
+                    if attempt < 3:
+                        time.sleep(attempt)
+            if data is None:
+                print(json.dumps({"event": "catalogue_error", "catalogue": cat, "page": page, "error": error}), flush=True)
+                failed = True
+                break
+
+            rows = data.get("results", [])
+            pages.append({"page": page, "results": rows, "totalPages": data.get("totalPages", 1)})
+            for movie in rows:
+                if not isinstance(movie, dict) or not str(movie.get("title") or "").strip():
+                    continue
+                key = movie_key(movie)
+                if key not in seen:
+                    seen.add(key)
+                    count += 1
             try:
-                data = request("/api/movies/catalogue/"+cat+"?page="+str(page)+"&released_only=true")
-                pages.append({"page":page,"results":data.get("results",[]),"totalPages":data.get("totalPages",1)})
-                if page >= int(data.get("totalPages") or 1) or not data.get("results"): break
-            except Exception as e:
-                print(json.dumps({"event":"catalogue_error","catalogue":cat,"page":page,"error":str(e)}),flush=True)
-                if not pages and not prior.get("pages"): raise
-                pages = prior.get("pages", pages); break
-        cache["catalogues"][cat] = {"builtAt":datetime.now(timezone.utc).isoformat(),"pages":pages}
-        atomic_json(CACHE,cache)
-        print(json.dumps({"event":"catalogue_cached","catalogue":cat,"movies":sum(len(x["results"]) for x in pages)}),flush=True)
+                total_pages = max(1, int(data.get("totalPages") or 1))
+            except (TypeError, ValueError):
+                total_pages = PAGE_LIMIT
+            print(json.dumps({"event": "catalogue_page", "catalogue": cat, "page": page, "pageMovies": len(rows), "uniqueMovies": count, "target": TARGET_PER_CATALOGUE}), flush=True)
+            if count >= TARGET_PER_CATALOGUE or page >= total_pages or not rows:
+                break
+            time.sleep(float(os.getenv("REGIONAL_CACHE_DELAY_SECONDS", "0.4")))
+
+        if failed:
+            failed_catalogues.append(cat)
+            # Keep the previous known-good catalogue if refresh failed at any page.
+            if prior.get("pages"):
+                pages = prior["pages"]
+                print(json.dumps({"event": "catalogue_preserved", "catalogue": cat, "movies": sum(len(p.get("results", [])) for p in pages)}), flush=True)
+            else:
+                print(json.dumps({"event": "catalogue_incomplete", "catalogue": cat, "movies": count, "target": TARGET_PER_CATALOGUE}), flush=True)
+
+        cache["catalogues"][cat] = {
+            "builtAt": datetime.now(timezone.utc).isoformat(),
+            "targetMovies": TARGET_PER_CATALOGUE,
+            "movieCount": len({movie_key(m) for p in pages for m in p.get("results", []) if isinstance(m, dict) and m.get("title")}),
+            "pages": pages,
+            "status": "ready" if len({movie_key(m) for p in pages for m in p.get("results", []) if isinstance(m, dict) and m.get("title")}) >= TARGET_PER_CATALOGUE else "partial",
+        }
+        atomic_json(CACHE, cache)
+        print(json.dumps({"event": "catalogue_cached", "catalogue": cat, "movies": cache["catalogues"][cat]["movieCount"], "status": cache["catalogues"][cat]["status"]}), flush=True)
+
+    # Merge movie records for title-to-torrent lookup. This shared index may be
+    # deduplicated; the per-catalogue snapshots above remain independent.
     movies = {}
     for cat, snapshot in cache["catalogues"].items():
-        for page in snapshot.get("pages",[]):
-            for movie in page.get("results",[]):
-                key = norm(movie.get("title"))+"|"+str(movie.get("year") or "")
-                if key: movies.setdefault(key,{"movie":movie,"catalogues":[]})["catalogues"].append(cat)
+        for page in snapshot.get("pages", []):
+            for movie in page.get("results", []):
+                if not isinstance(movie, dict):
+                    continue
+                key = movie_key(movie)
+                if key == "|":
+                    continue
+                entry = movies.setdefault(key, {"movie": movie, "catalogues": []})
+                if cat not in entry["catalogues"]:
+                    entry["catalogues"].append(cat)
+
     cache["movies"] = movies
     total = len(movies)
-    for idx,(key,entry) in enumerate(movies.items(),1):
+    for idx, (key, entry) in enumerate(movies.items(), 1):
         title = str(entry["movie"].get("title") or "").strip()
         year = entry["movie"].get("year")
-        if not title: continue
-        query = title + (" "+str(year) if year else "")
+        if not title:
+            continue
+        query = title + (" " + str(year) if year else "")
         try:
-            path = "/api/search?q="+urllib.parse.quote(query)+"&limit="+str(TORRENT_LIMIT)
+            path = "/api/search?q=" + urllib.parse.quote(query) + "&limit=" + str(TORRENT_LIMIT)
             response = request(path, timeout=150)
-            rows = response if isinstance(response,list) else response.get("results", response.get("torrents",[]))
+            rows = response if isinstance(response, list) else response.get("results", response.get("torrents", []))
             target = norm(title)
             good = []
             for row in rows or []:
+                if not isinstance(row, dict):
+                    continue
                 name = str(row.get("title") or "")
                 media = str(row.get("mediaTitle") or "")
-                size = int(row.get("size") or 0)
+                try:
+                    size = int(row.get("size") or 0)
+                except (TypeError, ValueError):
+                    size = 0
                 has_source = bool(row.get("magnetUrl") or row.get("downloadUrl") or row.get("sourceUrl"))
-                if not has_source or size > MAX_SIZE or BAD_QUALITY.search(name): continue
-                if target and (target in norm(name) or target in norm(media)): good.append(row)
-            entry["torrentDetails"] = {"query":query,"results":good,"scannedAt":datetime.now(timezone.utc).isoformat(),"status":"ready" if good else "empty"}
-            state.setdefault("completed",{})[key] = entry["torrentDetails"]
-        except Exception as e:
-            print(json.dumps({"event":"torrent_error","title":title,"error":str(e)}),flush=True)
-            entry["torrentDetails"] = old.get("movies",{}).get(key,{}).get("torrentDetails",{"query":query,"results":[],"status":"unavailable"})
+                if not has_source or size > MAX_SIZE or BAD_QUALITY.search(name):
+                    continue
+                if target and (target in norm(name) or target in norm(media)):
+                    good.append(row)
+            entry["torrentDetails"] = {"query": query, "results": good, "scannedAt": datetime.now(timezone.utc).isoformat(), "status": "ready" if good else "empty"}
+            state.setdefault("completed", {})[key] = entry["torrentDetails"]
+        except Exception as exc:
+            print(json.dumps({"event": "torrent_error", "title": title, "error": str(exc)}), flush=True)
+            entry["torrentDetails"] = old.get("movies", {}).get(key, {}).get("torrentDetails", {"query": query, "results": [], "status": "unavailable"})
+
         if idx % 5 == 0 or idx == total:
             cache["movies"] = movies
             cache["builtAt"] = datetime.now(timezone.utc).isoformat()
             cache["status"] = "building"
-            atomic_json(CACHE,cache); atomic_json(STATE,state)
-            print(json.dumps({"event":"progress","completed":idx,"total":total}),flush=True)
-        time.sleep(float(os.getenv("REGIONAL_CACHE_DELAY_SECONDS","0.4")))
+            atomic_json(CACHE, cache)
+            atomic_json(STATE, state)
+            print(json.dumps({"event": "progress", "completed": idx, "total": total}), flush=True)
+        time.sleep(float(os.getenv("REGIONAL_CACHE_DELAY_SECONDS", "0.4")))
+
     cache["movies"] = movies
     cache["builtAt"] = datetime.now(timezone.utc).isoformat()
-    cache["status"] = "ready"
+    cache["status"] = "partial" if failed_catalogues or any(v.get("status") != "ready" for v in cache["catalogues"].values()) else "ready"
     cache["movieCount"] = len(movies)
     cache["torrentMovieCount"] = sum(bool((x.get("torrentDetails") or {}).get("results")) for x in movies.values())
-    atomic_json(CACHE,cache)
-    print(json.dumps({"event":"complete","movieCount":cache["movieCount"],"torrentMovieCount":cache["torrentMovieCount"],"file":str(CACHE)}),flush=True)
+    cache["failedCatalogues"] = failed_catalogues
+    atomic_json(CACHE, cache)
+    print(json.dumps({"event": "complete", "status": cache["status"], "catalogues": {k: v.get("movieCount", 0) for k, v in cache["catalogues"].items()}, "movieCount": cache["movieCount"], "torrentMovieCount": cache["torrentMovieCount"], "file": str(CACHE)}), flush=True)
 
-if __name__ == "__main__": main()
+
+if __name__ == "__main__":
+    main()
