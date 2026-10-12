@@ -34,8 +34,10 @@ Then run the defaults if the small run reports successful TMDB records and cache
    titles, Hollywood queries filter to English titles, and anime queries filter by animation genre.
 3. A portion of the result limit is reserved for plausible scraper-discovered titles, allowing
    less-popular/newly indexed titles to supplement the discovery results.
-4. Generic scraper requests such as `2026 movies` are skipped when the provider normalizes them
-   to a generic term like `movies`; TMDB discovery still handles these year/category queries.
+4. Broad scraper searches are expanded into a small, deduplicated set of targeted variants.
+   For example, `2025 movies` becomes `Bollywood 2025`, `Hindi movies 2025`, and
+   `Hollywood movies 2025`; `Bollywood movies` becomes year-specific Bollywood/Hindi searches.
+   This avoids relying only on noisy generic indexer results.
 5. Torrent titles are cleaned of common release tags and uploader tails. Collections, season packs,
    music/audio compilations, common adult-content markers, and editorial/listicle results (for example
    "Top 10", "3 Best Bollywood Movies Of", "latest Bollywood movies", "hand-picked prints", or
@@ -45,10 +47,11 @@ Then run the defaults if the small run reports successful TMDB records and cache
 6. If scraper candidates do not contribute enough new, confident TMDB matches, the builder performs
    a fallback TMDB discovery pass to fill unused capacity rather than returning an unnecessarily small
    catalogue.
-6. Scraper candidates require an exact TMDB title match or a high title-similarity and token-overlap
+7. Scraper candidates require an exact TMDB title match or a high title-similarity and token-overlap
    score; year mismatches are rejected rather than accepting loosely related popular results.
-7. TMDB transport failures get one bounded retry. Metrics separately report retry count, lookup
-   failures, and titles with no confident TMDB match.
+8. TMDB transport failures get one bounded retry. Metrics separately report retry count, lookup
+   failures, and titles with no confident TMDB match. The summary also reports how many targeted
+   scraper queries were attempted.
 
 ## Cache destination
 
