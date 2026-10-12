@@ -3429,7 +3429,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                         }
                         void searchMovieTorrents(movie);
                       }}
-                      className={(isFranchiseCatalogue ? 'w-full ' : 'w-full ') + 'rounded-lg bg-cyan-500 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-50'}
+                      className={'w-full rounded-lg bg-cyan-500 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-50'}
                     >
                       {movieCatalogue.catalogue === 'bollywood-library' && (movie.torrentMatches?.length || movie.torrentMatch)
                         ? <><Download className="mr-1.5 inline h-3.5 w-3.5" />Get</>
