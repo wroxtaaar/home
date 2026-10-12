@@ -3227,6 +3227,24 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   </article>
                 );
               }
+              if (movieCatalogue.catalogue === 'bollywood-library' && expandedBollywoodMovieKey !== String(movie.tmdbId || movie.id)) {
+                const imdb = imdbRatingsByKey[imdbRatingKey(movie.title, movie.year)];
+                return (
+                  <article key={String(movie.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-slate-700 hover:bg-slate-900/95 flex flex-col">
+                    <button type="button" className="text-left flex flex-1 flex-col" onClick={() => setExpandedBollywoodMovieKey(String(movie.tmdbId || movie.id))} aria-label={'Open preparation details for ' + movie.title}>
+                      <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
+                        {movie.posterUrl ? <img src={movie.posterUrl} alt={movie.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="absolute inset-0 flex items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
+                        {imdb?.imdbRating != null && imdb.imdbRating > 0 && <span className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow">⭐ {imdb.imdbRating.toFixed(1)}/10</span>}
+                      </div>
+                      <div className="flex flex-1 flex-col gap-2 p-2.5">
+                        <div><h3 className="line-clamp-2 text-sm font-bold leading-snug text-slate-100">{movie.title}</h3><div className="mt-0.5 text-xs text-slate-500">{movie.year || 'Release year unknown'}</div>{imdb?.imdbRating != null && imdb.imdbRating > 0 ? <div className="mt-1 text-[10px] font-semibold text-amber-300">IMDb {imdb.imdbRating.toFixed(1)}</div> : movie.rating ? <div className="mt-1 text-[10px] text-amber-300">TMDB {movie.rating.toFixed(1)}</div> : null}</div>
+                        {movie.overview && <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{movie.overview}</p>}
+                        <div className="mt-auto rounded-lg border border-violet-400/40 bg-violet-500/10 px-2 py-2 text-center text-[11px] font-semibold text-violet-200">Click card to prepare</div>
+                      </div>
+                    </button>
+                  </article>
+                );
+              }
               return (
                 <article key={String(movie.id)} onClick={() => movieCatalogue.catalogue === 'bollywood-library' && setExpandedBollywoodMovieKey(current => current === String(movie.tmdbId || movie.id) ? null : String(movie.tmdbId || movie.id))} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 flex flex-col cursor-pointer transition hover:border-cyan-500/40">
                 <div className="relative aspect-[2/3] bg-slate-950">
