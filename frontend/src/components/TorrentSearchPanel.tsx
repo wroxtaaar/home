@@ -3301,7 +3301,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               if (movieCatalogue.catalogue === 'bollywood-library' && expandedBollywoodMovieKey !== String(movie.tmdbId || movie.id)) {
                 const imdb = imdbRatingsByKey[imdbRatingKey(movie.title, movie.year)];
                 return (
-                  <MovieCatalogueCard key={String(movie.id)} className="border-slate-800 transition hover:border-slate-700 hover:bg-slate-900/95">
+                  <article key={String(movie.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-slate-700 hover:bg-slate-900/95 flex flex-col">
                     <button type="button" className="text-left flex flex-1 flex-col" onClick={() => setExpandedBollywoodMovieKey(String(movie.tmdbId || movie.id))} aria-label={'Open preparation details for ' + movie.title}>
                       <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
                         {movie.posterUrl ? <img src={lowQualityPosterUrl(movie.posterUrl)} alt={movie.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="absolute inset-0 flex items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
@@ -3314,7 +3314,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                         <div className="mt-auto rounded-lg border border-violet-400/40 bg-violet-500/10 px-2 py-2 text-center text-[11px] font-semibold text-violet-200">Click card to prepare</div>
                       </div>
                     </button>
-                  </MovieCatalogueCard>
+                  </article>
                 );
               }
               if (movieCatalogue.catalogue === 'bollywood-library' && expandedBollywoodMovieKey === String(movie.tmdbId || movie.id)) {
@@ -3324,7 +3324,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 const selectedIndex = Math.min(bollywoodReleaseSelection[selectionKey] || 0, Math.max(0, releases.length - 1));
                 const release = releases[selectedIndex];
                 return (
-                  <MovieCatalogueCard key={String(movie.id)} className="border-slate-700">
+                  <article key={String(movie.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-700 bg-slate-900 flex flex-col">
                     <div className="relative aspect-[2/3] bg-slate-950">
                       {movie.posterUrl ? <img src={movie.posterUrl} alt={movie.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="absolute inset-0 flex items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
                       {imdb?.imdbRating != null && imdb.imdbRating > 0 && <a href={imdb.imdbUrl || (imdb.imdbId ? 'https://www.imdb.com/title/' + imdb.imdbId + '/' : '#')} target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()} className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow">⭐ {imdb.imdbRating.toFixed(1)}/10</a>}
@@ -3348,7 +3348,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       <div className="text-[10px] leading-relaxed text-slate-400">{(() => { const ott = ottAvailability[String(movie.id)]; if (!ott || ott.status === 'loading') return 'Checking streaming availability in India…'; if (ott.streamingProviders?.length) return <><span className="text-slate-300">Stream:</span> {providerNames(ott.streamingProviders)}</>; if (ott.rentProviders?.length || ott.buyProviders?.length) return <><span className="text-slate-300">Rent / Buy:</span> {providerNames([...(ott.rentProviders || []), ...(ott.buyProviders || [])])}</>; return 'Streaming availability not confirmed'; })()}</div>
                       <div className="grid grid-cols-2 gap-2"><button type="button" onClick={event => { event.stopPropagation(); void playWithNexStream({id:Number(movie.tmdbId||movie.id),title:movie.title,date:movie.releaseDate||(movie.year?String(movie.year):''),overview:movie.overview||'',poster:movie.posterUrl||null,type:'movie'}); }} className="rounded-lg border border-violet-400/50 bg-violet-500/15 px-2 py-2 text-[11px] font-bold text-violet-200">NexStream</button><button type="button" onClick={() => setExpandedBollywoodMovieKey(null)} className="rounded-lg bg-cyan-500 px-2 py-2 text-[11px] font-bold text-slate-950">Close details</button></div>
                     </div>
-                  </MovieCatalogueCard>
+                  </article>
                 );
               }
               return (
