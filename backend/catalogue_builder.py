@@ -120,7 +120,7 @@ def _tmdb_candidate(title: str, year: int, payload: dict[str, Any]) -> dict[str,
         if not isinstance(row, dict) or row.get("media_type") not in {"movie", "tv"} or not row.get("id"):
             continue
         media_type = str(row["media_type"])
-        canonical = str((row.get("title") if media_type == "movie" else row.get("name)) or "").strip()
+        canonical = str((row.get("title") if media_type == "movie" else row.get("name")) or "").strip()
         if not canonical:
             continue
         normalized = _normalize(canonical)
@@ -242,12 +242,14 @@ async def build_catalogue(queries: list[str], max_titles: int, per_query: int) -
     discovered: dict[tuple[str, int], tuple[str, int, str]] = {}
     discovery_failures = 0
 
-    # First populate the cache from canonical TMDB discovery results. Unlike torrent
-    # titles, these rows already have verified IDs, years, posters, and overviews.
+    # First populate most of the cache from canonical TMDB discovery results.
+    # Reserve capacity for scraper-discovered titles so the scraper remains useful
+    # for less-popular and newly indexed films/series too.
+    discovery_budget = max(1, int(cap * 0.65)) if cap > 1 else 1
     for query in queries:
-        if len(output_by_id) >= cap:
+        if len(output_by_id) >= discovery_budget:
             break
-        rows = await _discover_query(query, min(per_query, cap - len(output_by_id)))
+        rows = await _discover_query(query, min(per_query, discovery_budget - len(output_by_id)))
         if not rows:
             discovery_failures += 1
         for candidate in rows:
