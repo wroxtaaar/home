@@ -806,6 +806,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [sizeSort, setSizeSort] = useState<'asc' | 'desc' | null>(null);
   const [timeSort, setTimeSort] = useState<'desc' | 'asc' | null>(null);
   const [releaseYearSort, setReleaseYearSort] = useState<'newest' | 'oldest' | null>(null);
+  const [isMarvelEnglishResults, setIsMarvelEnglishResults] = useState(false);
   const [showMarvelWebSeries, setShowMarvelWebSeries] = useState(false);
   const [marvelWebSeriesCatalogue, setMarvelWebSeriesCatalogue] = useState<TvCataloguePage | null>(null);
   const [marvelWebSeriesLoading, setMarvelWebSeriesLoading] = useState(false);
@@ -1445,6 +1446,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
   const runSearch = async (event?: React.FormEvent, searchOverride?: string, searchMode?: 'marvel' | 'marvel-hindi' | 'dc-live-action' | 'dc-live-action-hindi' | 'dc-animated' | 'latest-hollywood' | 'latest-bollywood') => {
     event?.preventDefault();
+    setIsMarvelEnglishResults(searchMode === 'marvel');
+    setShowMarvelWebSeries(false);
     const yearSortedFranchiseModes = new Set(['marvel', 'marvel-hindi', 'dc-live-action', 'dc-live-action-hindi', 'dc-animated']);
     setReleaseYearSort(searchMode && yearSortedFranchiseModes.has(searchMode) ? 'newest' : null);
     setMovieTorrentSearchError('');
@@ -3671,7 +3674,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               <button type="button" onClick={() => { setReleaseYearSort(null); setSizeSort(current => current === null ? 'asc' : current === 'asc' ? 'desc' : null); }} className={sizeSort ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950 shadow-[0_0_14px_rgba(34,211,238,0.45)]' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={Boolean(sizeSort)} title="Sort by torrent size">Size {sizeSort === 'asc' ? '↑' : sizeSort === 'desc' ? '↓' : ''}</button>
               <button type="button" onClick={() => { setReleaseYearSort(null); setTimeSort(current => current === null ? 'desc' : current === 'desc' ? 'asc' : null); }} className={timeSort ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950 shadow-[0_0_14px_rgba(34,211,238,0.45)]' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={Boolean(timeSort)} title="Sort by torrent upload date">Time {timeSort === 'desc' ? '↓' : timeSort === 'asc' ? '↑' : ''}</button>
               <button type="button" onClick={() => { setSizeSort(null); setTimeSort(null); setReleaseYearSort(current => current === null ? 'newest' : current === 'newest' ? 'oldest' : null); }} className={releaseYearSort ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950 shadow-[0_0_14px_rgba(34,211,238,0.45)]' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={Boolean(releaseYearSort)} title="Sort movie cards by release year: newest first, oldest first, then default ranking">{releaseYearSort === 'newest' ? 'Year ↓ Newest' : releaseYearSort === 'oldest' ? 'Year ↑ Oldest' : 'Year'}</button>
-              {results.some(result => /marvel movies \(english\)/i.test(String(result.mediaTitle || ''))) && (
+              {isMarvelEnglishResults && (
                 <button type="button" onClick={() => { if (showMarvelWebSeries) setShowMarvelWebSeries(false); else void loadMarvelWebSeries(); }} className={showMarvelWebSeries ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={showMarvelWebSeries} title="Show Marvel web series">📺 Web Series</button>
               )}
             </div>
@@ -3708,7 +3711,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       </article>
                     ))}
                   </div>
-                  {marvelWebSeriesCatalogue.page < marvelWebSeriesCatalogue.totalPages && <button type="button" disabled={marvelWebSeriesLoading} onClick={async () => { setMarvelWebSeriesLoading(true); setMarvelWebSeriesError(''); try { setMarvelWebSeriesCatalogue(await api.getTvCatalogue('marvel', marvelWebSeriesCatalogue.page + 1)); } catch (error: any) { setMarvelWebSeriesError(String(error?.message || 'Could not load more series.')); } finally { setMarvelWebSeriesLoading(false); } }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-semibold text-slate-200 hover:border-cyan-500 disabled:opacity-50">Load more</button>}
+                  {marvelWebSeriesCatalogue.page < marvelWebSeriesCatalogue.totalPages && <button type="button" disabled={marvelWebSeriesLoading} onClick={async () => { setMarvelWebSeriesLoading(true); setMarvelWebSeriesError(''); try { const nextPage = await api.getTvCatalogue('marvel', marvelWebSeriesCatalogue.page + 1); setMarvelWebSeriesCatalogue(current => current ? { ...nextPage, results: [...current.results, ...nextPage.results.filter(item => !current.results.some(existing => String(existing.id) === String(item.id)))] } : nextPage); } catch (error: any) { setMarvelWebSeriesError(String(error?.message || 'Could not load more series.')); } finally { setMarvelWebSeriesLoading(false); } }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-semibold text-slate-200 hover:border-cyan-500 disabled:opacity-50">Load more</button>}
                 </>
               )}
             </div>
