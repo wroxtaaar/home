@@ -7491,6 +7491,53 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_on
     }
 
 
+@app.get("/api/tv/catalogue/marvel")
+async def api_tmdb_marvel_tv_catalogue(page: int = Query(1, ge=1, le=500)):
+    """Browse Marvel-associated TV series via TMDB discovery."""
+    if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
+        raise HTTPException(status_code=503, detail="TMDB credentials are not configured.")
+    params = {
+        "include_adult": "false",
+        "language": "en-US",
+        "page": page,
+        "sort_by": "first_air_date.desc",
+        "with_companies": "420|19551|38679|2301|13252",
+    }
+    payload = await _tmdb_get_json("discover/tv", params)
+    results = []
+    for item in payload.get("results") or []:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        title = str(item.get("name") or item.get("original_name") or "").strip()
+        if not title:
+            continue
+        air_date = str(item.get("first_air_date") or "").strip()
+        year_match = re.match(r"^(\\d{4})", air_date)
+        poster_path = str(item.get("poster_path") or "").strip()
+        backdrop_path = str(item.get("backdrop_path") or "").strip()
+        tmdb_id = int(item["id"])
+        results.append({
+            "id": tmdb_id,
+            "title": title,
+            "year": int(year_match.group(1)) if year_match else None,
+            "releaseDate": air_date,
+            "overview": str(item.get("overview") or "").strip(),
+            "posterUrl": TMDB_IMAGE_BASE + poster_path if poster_path else "",
+            "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop_path if backdrop_path else "",
+            "rating": float(item.get("vote_average") or 0),
+            "tmdbUrl": f"https://www.themoviedb.org/tv/{tmdb_id}",
+            "source": "TMDB",
+        })
+    return {
+        "catalogue": "marvel-web-series",
+        "page": int(payload.get("page") or page),
+        "totalPages": max(1, min(500, int(payload.get("total_pages") or 1))),
+        "totalResults": int(payload.get("total_results") or len(results)),
+        "provider": "TMDB",
+        "results": results,
+    }
+
+
 @app.post("/api/movies/catalogue/cache/clear")
 async def api_clear_tmdb_movie_caches():
     """Clear all TMDB catalogue, OTT and company-discovery caches for a fresh lookup."""
