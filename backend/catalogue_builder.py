@@ -42,6 +42,18 @@ PACK_OR_NOISE = re.compile(
     r"complete season|complete series|all episodes|xxx|porn|adult pack|uncensored|"
     r"erotic|hot scene|web series pack)\b"
 )
+# Broad category searches often return editorial/listing pages rather than individual films.
+# Keep these phrase-level checks specific so legitimate titles containing words like "best"
+# or "latest" are not rejected on those words alone.
+EDITORIAL_NOISE = re.compile(
+    r"(?i)(?:\\b(?:top|best)\\s+\\d{1,2}\\b|"
+    r"\\b(?:latest|newest)\\s+(?:bollywood|hollywood|hindi|movies|films)\\b|"
+    r"\\b(?:bollywood|hollywood|hindi)\\s+movies?\\s+(?:in\\s+hindi|of\\s+\\d{4}|"
+    r"in\\s+best\\s+quality|available|download)\\b|"
+    r"\\b(?:hand[ -]?picked|best quality available|prints available|full movie collection|"
+    r"movie review|movie trailer|list of movies|movies list|actress|wet compilation)\\b|"
+    r"\\b(?:from|of)\\s+(?:the\\s+)?(?:bollywood|hollywood)\\s+movies?\\b)"
+)
 GENERIC_SCRAPER_QUERIES = {"movie", "movies", "film", "films", "tv", "series", "show", "shows", "anime"}
 RELEASE_TAIL = re.compile(r"(?i)(?:\s*[-|]\s*)?(?:yify|yts|rarbg|tgx|ettv|etrg|psa|mkvhub|world4ufree|mkvcinemas|katmoviehd|torrentgalaxy).*$")
 QUALITY_TAGS = re.compile(
@@ -72,7 +84,12 @@ def _normalize(value: str) -> str:
 
 def _is_plausible_scraped_title(title: str) -> bool:
     cleaned = re.sub(r"\s+", " ", title).strip(" -|:")
-    if len(cleaned) < 2 or len(cleaned) > 90 or PACK_OR_NOISE.search(cleaned):
+    if (
+        len(cleaned) < 2
+        or len(cleaned) > 90
+        or PACK_OR_NOISE.search(cleaned)
+        or EDITORIAL_NOISE.search(cleaned)
+    ):
         return False
     words = cleaned.split()
     if len(words) > 10:
@@ -258,6 +275,7 @@ async def _scrape_query(query: str, per_query: int) -> list[tuple[str, int, str]
         title, year = _title_and_year(str(row.get("title") or ""))
         if not _is_plausible_scraped_title(title):
             rejected += 1
+            log.debug("Rejected non-title/noisy scraper result %r from query %r", title, query)
             continue
         if _normalize(title):
             candidates.append((title, year, query))
