@@ -649,6 +649,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [movieCatalogue, setMovieCatalogue] = useState<MovieCataloguePage | null>(null);
   const [movieCatalogueSearchText, setMovieCatalogueSearchText] = useState('');
   const [releasedOnly, setReleasedOnly] = useState(true);
+  const [bollywoodLibraryMaxSizeGb, setBollywoodLibraryMaxSizeGb] = useState(5);
+  const [bollywoodReleaseSelection, setBollywoodReleaseSelection] = useState<Record<string, number>>({});
   type FranchiseTmdbKey = 'marvel' | 'dc-live-action' | 'dc-animated';
   type CachedFranchiseKey = 'marvel' | 'dc-live-action';
   const [tmdbFranchiseKey, setTmdbFranchiseKey] = useState<FranchiseTmdbKey>('marvel');
@@ -2105,6 +2107,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     searchText: string,
     page = 1,
     onlyReleased = releasedOnly,
+    maxSizeGb = bollywoodLibraryMaxSizeGb,
   ) => {
     movieTorrentSearchControllerRef.current?.abort();
     movieTorrentSearchGenerationRef.current += 1;
@@ -2137,17 +2140,17 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       posterBackgroundAttemptsRef.current.clear();
       posterBackgroundGenerationRef.current += 1;
 
-      const data = await api.getMovieCatalogue(key, page, onlyReleased, controller.signal);
+      const data = await api.getMovieCatalogue(key, page, onlyReleased, controller.signal, maxSizeGb);
       if (generation !== searchGenerationRef.current) return;
       setMovieCatalogue(data);
-      queueOttLookups(data.results);
+      if (key !== 'bollywood-library') queueOttLookups(data.results);
       setCatalogueBuildProgress('');
     } catch (err: any) {
       if (generation !== searchGenerationRef.current) return;
       if (err?.name === 'AbortError') return;
 
       const message = String(err?.message || 'Movie catalogue failed.');
-      const legacyFallbackKey: Record<MovieCatalogueKey, 'marvel' | 'dc-live-action' | 'dc-animated' | 'latest-hollywood' | 'latest-bollywood'> = {
+      const legacyFallbackKey: Partial<Record<MovieCatalogueKey, 'marvel' | 'dc-live-action' | 'dc-animated' | 'latest-hollywood' | 'latest-bollywood'>> = {
         marvel: 'marvel',
         'dc-live-action': 'dc-live-action',
         'dc-animated': 'dc-animated',
@@ -2595,6 +2598,21 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             🎬 Bollywood
           </button>
 
+          <button
+            type="button"
+            onClick={() => {
+              setResolutionFilter(null);
+              setSizeSort(null);
+              setTimeSort(null);
+              setReleaseYearSort(null);
+              setStreamingOnly(false);
+              void openMovieCatalogue('bollywood-library', 'Full Bollywood Library', 1, true, bollywoodLibraryMaxSizeGb);
+            }}
+            className="rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-semibold text-cyan-200 hover:border-cyan-400"
+          >
+            📚 Full Bollywood Library
+          </button>
+
           {([
             ['marvel', '🦸 Marvel Movies'],
             ['dc-live-action', '🦇 DC Live-Action'],
@@ -2975,7 +2993,24 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 />
                 Released movies only
               </label>
-              <label className="flex cursor-pointer select-none items-center gap-2 text-xs font-semibold text-slate-200">
+              {movieCatalogue.catalogue === 'bollywood-library' && (
+                <label className="flex items-center gap-2 text-xs font-semibold text-slate-200">
+                  Maximum release size
+                  <select
+                    value={bollywoodLibraryMaxSizeGb}
+                    disabled={isSearching}
+                    onChange={event => {
+                      const nextSize = Math.min(5, Math.max(1, Number(event.target.value) || 5));
+                      setBollywoodLibraryMaxSizeGb(nextSize);
+                      void openMovieCatalogue('bollywood-library', movieCatalogueSearchText, 1, releasedOnly, nextSize);
+                    }}
+                    className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-200"
+                  >
+                    {[1, 2, 3, 4, 5].map(size => <option key={size} value={size}>{size} GiB</option>)}
+                  </select>
+                </label>
+              )}
+              {movieCatalogue.catalogue !== 'bollywood-library' && <label className="flex cursor-pointer select-none items-center gap-2 text-xs font-semibold text-slate-200">
                 <input
                   type="checkbox"
                   checked={streamingOnly}
@@ -2983,7 +3018,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   className="h-4 w-4 accent-cyan-400"
                 />
                 Streaming now in India
-              </label>
+              </label>}
             </div>
             <div className="text-[11px] leading-relaxed text-slate-500">
               {releasedOnly ? 'Hides future and unconfirmed release dates.' : 'Includes upcoming releases.'}
@@ -3308,6 +3343,33 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   {movie.overview && (
                     <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{movie.overview}</p>
                   )}
+                  {movieCatalogue.catalogue === 'bollywood-library' && (movie.torrentMatches?.length || movie.torrentMatch) && (() => {
+                    const releases = movie.torrentMatches?.length ? movie.torrentMatches : [movie.torrentMatch!];
+                    const selectionKey = String(movie.tmdbId || movie.id);
+                    const selectedIndex = Math.min(bollywoodReleaseSelection[selectionKey] || 0, releases.length - 1);
+                    const release = releases[selectedIndex];
+                    return (
+                      <div className="space-y-1.5 rounded-lg border border-slate-800 bg-slate-950/70 p-2">
+                        {releases.length > 1 && (
+                          <select
+                            aria-label={'Torrent release for ' + movie.title}
+                            value={String(selectedIndex)}
+                            onChange={event => setBollywoodReleaseSelection(current => ({ ...current, [selectionKey]: Number(event.target.value) }))}
+                            className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-[10px] text-slate-200"
+                          >
+                            {releases.map((item, index) => (
+                              <option key={item.infoHash || item.magnetUrl || item.title || index} value={index}>
+                                {(item.title || 'Torrent release ' + (index + 1)) + ' · ' + formatBytes(Number(item.size) || 0) + ' · ▲' + (Number(item.seeders) || 0)}
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                        <div className="text-[10px] text-slate-400">
+                          {release.indexer || 'Torrent provider'} · {formatBytes(Number(release.size) || 0)} · ▲{Number(release.seeders) || 0} seeders
+                        </div>
+                      </div>
+                    );
+                  })()}
                   <div className="mt-auto grid grid-cols-2 gap-2">
                     {showNexStreamButton && (
                       <button
@@ -3341,13 +3403,39 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                         setSizeSort(null);
                         setTimeSort(null);
                         setReleaseYearSort(null);
+                        if (movieCatalogue.catalogue === 'bollywood-library') {
+                          const releases = movie.torrentMatches?.length ? movie.torrentMatches : (movie.torrentMatch ? [movie.torrentMatch] : []);
+                          const selectionKey = String(movie.tmdbId || movie.id);
+                          const selectedIndex = Math.min(bollywoodReleaseSelection[selectionKey] || 0, Math.max(0, releases.length - 1));
+                          const release = releases[selectedIndex];
+                          if (release) {
+                            const cachedResult: TorrentSearchResult = {
+                              title: release.title || movie.title,
+                              mediaTitle: movie.title,
+                              size: Number(release.size) || 0,
+                              seeders: Number(release.seeders) || 0,
+                              leechers: Number(release.leechers) || 0,
+                              indexer: release.indexer,
+                              infoHash: release.infoHash,
+                              magnetUrl: release.magnetUrl,
+                              infoUrl: release.infoUrl,
+                              sourceUrl: release.infoUrl,
+                              year: movie.year,
+                              posterUrl: movie.posterUrl,
+                            };
+                            void prepareMovieTorrent(cachedResult);
+                          }
+                          return;
+                        }
                         void searchMovieTorrents(movie);
                       }}
                       className={(isFranchiseCatalogue ? 'w-full ' : 'w-full ') + 'rounded-lg bg-cyan-500 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-50'}
                     >
-                      {movieTorrentSearchLoading && movieTorrentSearchTitle === movie.title + (movie.year ? ' ' + movie.year : '')
-                        ? <><Loader2 className="mr-1.5 inline h-3.5 w-3.5 animate-spin" />Searching…</>
-                        : <><Download className="mr-1.5 inline h-3.5 w-3.5" />Prepare</>}
+                      {movieCatalogue.catalogue === 'bollywood-library' && (movie.torrentMatches?.length || movie.torrentMatch)
+                        ? <><Download className="mr-1.5 inline h-3.5 w-3.5" />Get</>
+                        : movieTorrentSearchLoading && movieTorrentSearchTitle === movie.title + (movie.year ? ' ' + movie.year : '')
+                          ? <><Loader2 className="mr-1.5 inline h-3.5 w-3.5 animate-spin" />Searching…</>
+                          : <><Download className="mr-1.5 inline h-3.5 w-3.5" />Prepare</>}
                     </button>
                   </div>
                 </div>
