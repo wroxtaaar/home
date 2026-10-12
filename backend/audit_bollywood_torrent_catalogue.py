@@ -52,11 +52,32 @@ def year_from_title(value: Any) -> int | None:
     return int(match.group()) if match else None
 
 
+MAX_CACHED_TORRENT_SIZE_BYTES = 5 * 1024 * 1024 * 1024
+
+
+def size_bytes(value: Any) -> int:
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    text = str(value or "").strip().casefold().replace(",", "")
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(b|bytes?|kb|kib|mb|mib|gb|gib|tb|tib)?", text)
+    if not match:
+        return 0
+    amount = float(match.group(1))
+    unit = match.group(2) or "b"
+    factors = {"b": 1, "byte": 1, "bytes": 1, "kb": 1000, "kib": 1024, "mb": 1000**2, "mib": 1024**2, "gb": 1000**3, "gib": 1024**3, "tb": 1000**4, "tib": 1024**4}
+    return int(amount * factors[unit])
+
+
 def audit(row: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
     match = row.get("torrentMatch")
     if not isinstance(match, dict):
         return ["missing-torrentMatch"]
+    size = size_bytes(match.get("size"))
+    if size <= 0:
+        reasons.append("unknown-size")
+    elif size > MAX_CACHED_TORRENT_SIZE_BYTES:
+        reasons.append("over-5gb")
     movie_title = str(row.get("title") or "").strip()
     result_title = str(match.get("title") or "").strip()
     movie_tokens = normalize(movie_title).split()
