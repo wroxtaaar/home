@@ -2121,20 +2121,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
   const loadDcWebSeries = async () => {
     setShowDcWebSeries(true);
-    if (dcWebSeriesCatalogue || dcWebSeriesLoading) return;
-    setDcWebSeriesLoading(true);
-    setDcWebSeriesError('');
-    try {
-      setDcWebSeriesCatalogue(await api.getTvCatalogue('dc-live-action'));
-    } catch (error: any) {
-      setDcWebSeriesError(String(error?.message || 'Could not load DC web series.'));
-    } finally {
-      setDcWebSeriesLoading(false);
-    }
-  };
-
-  const loadDcWebSeries = async () => {
-    setShowDcWebSeries(true);
     setShowMarvelWebSeries(false);
     if (dcWebSeriesCatalogue || dcWebSeriesLoading) return;
     setDcWebSeriesLoading(true);
