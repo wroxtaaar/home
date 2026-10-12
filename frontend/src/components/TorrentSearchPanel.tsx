@@ -4317,6 +4317,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           </button>
                           </div>
                           </div>
+                        </div>
                       );
                     })()}
                         </div>
