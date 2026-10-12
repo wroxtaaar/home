@@ -130,18 +130,12 @@ function normalizeTorrentTitleForNexStream(value: string): string {
 function isPresetSearchLabel(value: string): boolean {
   const normalized = String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
   return new Set([
-    'popular bollywood movies',
     'bollywood movies',
     'marvel movies (english)',
     'marvel movies (hindi)',
     'dc live-action movies (english)',
     'dc live-action movies (hindi)',
     'dc animated movies',
-    'popular hollywood movies',
-    'trending hollywood movies',
-    'trending bollywood movies',
-    'latest hollywood',
-    'latest bollywood',
   ]).has(normalized);
 }
 
@@ -2639,50 +2633,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         </form>
 
         <div className="mt-2 flex flex-wrap gap-2" aria-label="Movie catalogues">
-          <button
-            type="button"
-            onClick={() => {
-              setResolutionFilter(null);
-              setSizeSort(null);
-              setTimeSort(null);
-              setReleaseYearSort(null);
-              setStreamingOnly(false);
-              void openMovieCatalogue('popular-bollywood', 'Popular Bollywood', 1);
-            }}
-            className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
-          >
-            ⭐ Popular Bollywood
-          </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              setResolutionFilter(null);
-              setSizeSort(null);
-              setTimeSort(null);
-              setReleaseYearSort(null);
-              setStreamingOnly(false);
-              void openMovieCatalogue('trending-bollywood', 'Trending Bollywood', 1);
-            }}
-            className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
-          >
-            🔥 Trending Bollywood
-          </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              setResolutionFilter(null);
-              setSizeSort(null);
-              setTimeSort(null);
-              setReleaseYearSort(null);
-              setStreamingOnly(false);
-              void openMovieCatalogue('latest-bollywood', 'Recently Released', 1);
-            }}
-            className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
-          >
-            🎬 Recently Released
-          </button>
 
           <button
             type="button"
@@ -2743,18 +2695,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             🎞️ DC Animated
           </button>
 
-          {([
-            ['popular-hollywood', '⭐ Popular Hollywood', 'Popular Hollywood Movies'],
-            ['trending-hollywood', '🔥 Trending Hollywood', 'Trending Hollywood Movies'],
-          ] as const).map(([key, label, searchText]) => (
-            <button key={key} type="button" onClick={() => {
-              setResolutionFilter(null);
-              setSizeSort(null);
-              setTimeSort(null);
-              setReleaseYearSort(null);
-              void openMovieCatalogue(key, searchText, 1);
-            }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">{label}</button>
-          ))}
+
         </div>
         <div className="mt-2 flex flex-col gap-2 rounded-lg border border-slate-800 bg-slate-950/70 p-2.5 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
