@@ -2577,7 +2577,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               setSizeSort(null);
               setTimeSort(null);
               setReleaseYearSort(null);
-              void openMovieCatalogue('popular-bollywood', 'Popular Bollywood Movies', 1);
+              setStreamingOnly(false);
+              void openMovieCatalogue('popular-bollywood', 'Popular Bollywood', 1);
             }}
             className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
           >
@@ -2592,11 +2593,26 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               setTimeSort(null);
               setReleaseYearSort(null);
               setStreamingOnly(false);
-              void openMovieCatalogue('latest-bollywood', 'Bollywood Movies', 1);
+              void openMovieCatalogue('trending-bollywood', 'Trending Bollywood', 1);
             }}
             className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
           >
-            🎬 Bollywood
+            🔥 Trending Bollywood
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setResolutionFilter(null);
+              setSizeSort(null);
+              setTimeSort(null);
+              setReleaseYearSort(null);
+              setStreamingOnly(false);
+              void openMovieCatalogue('latest-bollywood', 'Recently Released', 1);
+            }}
+            className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
+          >
+            🎬 Recently Released
           </button>
 
           <button
