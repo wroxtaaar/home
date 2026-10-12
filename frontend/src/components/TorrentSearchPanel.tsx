@@ -3714,17 +3714,21 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   <div className="px-1 text-xs text-slate-400">{dcWebSeriesCatalogue.totalResults.toLocaleString()} DC web series · Page {dcWebSeriesCatalogue.page} of {dcWebSeriesCatalogue.totalPages.toLocaleString()} · Metadata by TMDB</div>
                   <div className="grid grid-cols-2 items-start gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
                     {[...dcWebSeriesCatalogue.results].sort((a, b) => (Number(b.year) || 0) - (Number(a.year) || 0) || a.title.localeCompare(b.title)).map(show => (
-                      <article key={String(show.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900">
-                        <div className="relative aspect-[2/3] bg-slate-950">
-                          {show.posterUrl ? <img src={show.posterUrl} alt={show.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="flex h-full items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
-                          {show.rating ? <span className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300">⭐ {show.rating.toFixed(1)}/10</span> : null}
+                      <article key={String(show.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-cyan-500/40 hover:bg-slate-900/95 flex flex-col">
+                        <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
+                          {show.posterUrl ? <img src={show.posterUrl} alt={show.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="absolute inset-0 flex items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
+                          {show.rating ? <span className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow">⭐ {show.rating.toFixed(1)}/10</span> : null}
                         </div>
-                        <div className="space-y-1.5 p-2.5">
-                          <div className="line-clamp-2 text-sm font-bold text-slate-100">{show.title}</div>
-                          <div className="text-xs text-slate-400">{show.year || 'Year unknown'} · TV Series</div>
-                          {show.overview && <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{show.overview}</p>}
-                          <a href={show.tmdbUrl || ('https://www.themoviedb.org/tv/' + show.id)} target="_blank" rel="noreferrer" className="block rounded-lg border border-slate-700 px-2 py-2 text-center text-[11px] font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">View on TMDB</a>
-                          <button type="button" onClick={() => void searchNexStreamTitles(show.title, 'tv')} className="w-full rounded-lg border border-violet-400/50 bg-violet-500/15 px-2 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25">Find on NexStream</button>
+                        <div className="flex flex-1 flex-col gap-2 p-2.5">
+                          <div className="min-h-[3.2rem]">
+                            <h3 className="line-clamp-2 text-sm font-bold leading-snug text-slate-100">{show.title}</h3>
+                            <div className="mt-0.5 text-xs text-slate-500">{show.year || 'Year unknown'} · TV Series</div>
+                          </div>
+                          <div className="min-h-[3.75rem]">{show.overview && <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{show.overview}</p>}</div>
+                          <div className="mt-auto grid grid-cols-1 gap-2">
+                            <button type="button" onClick={() => void searchNexStreamTitles(show.title, 'tv')} className="w-full rounded-lg border border-violet-400/50 bg-violet-500/15 px-2 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25">Find on NexStream</button>
+                            <a href={show.tmdbUrl || ('https://www.themoviedb.org/tv/' + show.id)} target="_blank" rel="noreferrer" className="block rounded-lg border border-slate-700 px-2 py-2 text-center text-[11px] font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">View on TMDB</a>
+                          </div>
                         </div>
                       </article>
                     ))}
@@ -3742,17 +3746,21 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   <div className="px-1 text-xs text-slate-400">{marvelWebSeriesCatalogue.totalResults.toLocaleString()} Marvel web series · Page {marvelWebSeriesCatalogue.page} of {marvelWebSeriesCatalogue.totalPages.toLocaleString()} · Metadata by TMDB</div>
                   <div className="grid grid-cols-2 items-start gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
                     {marvelWebSeriesCatalogue.results.map(show => (
-                      <article key={String(show.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900">
-                        <div className="relative aspect-[2/3] bg-slate-950">
-                          {show.posterUrl ? <img src={show.posterUrl} alt={show.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="flex h-full items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
-                          {show.rating ? <span className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300">⭐ {show.rating.toFixed(1)}/10</span> : null}
+                      <article key={String(show.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-cyan-500/40 hover:bg-slate-900/95 flex flex-col">
+                        <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
+                          {show.posterUrl ? <img src={show.posterUrl} alt={show.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="absolute inset-0 flex items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
+                          {show.rating ? <span className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow">⭐ {show.rating.toFixed(1)}/10</span> : null}
                         </div>
-                        <div className="space-y-1.5 p-2.5">
-                          <div className="line-clamp-2 text-sm font-bold text-slate-100">{show.title}</div>
-                          <div className="text-xs text-slate-400">{show.year || 'Year unknown'} · TV Series</div>
-                          {show.overview && <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{show.overview}</p>}
-                          <a href={show.tmdbUrl || ('https://www.themoviedb.org/tv/' + show.id)} target="_blank" rel="noreferrer" className="block rounded-lg border border-slate-700 px-2 py-2 text-center text-[11px] font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">View on TMDB</a>
-                          <button type="button" onClick={() => void searchNexStreamTitles(show.title, 'tv')} className="w-full rounded-lg border border-violet-400/50 bg-violet-500/15 px-2 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25">Find on NexStream</button>
+                        <div className="flex flex-1 flex-col gap-2 p-2.5">
+                          <div className="min-h-[3.2rem]">
+                            <h3 className="line-clamp-2 text-sm font-bold leading-snug text-slate-100">{show.title}</h3>
+                            <div className="mt-0.5 text-xs text-slate-500">{show.year || 'Year unknown'} · TV Series</div>
+                          </div>
+                          <div className="min-h-[3.75rem]">{show.overview && <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{show.overview}</p>}</div>
+                          <div className="mt-auto grid grid-cols-1 gap-2">
+                            <button type="button" onClick={() => void searchNexStreamTitles(show.title, 'tv')} className="w-full rounded-lg border border-violet-400/50 bg-violet-500/15 px-2 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25">Find on NexStream</button>
+                            <a href={show.tmdbUrl || ('https://www.themoviedb.org/tv/' + show.id)} target="_blank" rel="noreferrer" className="block rounded-lg border border-slate-700 px-2 py-2 text-center text-[11px] font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">View on TMDB</a>
+                          </div>
                         </div>
                       </article>
                     ))}
