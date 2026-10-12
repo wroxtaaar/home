@@ -3507,8 +3507,17 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       {movie.posterUrl ? (
                         <img src={lowQualityPosterUrl(movie.posterUrl)} alt={movie.title} loading="lazy" className="h-full w-full object-cover"
                           onError={event => {
-                            event.currentTarget.style.display = 'none';
-                            event.currentTarget.parentElement?.querySelector('[data-regional-poster-placeholder="true"]')?.classList.remove('hidden');
+                            const image = event.currentTarget;
+                            const originalUrl = String(movie.posterUrl || '').trim();
+                            // If the optimized w500 URL fails, retry the catalogue's
+                            // original poster URL once before showing the placeholder.
+                            if (originalUrl && image.dataset.originalFallbackTried !== 'true' && image.src !== new URL(originalUrl, window.location.origin).toString()) {
+                              image.dataset.originalFallbackTried = 'true';
+                              image.src = originalUrl.startsWith('/') ? API_BASE + originalUrl : originalUrl;
+                              return;
+                            }
+                            image.style.display = 'none';
+                            image.parentElement?.querySelector('[data-regional-poster-placeholder="true"]')?.classList.remove('hidden');
                           }}
                         />
                       ) : null}
