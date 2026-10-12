@@ -3132,6 +3132,30 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           })}
                         </select>
                       )}
+                      {['marvel', 'dc-live-action', 'dc-animated'].includes(String(movieCatalogue.catalogue)) && (
+                        <button
+                          type="button"
+                          disabled={!Number(movie.tmdbId || movie.id) || nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id)}
+                          onClick={() => {
+                            const tmdbId = Number(movie.tmdbId || movie.id);
+                            if (!Number.isInteger(tmdbId) || tmdbId <= 0) {
+                              setNexStreamError('This catalogue card has no valid TMDB ID for NexStream.');
+                              return;
+                            }
+                            void playWithNexStream({
+                              id: tmdbId,
+                              title: movie.title,
+                              date: movie.releaseDate || (movie.year ? String(movie.year) : ''),
+                              overview: movie.overview || '',
+                              poster: movie.posterUrl || null,
+                              type: 'movie',
+                            });
+                          }}
+                          className="w-full rounded-lg border border-violet-400/50 bg-violet-500/15 px-2 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-50"
+                        >
+                          {nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id) ? 'Opening…' : 'NexStream'}
+                        </button>
+                      )}
                       <div className="flex items-center justify-between gap-2">
                         <span className="shrink-0 font-mono text-[10px] sm:text-[11px] text-slate-300">
                           {formatBytes(Number(result.size) || 0)}
