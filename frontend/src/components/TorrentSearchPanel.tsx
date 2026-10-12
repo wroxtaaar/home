@@ -3725,7 +3725,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               {dcWebSeriesCatalogue && (
                 <>
                   <div className="px-1 text-xs text-slate-400">{dcWebSeriesCatalogue.totalResults.toLocaleString()} DC web series · Page {dcWebSeriesCatalogue.page} of {dcWebSeriesCatalogue.totalPages.toLocaleString()} · Metadata by TMDB</div>
-                  <div className="grid grid-cols-2 items-start gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
+                  <div className="grid grid-cols-2 items-stretch gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
                     {[...dcWebSeriesCatalogue.results].sort((a, b) => (Number(b.year) || 0) - (Number(a.year) || 0) || a.title.localeCompare(b.title)).map(show => (
                       <article key={String(show.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-cyan-500/40 hover:bg-slate-900/95 flex flex-col">
                         <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
@@ -3749,8 +3749,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                     <div key={kind} className="flex flex-wrap items-center gap-1">
                                       <span className="mr-0.5 text-[10px] text-slate-500">{label}:</span>
                                       {providers.map((provider, index) => (
-                                        <a key={String(provider.providerId ?? provider.name) + '-' + index} href={provider.webUrl || show.tmdbUrl || ('https://www.themoviedb.org/tv/' + show.id)} target="_blank" rel="noreferrer" title={provider.name} onClick={event => event.stopPropagation()} className="inline-flex items-center gap-1 rounded-full border border-cyan-500/25 bg-cyan-500/5 px-1.5 py-0.5 text-[10px] text-cyan-200 hover:border-cyan-400/60">
-                                          {provider.logoUrl && <img src={provider.logoUrl} alt="" loading="lazy" className="h-3.5 w-3.5 rounded-sm object-contain" onError={event => { event.currentTarget.style.display = 'none'; }} />}
+                                        <a key={String(provider.providerId ?? provider.name) + '-' + index} href={provider.webUrl || show.tmdbUrl || ('https://www.themoviedb.org/tv/' + show.id)} target="_blank" rel="noreferrer" title={provider.name} onClick={event => event.stopPropagation()} className="inline-flex items-center rounded-full border border-cyan-500/25 bg-cyan-500/5 px-2 py-0.5 text-[10px] text-cyan-200 hover:border-cyan-400/60">
                                           <span>{provider.name}</span>
                                         </a>
                                       ))}
@@ -3782,7 +3781,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               {marvelWebSeriesCatalogue && (
                 <>
                   <div className="px-1 text-xs text-slate-400">{marvelWebSeriesCatalogue.totalResults.toLocaleString()} Marvel web series · Page {marvelWebSeriesCatalogue.page} of {marvelWebSeriesCatalogue.totalPages.toLocaleString()} · Metadata by TMDB</div>
-                  <div className="grid grid-cols-2 items-start gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
+                  <div className="grid grid-cols-2 items-stretch gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
                     {marvelWebSeriesCatalogue.results.map(show => (
                       <article key={String(show.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-cyan-500/40 hover:bg-slate-900/95 flex flex-col">
                         <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
@@ -3806,8 +3805,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                                     <div key={kind} className="flex flex-wrap items-center gap-1">
                                       <span className="mr-0.5 text-[10px] text-slate-500">{label}:</span>
                                       {providers.map((provider, index) => (
-                                        <a key={String(provider.providerId ?? provider.name) + '-' + index} href={provider.webUrl || show.tmdbUrl || ('https://www.themoviedb.org/tv/' + show.id)} target="_blank" rel="noreferrer" title={provider.name} onClick={event => event.stopPropagation()} className="inline-flex items-center gap-1 rounded-full border border-cyan-500/25 bg-cyan-500/5 px-1.5 py-0.5 text-[10px] text-cyan-200 hover:border-cyan-400/60">
-                                          {provider.logoUrl && <img src={provider.logoUrl} alt="" loading="lazy" className="h-3.5 w-3.5 rounded-sm object-contain" onError={event => { event.currentTarget.style.display = 'none'; }} />}
+                                        <a key={String(provider.providerId ?? provider.name) + '-' + index} href={provider.webUrl || show.tmdbUrl || ('https://www.themoviedb.org/tv/' + show.id)} target="_blank" rel="noreferrer" title={provider.name} onClick={event => event.stopPropagation()} className="inline-flex items-center rounded-full border border-cyan-500/25 bg-cyan-500/5 px-2 py-0.5 text-[10px] text-cyan-200 hover:border-cyan-400/60">
                                           <span>{provider.name}</span>
                                         </a>
                                       ))}
@@ -3834,7 +3832,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             </div>
           ) : (
           <div
-            className="grid grid-cols-2 items-start gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:rounded-2xl lg:border-0 lg:bg-transparent lg:gap-4 lg:w-full lg:max-w-none lg:mx-0 lg:p-0 lg:divide-y-0 lg:overflow-visible"
+            className="grid grid-cols-2 items-stretch gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:rounded-2xl lg:border-0 lg:bg-transparent lg:gap-4 lg:w-full lg:max-w-none lg:mx-0 lg:p-0 lg:divide-y-0 lg:overflow-visible"
           >
             {groupedResults.map((group, index) => {
               const selectedKey = selectedQualityByGroup[group.key];
