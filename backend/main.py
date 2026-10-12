@@ -5282,6 +5282,8 @@ _RUNTIME_CACHE_SEED_FILES = {
     "tmdb_search_metadata_cache.json": TMDB_SEARCH_METADATA_CACHE_FILE,
     "imdb_rating_cache.json": IMDB_RATING_CACHE_FILE,
     "tmdb_ott_availability_cache.json": TMDB_OTT_CACHE_FILE,
+    "marvel_tv_catalogue_cache.json": _MARVEL_TV_CATALOGUE_CACHE_FILE,
+    "dc_tv_catalogue_cache.json": _DC_TV_CATALOGUE_CACHE_FILE,
 }
 
 
@@ -7551,14 +7553,46 @@ DC_WEB_SERIES: tuple[tuple[str, int], ...] = (
 
 _MARVEL_TV_CATALOGUE_CACHE: dict[str, Any] = {"expiresAt": 0.0, "payload": None}
 _DC_TV_CATALOGUE_CACHE: dict[str, Any] = {"expiresAt": 0.0, "payload": None}
+_MARVEL_TV_CATALOGUE_CACHE_FILE = Path(os.getenv("MARVEL_TV_CATALOGUE_CACHE_FILE", "/app/data/marvel_tv_catalogue_cache.json"))
+_DC_TV_CATALOGUE_CACHE_FILE = Path(os.getenv("DC_TV_CATALOGUE_CACHE_FILE", "/app/data/dc_tv_catalogue_cache.json"))
+
+
+def _load_persistent_tv_catalogue(cache: dict[str, Any], path: Path) -> dict[str, Any] | None:
+    """Load a completed TV catalogue from persistent storage; it has no time-based expiry."""
+    if cache.get("payload"):
+        return cache["payload"]
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        if isinstance(payload, dict) and isinstance(payload.get("results"), list) and payload["results"]:
+            cache.update({"expiresAt": float("inf"), "payload": payload})
+            logger.info("Loaded persistent TV catalogue cache %s (%d titles)", path.name, len(payload["results"]))
+            return payload
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.debug("Persistent TV catalogue cache unavailable at %s: %s", path, exc)
+    return None
+
+
+def _save_persistent_tv_catalogue(path: Path, payload: dict[str, Any]) -> None:
+    """Atomically persist TV metadata so container restarts never trigger a full TMDB scan."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        logger.info("Saved persistent TV catalogue cache %s (%d titles)", path.name, len(payload.get("results") or []))
+    except OSError as exc:
+        logger.warning("Could not persist TV catalogue cache %s: %s", path, exc)
 
 
 @app.get("/api/tv/catalogue/marvel")
 async def api_tmdb_marvel_tv_catalogue(page: int = Query(1, ge=1, le=500)):
     """Return cards for the curated Marvel TV/web-series list, enriched from TMDB."""
-    now = time.monotonic()
-    cached_payload = _MARVEL_TV_CATALOGUE_CACHE.get("payload")
-    if cached_payload and now < float(_MARVEL_TV_CATALOGUE_CACHE.get("expiresAt") or 0.0):
+    cached_payload = _load_persistent_tv_catalogue(_MARVEL_TV_CATALOGUE_CACHE, _MARVEL_TV_CATALOGUE_CACHE_FILE)
+    if cached_payload:
         return cached_payload
     if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
         raise HTTPException(status_code=503, detail="TMDB credentials are not configured.")
@@ -7627,16 +7661,16 @@ async def api_tmdb_marvel_tv_catalogue(page: int = Query(1, ge=1, le=500)):
         "provider": "TMDB + curated Marvel series list",
         "results": results,
     }
-    _MARVEL_TV_CATALOGUE_CACHE.update({"expiresAt": time.monotonic() + 6 * 60 * 60, "payload": result})
+    _MARVEL_TV_CATALOGUE_CACHE.update({"expiresAt": float("inf"), "payload": result})
+    _save_persistent_tv_catalogue(_MARVEL_TV_CATALOGUE_CACHE_FILE, result)
     return result
 
 
 @app.get("/api/tv/catalogue/dc-live-action")
 async def api_tmdb_dc_live_action_tv_catalogue(page: int = Query(1, ge=1, le=500)):
     """Return curated live-action DC TV series cards enriched from TMDB."""
-    now = time.monotonic()
-    cached_payload = _DC_TV_CATALOGUE_CACHE.get("payload")
-    if cached_payload and now < float(_DC_TV_CATALOGUE_CACHE.get("expiresAt") or 0.0):
+    cached_payload = _load_persistent_tv_catalogue(_DC_TV_CATALOGUE_CACHE, _DC_TV_CATALOGUE_CACHE_FILE)
+    if cached_payload:
         return cached_payload
     if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
         raise HTTPException(status_code=503, detail="TMDB credentials are not configured.")
@@ -7662,7 +7696,8 @@ async def api_tmdb_dc_live_action_tv_catalogue(page: int = Query(1, ge=1, le=500
             return {"id": tmdb_id, "title": title, "year": int(year_match.group(1)) if year_match else year, "releaseDate": air_date, "overview": str(item.get("overview") or "").strip(), "posterUrl": TMDB_IMAGE_BASE + poster_path if poster_path else "", "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop_path if backdrop_path else "", "rating": float(item.get("vote_average") or 0), "tmdbUrl": f"https://www.themoviedb.org/tv/{tmdb_id}", "source": "TMDB"}
     results = await asyncio.gather(*(resolve_series(title, year) for title, year in DC_WEB_SERIES))
     result = {"catalogue": "dc-live-action-web-series", "page": 1, "totalPages": 1, "totalResults": len(results), "provider": "TMDB + curated DC live-action series list", "results": results}
-    _DC_TV_CATALOGUE_CACHE.update({"expiresAt": time.monotonic() + 6 * 60 * 60, "payload": result})
+    _DC_TV_CATALOGUE_CACHE.update({"expiresAt": float("inf"), "payload": result})
+    _save_persistent_tv_catalogue(_DC_TV_CATALOGUE_CACHE_FILE, result)
     return result
 
 
