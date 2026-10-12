@@ -7415,86 +7415,20 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_on
         elif catalogue_key == "dc-live-action":
             params["without_genres"] = "16"
     elif catalogue_key in {"trending-hollywood", "trending-bollywood"}:
-        # TMDB's trending endpoint is ranked globally, so collect several upstream
-        # pages and filter by original language here to keep the category useful for
-        # Hollywood and Hindi cinema rather than showing unrelated languages.
-        wanted_language = "en" if catalogue_key == "trending-hollywood" else "hi"
-        source_pages_per_page = 6
-        source_start = (page - 1) * source_pages_per_page + 1
-        source_page_numbers = range(source_start, min(source_start + source_pages_per_page, 501))
-        requests = [
-            _tmdb_get_json("trending/movie/week", {"page": source_page, "language": "en-US"})
-            for source_page in source_page_numbers
-        ]
-        payloads = await asyncio.gather(*requests, return_exceptions=True)
-        successful_payloads = [value for value in payloads if isinstance(value, dict)]
-        if not successful_payloads:
-            failure = next((value for value in payloads if isinstance(value, Exception)), None)
-            if isinstance(failure, HTTPException):
-                raise failure
-            raise HTTPException(status_code=502, detail="TMDB trending feed could not be reached.")
-
-        raw_results = []
-        seen_ids: set[str] = set()
-        total_source_pages = 1
-        for payload in successful_payloads:
-            total_source_pages = max(total_source_pages, int(payload.get("total_pages") or 1))
-            for item in payload.get("results") or []:
-                if not isinstance(item, dict):
-                    continue
-                if str(item.get("original_language") or "").lower() != wanted_language:
-                    continue
-                if released_only and not _tmdb_release_date_is_released(item.get("release_date"), today):
-                    continue
-                item_id = str(item.get("id") or "")
-                if item_id and item_id in seen_ids:
-                    continue
-                if item_id:
-                    seen_ids.add(item_id)
-                raw_results.append(item)
-
-        # Keep a consistent 50-result cache window for the Trending section.
-        raw_results = raw_results[:50]
-        results: list[dict[str, Any]] = []
-        for item in raw_results:
-            title = str(item.get("title") or item.get("original_title") or "").strip()
-            if not title:
-                continue
-            release_date = str(item.get("release_date") or "").strip()
-            year_match = re.match(r"^(\d{4})", release_date)
-            poster_path = str(item.get("poster_path") or "").strip()
-            backdrop_path = str(item.get("backdrop_path") or "").strip()
-            results.append({
-                "id": item.get("id"),
-                "title": title,
-                "year": int(year_match.group(1)) if year_match else None,
-                "releaseDate": release_date,
-                "overview": str(item.get("overview") or "").strip(),
-                "posterUrl": TMDB_IMAGE_BASE + poster_path if poster_path else "",
-                "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop_path if backdrop_path else "",
-                "rating": float(item.get("vote_average") or 0),
-                "genres": [int(genre) for genre in (item.get("genre_ids") or []) if str(genre).isdigit()],
-                "source": "TMDB",
-            })
-
-        return {
-            "catalogue": catalogue_key,
-            "provider": "TMDB Weekly Trending",
-            "page": page,
-            "totalPages": max(1, min(500, (total_source_pages + source_pages_per_page - 1) // source_pages_per_page)),
-            # Trending does not expose a language-filtered total. This is the count collected
-            # for the requested page, not a claim about every matching title in TMDB.
-            "totalResults": len(results),
-            "results": results,
-            "attribution": "This product uses the TMDB API but is not endorsed or certified by TMDB.",
-        }
+        # TMDB's global weekly trending feed contains very few Hindi-language
+        # titles, so filtering it directly can leave a page with only 1–2 cards.
+        # Use popularity-ranked discovery constrained to the requested film market
+        # to provide a useful, full catalogue page instead.
+        params["with_original_language"] = "en" if catalogue_key == "trending-hollywood" else "hi"
+        if catalogue_key == "trending-bollywood":
+            params["with_origin_country"] = "IN"
+        params["sort_by"] = "popularity.desc"
     else:
         raise HTTPException(status_code=404, detail="Unknown movie catalogue.")
 
-    if catalogue_key in {"popular-bollywood", "latest-bollywood"}:
-        # One Home page represents 50 Hindi-film results. TMDB returns at most
-        # 20 per discover page, so collect three upstream pages and persist the
-        # combined result in the existing catalogue cache.
+    if catalogue_key in {"popular-bollywood", "latest-bollywood", "trending-bollywood", "trending-hollywood"}:
+        # One Home page represents up to 50 results. TMDB returns at most
+        # 20 per discover page, so collect three upstream pages.
         upstream_start = (page - 1) * 3 + 1
         upstream_pages = range(upstream_start, min(upstream_start + 3, 501))
         upstream_payloads = await asyncio.gather(*(
@@ -7543,12 +7477,13 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_on
             "source": "TMDB",
         })
 
-    total_pages = max(1, min(500, int(payload.get("total_pages") or 1)))
+    upstream_total_pages = max(1, min(500, int(payload.get("total_pages") or 1)))
+    total_pages = max(1, min(500, (upstream_total_pages + 2) // 3)) if catalogue_key in {"popular-bollywood", "latest-bollywood", "trending-bollywood", "trending-hollywood"} else upstream_total_pages
     current_page = max(1, min(500, int(payload.get("page") or page)))
     return {
         "catalogue": catalogue_key,
         "releasedOnly": released_only,
-        "provider": "TMDB",
+        "provider": "TMDB Popularity Discovery" if catalogue_key in {"trending-bollywood", "trending-hollywood"} else "TMDB",
         "page": current_page,
         "totalPages": total_pages,
         "totalResults": int(payload.get("total_results") or len(results)),
