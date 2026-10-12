@@ -687,6 +687,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [sizeSort, setSizeSort] = useState<'asc' | 'desc' | null>(null);
   const [timeSort, setTimeSort] = useState<'desc' | 'asc' | null>(null);
   const [releaseYearSort, setReleaseYearSort] = useState<'newest' | 'oldest' | null>(null);
+  const [bollywoodLibraryMaxSizeGb, setBollywoodLibraryMaxSizeGb] = useState(5);
   const [showRecentSearches, setShowRecentSearches] = useState(false);
   const [preparingTorrentKey, setPreparingTorrentKey] = useState<string | null>(null);
   const [playingTorrentKey, setPlayingTorrentKey] = useState<string | null>(null);
@@ -1817,6 +1818,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     searchText: string,
     page = 1,
     onlyReleased = releasedOnly,
+    maxSizeGb = bollywoodLibraryMaxSizeGb,
   ) => {
     movieTorrentSearchControllerRef.current?.abort();
     movieTorrentSearchGenerationRef.current += 1;
@@ -1849,7 +1851,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       posterBackgroundAttemptsRef.current.clear();
       posterBackgroundGenerationRef.current += 1;
 
-      const data = await api.getMovieCatalogue(key, page, onlyReleased, controller.signal);
+      const data = await api.getMovieCatalogue(key, page, onlyReleased, controller.signal, maxSizeGb);
       if (generation !== searchGenerationRef.current) return;
       setMovieCatalogue(data);
       // The full Bollywood library is a metadata snapshot, not an OTT catalogue.
@@ -2560,6 +2562,29 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             <div className={'flex items-start justify-between gap-3 rounded-xl border px-3 py-3 text-xs ' + (movieTorrentSearchError.startsWith('Coming soon on OTT') ? 'border-cyan-500/30 bg-cyan-500/10 text-cyan-100' : 'border-amber-500/30 bg-amber-500/10 text-amber-200')}>
               <span>{movieTorrentSearchError}</span>
               <button type="button" onClick={() => setMovieTorrentSearchError('')} className="shrink-0 underline">Dismiss</button>
+            </div>
+          )}
+          {movieCatalogue?.catalogue === 'bollywood-library' && (
+            <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/80 px-3 py-2">
+              <label htmlFor="bollywood-library-max-size" className="text-xs font-semibold text-slate-300">Maximum release size</label>
+              <select
+                id="bollywood-library-max-size"
+                value={bollywoodLibraryMaxSizeGb}
+                disabled={isSearching}
+                onChange={(event) => {
+                  const nextSize = Math.min(5, Math.max(1, Number(event.target.value) || 5));
+                  setBollywoodLibraryMaxSizeGb(nextSize);
+                  void openMovieCatalogue('bollywood-library', movieCatalogueSearchText, 1, releasedOnly, nextSize);
+                }}
+                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-200"
+              >
+                <option value={1}>Up to 1 GB</option>
+                <option value={2}>Up to 2 GB</option>
+                <option value={3}>Up to 3 GB</option>
+                <option value={4}>Up to 4 GB</option>
+                <option value={5}>Up to 5 GB (maximum cached)</option>
+              </select>
+              <span className="text-[10px] text-slate-500">Only releases within this limit are shown. The cache never stores releases above 5 GB.</span>
             </div>
           )}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
