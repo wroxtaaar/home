@@ -3738,6 +3738,31 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             <div className="mt-0.5 text-xs text-slate-500">{show.year || 'Year unknown'} · TV Series</div>
                           </div>
                           <div className="min-h-[3.75rem]">{show.overview && <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{show.overview}</p>}</div>
+                          <div className="min-h-[2.5rem]">
+                            {show.streamingProviders?.length ? (
+                              <div className="space-y-1.5">
+                                {(['subscription', 'free', 'ads', 'rent', 'buy'] as const).map(kind => {
+                                  const providers = (show.streamingProviders || []).filter(provider => provider.type === kind);
+                                  if (!providers.length) return null;
+                                  const label = kind === 'subscription' ? 'Stream' : kind === 'ads' ? 'Free with ads' : kind === 'free' ? 'Free' : kind === 'rent' ? 'Rent' : 'Buy';
+                                  return (
+                                    <div key={kind} className="flex flex-wrap items-center gap-1">
+                                      <span className="mr-0.5 text-[10px] text-slate-500">{label}:</span>
+                                      {providers.map((provider, index) => (
+                                        <a key={String(provider.providerId ?? provider.name) + '-' + index} href={provider.webUrl || show.tmdbUrl || ('https://www.themoviedb.org/tv/' + show.id)} target="_blank" rel="noreferrer" title={provider.name} onClick={event => event.stopPropagation()} className="inline-flex items-center gap-1 rounded-full border border-cyan-500/25 bg-cyan-500/5 px-1.5 py-0.5 text-[10px] text-cyan-200 hover:border-cyan-400/60">
+                                          {provider.logoUrl && <img src={provider.logoUrl} alt="" loading="lazy" className="h-3.5 w-3.5 rounded-sm object-contain" onError={event => { event.currentTarget.style.display = 'none'; }} />}
+                                          <span>{provider.name}</span>
+                                        </a>
+                                      ))}
+                                    </div>
+                                  );
+                                })}
+                                <div className="text-[9px] text-slate-600">Availability in India · TMDB / JustWatch</div>
+                              </div>
+                            ) : (
+                              <p className="text-[10px] text-slate-500">Streaming availability in India not confirmed</p>
+                            )}
+                          </div>
                           <div className="mt-auto grid grid-cols-1 gap-2">
                             <button type="button" onClick={() => void searchNexStreamTitles(show.title, 'tv')} className="w-full rounded-lg border border-violet-400/50 bg-violet-500/15 px-2 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25">Find on NexStream</button>
                             <a href={show.tmdbUrl || ('https://www.themoviedb.org/tv/' + show.id)} target="_blank" rel="noreferrer" className="block rounded-lg border border-slate-700 px-2 py-2 text-center text-[11px] font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">View on TMDB</a>
@@ -3770,6 +3795,31 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             <div className="mt-0.5 text-xs text-slate-500">{show.year || 'Year unknown'} · TV Series</div>
                           </div>
                           <div className="min-h-[3.75rem]">{show.overview && <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{show.overview}</p>}</div>
+                          <div className="min-h-[2.5rem]">
+                            {show.streamingProviders?.length ? (
+                              <div className="space-y-1.5">
+                                {(['subscription', 'free', 'ads', 'rent', 'buy'] as const).map(kind => {
+                                  const providers = (show.streamingProviders || []).filter(provider => provider.type === kind);
+                                  if (!providers.length) return null;
+                                  const label = kind === 'subscription' ? 'Stream' : kind === 'ads' ? 'Free with ads' : kind === 'free' ? 'Free' : kind === 'rent' ? 'Rent' : 'Buy';
+                                  return (
+                                    <div key={kind} className="flex flex-wrap items-center gap-1">
+                                      <span className="mr-0.5 text-[10px] text-slate-500">{label}:</span>
+                                      {providers.map((provider, index) => (
+                                        <a key={String(provider.providerId ?? provider.name) + '-' + index} href={provider.webUrl || show.tmdbUrl || ('https://www.themoviedb.org/tv/' + show.id)} target="_blank" rel="noreferrer" title={provider.name} onClick={event => event.stopPropagation()} className="inline-flex items-center gap-1 rounded-full border border-cyan-500/25 bg-cyan-500/5 px-1.5 py-0.5 text-[10px] text-cyan-200 hover:border-cyan-400/60">
+                                          {provider.logoUrl && <img src={provider.logoUrl} alt="" loading="lazy" className="h-3.5 w-3.5 rounded-sm object-contain" onError={event => { event.currentTarget.style.display = 'none'; }} />}
+                                          <span>{provider.name}</span>
+                                        </a>
+                                      ))}
+                                    </div>
+                                  );
+                                })}
+                                <div className="text-[9px] text-slate-600">Availability in India · TMDB / JustWatch</div>
+                              </div>
+                            ) : (
+                              <p className="text-[10px] text-slate-500">Streaming availability in India not confirmed</p>
+                            )}
+                          </div>
                           <div className="mt-auto grid grid-cols-1 gap-2">
                             <button type="button" onClick={() => void searchNexStreamTitles(show.title, 'tv')} className="w-full rounded-lg border border-violet-400/50 bg-violet-500/15 px-2 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25">Find on NexStream</button>
                             <a href={show.tmdbUrl || ('https://www.themoviedb.org/tv/' + show.id)} target="_blank" rel="noreferrer" className="block rounded-lg border border-slate-700 px-2 py-2 text-center text-[11px] font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">View on TMDB</a>
