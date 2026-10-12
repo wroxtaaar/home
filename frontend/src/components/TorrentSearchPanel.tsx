@@ -3784,15 +3784,20 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           </div>
                           <div className="relative min-w-0 flex-1 z-10">
                             <div className="flex items-start gap-1.5">
-                              <a
-                                href={imdbTitleHref}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="block min-w-0 flex-1 text-left text-[11px] leading-4 sm:text-sm font-semibold text-slate-100 line-clamp-2 hover:text-cyan-300 transition"
-                                title="Open on IMDb"
-                              >
-                                {mediaDisplayTitle}
-                              </a>
+                              <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-1.5">
+                                <a
+                                  href={imdbTitleHref}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="min-w-0 text-left text-[11px] leading-4 sm:text-sm font-semibold text-slate-100 hover:text-cyan-300 transition"
+                                  title="Open on IMDb"
+                                >
+                                  {mediaDisplayTitle}
+                                </a>
+                                {(mediaMetadata?.year || group.year) && (
+                                  <span className="shrink-0 text-[10px] sm:text-xs text-slate-500">{mediaMetadata?.year || group.year}</span>
+                                )}
+                              </div>
                               <button
                                 type="button"
                                 onClick={() => setExpandedSearchGroupKey(null)}
@@ -3807,20 +3812,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[10px] sm:text-xs">
                               <span className="font-semibold text-emerald-400">▲ {Number(result.seeders) || 0} seeders</span>
                               <span className="font-semibold text-amber-400">▼ {Number(result.leechers) || 0} peers</span>
-                              {(mediaMetadata?.year || group.year) && <span className="text-slate-500">{mediaMetadata?.year || group.year}</span>}
-                              {displayImdbRating?.imdbRating != null && displayImdbRating.imdbRating > 0 ? (
-                                <a
-                                  href={displayImdbRating.imdbUrl || (displayImdbRating.imdbId ? 'https://www.imdb.com/title/' + displayImdbRating.imdbId + '/' : '#')}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  title={'IMDb rating' + (displayImdbRating.imdbVotes ? ' · ' + displayImdbRating.imdbVotes + ' votes' : '')}
-                                  className="font-semibold text-amber-300 hover:text-amber-200"
-                                >
-                                  IMDb {displayImdbRating.imdbRating.toFixed(1)}
-                                </a>
-                              ) : mediaMetadata?.rating ? (
-                                <span className="text-amber-300">TMDB {mediaMetadata.rating.toFixed(1)}</span>
-                              ) : null}
+
                             </div>
 
                             
