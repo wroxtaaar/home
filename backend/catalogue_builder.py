@@ -13,6 +13,7 @@ import logging
 import math
 import re
 import sys
+from difflib import SequenceMatcher
 from typing import Any
 
 try:
@@ -36,9 +37,13 @@ DEFAULT_QUERIES = [
 log = logging.getLogger("home-catalogue-builder")
 PACK_OR_NOISE = re.compile(
     r"(?i)\b(collection|complete collection|movie pack|movies pack|all movies|"
-    r"filmography|discography|soundtrack|ost|songs|music album|vol(?:ume)?\s*\d|"
-    r"season pack|episodes pack|xxx|adult pack)\b"
+    r"filmography|discography|soundtrack|ost|songs|music album|mp3|flac|audio songs|"
+    r"full album|jukebox|best of|vol(?:ume)?\s*\d|season pack|episodes pack|"
+    r"complete season|complete series|all episodes|xxx|porn|adult pack|uncensored|"
+    r"erotic|hot scene|web series pack)\b"
 )
+GENERIC_SCRAPER_QUERIES = {"movie", "movies", "film", "films", "tv", "series", "show", "shows", "anime"}
+RELEASE_TAIL = re.compile(r"(?i)(?:\s*[-|]\s*)?(?:yify|yts|rarbg|tgx|ettv|etrg|psa|mkvhub|world4ufree|mkvcinemas|katmoviehd|torrentgalaxy).*$")
 QUALITY_TAGS = re.compile(
     r"(?i)\b(2160p|1080p|720p|480p|4k|uhd|web[- .]?dl|webrip|bluray|brrip|"
     r"hdrip|x264|x265|hevc|h264|h265|proper|repack|yify|yts|10bit|8bit)\b"
@@ -47,8 +52,11 @@ QUALITY_TAGS = re.compile(
 
 def _title_and_year(raw_title: str) -> tuple[str, int]:
     title = re.sub(r"\s+", " ", str(raw_title or "")).strip()
+    title = RELEASE_TAIL.sub(" ", title)
+    title = re.sub(r"(?i)\b(dual audio|multi audio|hindi dubbed|english dubbed|directors cut|extended cut|uncut|proper|repack|limited|remastered|complete)\b", " ", title)
     title = QUALITY_TAGS.sub(" ", title)
-    title = re.sub(r"\[[^\]]*\]|\([^)]*(?:1080p|720p|2160p|web.?dl|bluray)[^)]*\)", " ", title, flags=re.I)
+    title = re.sub(r"\[[^\]]*\]|\([^)]*(?:1080p|720p|2160p|web.?dl|bluray|x26[45]|hevc|hdr)[^)]*\)", " ", title, flags=re.I)
+    title = re.sub(r"(?i)\b(webrip|webdl|web-dl|bluray|brrip|hdrip|hdtv|dvdrip|aac[ .]?\d?\.\d?|ddp?\d?\.\d?|atmos|dts|proper|repack)\b", " ", title)
     title = re.sub(r"[\[\](){}._]+", " ", title)
     title = re.sub(r"\s+", " ", title).strip(" -")
     match = re.search(r"\b((?:19|20|21)\d{2})\b", title)
@@ -63,14 +71,32 @@ def _normalize(value: str) -> str:
 
 
 def _is_plausible_scraped_title(title: str) -> bool:
-    cleaned = re.sub(r"\s+", " ", title).strip()
-    if len(cleaned) < 2 or len(cleaned) > 120 or PACK_OR_NOISE.search(cleaned):
+    cleaned = re.sub(r"\s+", " ", title).strip(" -|:")
+    if len(cleaned) < 2 or len(cleaned) > 90 or PACK_OR_NOISE.search(cleaned):
         return False
     words = cleaned.split()
-    if len(words) > 14:
+    if len(words) > 10:
         return False
-    # Reject release descriptions with several technical/source tokens left over.
-    if len(re.findall(r"(?i)\b(1080p|720p|2160p|x264|x265|hevc|webrip|bluray)\b", cleaned)) >= 2:
+    if re.search(r"(?i)\b(1080p|720p|2160p|x264|x265|hevc|webrip|bluray|\d+\s*gb|season \d|episode \d|complete pack)\b", cleaned):
+        return False
+    if len(re.findall(r"(?i)\b(?:19|20|21)\d{2}\b", cleaned)) > 1:
+        return False
+    return True
+
+
+def _scraper_query_is_useful(query: str) -> bool:
+    """Avoid broad searches that the provider normalizes to a generic keyword."""
+    try:
+        provider_query = home_backend._media_provider_query(query)
+    except Exception:
+        provider_query = query
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(provider_query or "").casefold()).strip()
+    tokens = normalized.split()
+    if not tokens or normalized in GENERIC_SCRAPER_QUERIES:
+        return False
+    if len(tokens) <= 2 and any(re.fullmatch(r"(?:19|20|21)\d{2}", t) for t in tokens) and all(
+        t in GENERIC_SCRAPER_QUERIES or re.fullmatch(r"(?:19|20|21)\d{2}", t) for t in tokens
+    ):
         return False
     return True
 
@@ -129,11 +155,15 @@ def _tmdb_candidate(title: str, year: int, payload: dict[str, Any]) -> dict[str,
         result_year = _release_year(row, media_type)
         exact = int(normalized == target)
         year_match = int(not year or not result_year or result_year == year)
-        # Do not accept unrelated popular results; exact or a meaningful prefix match only.
-        prefix_match = target.startswith(normalized) or normalized.startswith(target)
-        if not exact and not prefix_match:
+        ratio = SequenceMatcher(None, target, normalized).ratio()
+        target_tokens = set(target.split())
+        result_tokens = set(normalized.split())
+        overlap = len(target_tokens & result_tokens) / max(1, len(target_tokens | result_tokens))
+        if not exact and not (ratio >= 0.88 and overlap >= 0.75):
             continue
-        choices.append(((exact, year_match, float(row.get("popularity") or 0)), row, media_type))
+        if year and result_year and abs(year - result_year) > 1:
+            continue
+        choices.append(((exact, year_match, int(ratio * 1000), float(row.get("popularity") or 0)), row, media_type))
     if not choices:
         return None
     choices.sort(key=lambda item: item[0], reverse=True)
@@ -214,6 +244,9 @@ async def _discover_query(query: str, per_query: int) -> list[dict[str, Any]]:
 
 
 async def _scrape_query(query: str, per_query: int) -> list[tuple[str, int, str]]:
+    if not _scraper_query_is_useful(query):
+        log.info("Skipping broad scraper query %r; provider would search a generic term", query)
+        return []
     try:
         rows = await home_backend.search_1337x(query, min(50, per_query))
     except Exception as exc:
@@ -275,26 +308,42 @@ async def build_catalogue(queries: list[str], max_titles: int, per_query: int) -
     semaphore = asyncio.Semaphore(3)
     matched = 0
     lookup_failures = 0
+    lookup_no_match = 0
+    lookup_retries = 0
 
     async def resolve(item: tuple[str, int, str]) -> None:
-        nonlocal matched, lookup_failures
+        nonlocal matched, lookup_failures, lookup_no_match, lookup_retries
         title, year, source_query = item
         async with semaphore:
-            try:
-                payload = await home_backend._tmdb_get_json(
-                    "search/multi",
-                    {"query": title, "include_adult": "false", "language": "en-US", "page": 1},
-                    request_timeout=8.0,
-                )
-                candidate = _tmdb_candidate(title, year, payload)
-                if candidate:
-                    key = (str(candidate["mediaType"]), int(candidate["tmdbId"]))
-                    if key not in output_by_id:
-                        output_by_id[key] = candidate
-                        matched += 1
-            except Exception as exc:
+            payload = None
+            last_exc: Exception | None = None
+            for attempt in range(2):
+                try:
+                    payload = await home_backend._tmdb_get_json(
+                        "search/multi",
+                        {"query": title, "include_adult": "false", "language": "en-US", "page": 1},
+                        request_timeout=10.0,
+                    )
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt == 0:
+                        lookup_retries += 1
+                        await asyncio.sleep(0.5)
+            if last_exc is not None or payload is None:
                 lookup_failures += 1
-                log.warning("TMDB title lookup failed for %r from %r (%s)", title, source_query, type(exc).__name__)
+                log.warning("TMDB title lookup failed for %r from %r after retry (%s)", title, source_query, type(last_exc).__name__ if last_exc else "empty response")
+                return
+            candidate = _tmdb_candidate(title, year, payload)
+            if candidate:
+                key = (str(candidate["mediaType"]), int(candidate["tmdbId"]))
+                if key not in output_by_id:
+                    output_by_id[key] = candidate
+                    matched += 1
+            else:
+                lookup_no_match += 1
+                log.debug("No confident TMDB match for scraper title %r (year=%s, query=%r)", title, year or "unknown", source_query)
 
     await asyncio.gather(*(resolve(item) for item in selected))
     output = list(output_by_id.values())[:cap]
@@ -307,6 +356,8 @@ async def build_catalogue(queries: list[str], max_titles: int, per_query: int) -
         "scraper_tmdb_matches": matched,
         "tmdb_discovery_queries_without_results": discovery_failures,
         "tmdb_lookup_failures": lookup_failures,
+        "scraper_titles_without_confident_tmdb_match": lookup_no_match,
+        "tmdb_lookup_retries": lookup_retries,
         "total_unique_tmdb_records": len(output),
         "rows_written_or_updated": persisted,
     }
