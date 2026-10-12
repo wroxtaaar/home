@@ -108,6 +108,71 @@ async def search_titles(
     return {"success": True, "type": media_type, "results": results}
 
 
+@router.get("/api/nexstream/episodes")
+async def get_tv_episodes(
+    tmdb_id: int = Query(..., gt=0),
+    season: int = Query(1, ge=1),
+):
+    """Return TMDB season and episode metadata for the in-page NexStream picker."""
+    api_keys = _env_values("TMDB_API_KEYS", "TMDB_API_KEY")
+    bearer_tokens = _env_values("TMDB_READ_ACCESS_TOKENS", "TMDB_READ_ACCESS_TOKEN", "TMDB_BEARER_TOKEN")
+    if not api_keys and not bearer_tokens:
+        raise HTTPException(status_code=503, detail="TMDB credentials are not configured on the test server.")
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(12.0), follow_redirects=True) as client:
+        async def tmdb_get(path: str):
+            last_status = None
+            connection_errors = 0
+            for key in api_keys:
+                try:
+                    response = await client.get(f"{TMDB_API_BASE}{path}", params={"api_key": key}, headers={"Accept": "application/json"})
+                except httpx.RequestError:
+                    connection_errors += 1
+                    continue
+                last_status = response.status_code
+                if response.status_code == 200:
+                    return response.json()
+                if response.status_code == 429:
+                    raise HTTPException(status_code=429, detail="TMDB rate limit reached. Try again shortly.")
+            for token in bearer_tokens:
+                try:
+                    response = await client.get(f"{TMDB_API_BASE}{path}", headers={"Accept": "application/json", "Authorization": f"Bearer {token}"})
+                except httpx.RequestError:
+                    connection_errors += 1
+                    continue
+                last_status = response.status_code
+                if response.status_code == 200:
+                    return response.json()
+                if response.status_code == 429:
+                    raise HTTPException(status_code=429, detail="TMDB rate limit reached. Try again shortly.")
+            if last_status in (401, 403):
+                raise HTTPException(status_code=502, detail="TMDB rejected the configured credentials.")
+            if connection_errors and last_status is None:
+                raise HTTPException(status_code=502, detail="Could not connect to TMDB episode metadata.")
+            raise HTTPException(status_code=502, detail=f"TMDB episode metadata failed (HTTP {last_status or 'unknown'}).")
+
+        show = await tmdb_get(f"/tv/{tmdb_id}")
+        seasons = [
+            {"seasonNumber": int(item.get("season_number", 0)), "name": str(item.get("name") or f"Season {item.get('season_number', 0)}"), "episodeCount": int(item.get("episode_count", 0))}
+            for item in show.get("seasons", [])
+            if isinstance(item, dict) and int(item.get("season_number", 0)) > 0
+        ]
+        selected_season = season if any(item["seasonNumber"] == season for item in seasons) else (seasons[0]["seasonNumber"] if seasons else season)
+        season_data = await tmdb_get(f"/tv/{tmdb_id}/season/{selected_season}")
+    episodes = [
+        {
+            "episodeNumber": int(item.get("episode_number", 0)),
+            "name": str(item.get("name") or ""),
+            "overview": str(item.get("overview") or "")[:500],
+            "airDate": str(item.get("air_date") or ""),
+            "still": f"https://image.tmdb.org/t/p/w300{item['still_path']}" if item.get("still_path") else None,
+        }
+        for item in season_data.get("episodes", [])
+        if isinstance(item, dict) and int(item.get("episode_number", 0)) > 0
+    ]
+    return {"success": True, "tmdbId": tmdb_id, "seasons": seasons, "selectedSeason": selected_season, "episodes": episodes}
+
+
 @router.get("/api/nexstream/resolve")
 async def resolve_nexstream(
     media_type: str = Query("movie", alias="type", pattern="^(movie|tv)$"),
