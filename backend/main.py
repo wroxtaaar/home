@@ -5274,6 +5274,33 @@ _CACHE_SEED_FILES = (
 )
 
 
+# Runtime metadata caches are snapshotted to GitHub alongside the curated catalogues.
+# This gives fresh/ephemeral deployments a warm starting point without replacing
+# any cache data already populated by that deployment.
+_RUNTIME_CACHE_SEED_FILES = {
+    "tmdb_movie_catalogue_cache.json": TMDB_CATALOGUE_CACHE_FILE,
+    "tmdb_search_metadata_cache.json": TMDB_SEARCH_METADATA_CACHE_FILE,
+    "imdb_rating_cache.json": IMDB_RATING_CACHE_FILE,
+    "tmdb_ott_availability_cache.json": TMDB_OTT_CACHE_FILE,
+}
+
+
+def _seed_bundled_runtime_caches() -> None:
+    seed_dir = _CACHE_SEED_DIR / "runtime"
+    for filename, destination in _RUNTIME_CACHE_SEED_FILES.items():
+        source = seed_dir / filename
+        if not source.is_file() or source.stat().st_size == 0:
+            continue
+        try:
+            if destination.is_file() and destination.stat().st_size > 0:
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+            logger.info("Seeded runtime cache %s from GitHub snapshot", filename)
+        except OSError as exc:
+            logger.warning("Could not seed runtime cache %s: %s", filename, exc)
+
+
 def _seed_bundled_catalogue_caches() -> None:
     destinations = {
         "marvel_catalogue.json": MARVEL_CATALOGUE_PATH,
@@ -5975,9 +6002,10 @@ async def api_catalogue_synopsis_enrichment_status():
 
 
 def _initialize_catalogue_caches() -> None:
-    # Seed missing files first, then normalize the real persistent VPS JSON files
+    # Seed missing runtime metadata and catalogue files first, then normalize the real persistent JSON files
     # before the API starts serving catalogue requests. The readers write sorted
     # results back atomically whenever the on-disk order needs to change.
+    _seed_bundled_runtime_caches()
     _seed_bundled_catalogue_caches()
     _read_marvel_catalogue()
     for key in ("marvel-hindi", "dc-live-action", "dc-live-action-hindi", "dc-animated"):

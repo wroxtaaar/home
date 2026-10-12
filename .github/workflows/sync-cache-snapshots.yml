@@ -1,0 +1,100 @@
+name: Sync portable cache snapshots
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: home-cache-snapshots
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_SSH_PORT: ${{ secrets.VPS_SSH_PORT || '22' }}
+        run: |
+          set -eu
+          test -n "$VPS_HOST" || { echo "Missing VPS_HOST"; exit 1; }
+          test -n "$VPS_SSH_KEY" || { echo "Missing VPS_SSH_KEY"; exit 1; }
+          mkdir -p ~/.ssh
+          printf '%s\\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p "$VPS_SSH_PORT" "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Snapshot VPS caches into the repository
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_PORT: ${{ secrets.VPS_SSH_PORT || '22' }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER" || { echo "Missing VPS_USER"; exit 1; }
+          git fetch origin main
+          git checkout -B main origin/main
+          mkdir -p backend/cache-seed/runtime
+
+          sync_remote_file() {
+            local remote_path="$1"
+            local destination="$2"
+            local size
+            if ! size=$(ssh -o BatchMode=yes -p "$VPS_SSH_PORT" "$VPS_USER@$VPS_HOST" \
+              "sudo -n stat -c %s '$remote_path'" 2>/dev/null); then
+              echo "Skipping missing/unreadable cache: $remote_path"
+              return 0
+            fi
+            if ! [[ "$size" =~ ^[0-9]+$ ]] || [ "$size" -eq 0 ]; then
+              echo "Skipping empty/invalid cache: $remote_path"
+              return 0
+            fi
+            if [ "$size" -gt 80000000 ]; then
+              echo "Skipping cache larger than 80 MB (GitHub file-size safety limit): $remote_path ($size bytes)"
+              return 0
+            fi
+            echo "Snapshotting $remote_path ($size bytes)"
+            ssh -o BatchMode=yes -p "$VPS_SSH_PORT" "$VPS_USER@$VPS_HOST" \
+              "sudo -n cat '$remote_path'" > "$destination"
+            test -s "$destination"
+          }
+
+          DATA_DIR="/home/$VPS_USER/home-data"
+          for name in \
+            marvel_catalogue.json \
+            marvel_hindi_catalogue.json \
+            dc_live_action_catalogue.json \
+            dc_live_action_hindi_catalogue.json \
+            dc_animated_catalogue.json \
+            latest_hollywood_catalogue.json \
+            latest_bollywood_catalogue.json; do
+            sync_remote_file "$DATA_DIR/$name" "backend/cache-seed/$name"
+          done
+
+          for name in \
+            tmdb_movie_catalogue_cache.json \
+            tmdb_search_metadata_cache.json \
+            imdb_rating_cache.json \
+            tmdb_ott_availability_cache.json; do
+            sync_remote_file "$DATA_DIR/$name" "backend/cache-seed/runtime/$name"
+          done
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A -- backend/cache-seed/
+          if git diff --cached --quiet; then
+            echo "Cache snapshots are already up to date."
+            exit 0
+          fi
+          git commit -m "Refresh portable cache snapshots"
+          git push origin HEAD:main
