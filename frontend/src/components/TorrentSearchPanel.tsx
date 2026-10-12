@@ -900,7 +900,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     try {
       const parsed = new URL(url, window.location.origin);
       if (parsed.hostname !== 'image.tmdb.org') return url;
-      parsed.pathname = parsed.pathname.replace(/\/t\/p\/(?:original|w500|w780|w342|w300|w200|w154|w92)\//, '/t/p/w185/');
+      parsed.pathname = parsed.pathname.replace(/\/t\/p\/(?:original|w500|w780|w342|w300|w200|w154|w92|w185)\//, '/t/p/w342/');
       return parsed.toString();
     } catch {
       return url;
@@ -3763,7 +3763,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     {marvelWebSeriesCatalogue.results.map(show => (
                       <article key={String(show.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-cyan-500/40 hover:bg-slate-900/95 flex flex-col">
                         <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
-                          {show.posterUrl ? <img src={show.posterUrl} alt={show.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="absolute inset-0 flex items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
+                          {show.posterUrl ? <img src={lowQualityPosterUrl(show.posterUrl)} alt={show.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="absolute inset-0 flex items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
                           {show.rating ? <span className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow">⭐ {show.rating.toFixed(1)}/10</span> : null}
                         </div>
                         <div className="flex flex-1 flex-col gap-2 p-2.5">
