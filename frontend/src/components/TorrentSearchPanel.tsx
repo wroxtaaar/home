@@ -2465,6 +2465,65 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     }
   };
 
+  const prefetchRegionalTorrentDetails = async () => {
+    if (movieTorrentPrefetchRunningRef.current) return;
+    movieTorrentPrefetchRunningRef.current = true;
+    try {
+      const catalogues: MovieCatalogueKey[] = [
+        'popular-bollywood', 'trending-bollywood', 'latest-bollywood',
+        'popular-hollywood', 'trending-hollywood', 'latest-hollywood',
+      ];
+      const queued = new Map<string, MovieCatalogueItem>();
+      for (const catalogueKey of catalogues) {
+        try {
+          const page = await api.getMovieCatalogue(catalogueKey, 1, true);
+          for (const movie of (page.results || []).slice(0, 12)) {
+            const key = normalizeGroupTitle(movie.title) + '|' + String(movie.year || '');
+            if (!movieTorrentDetailsCacheRef.current.has(key)) queued.set(key, movie);
+          }
+        } catch { /* One catalogue failing should not stop the other catalogues. */ }
+      }
+      const queue = Array.from(queued.entries());
+      let next = 0;
+      const worker = async () => {
+        while (next < queue.length) {
+          const current = queue[next++];
+          if (!current) return;
+          const [cacheKey, movie] = current;
+          if (movieTorrentDetailsCacheRef.current.has(cacheKey)) continue;
+          try {
+            const query = movie.title + (movie.year ? ' ' + movie.year : '');
+            let rows = await api.searchTorrents(query, 50);
+            if (!rows.length && movie.title) rows = await api.searchTorrents(movie.title, 50);
+            const expectedTitle = normalizeGroupTitle(movie.title);
+            const maxSize = searchLimits.maxSizeGb * 1024 * 1024 * 1024;
+            const lowQuality = /(?:^|[\s._()[\]-])(?:cam(?:rip)?|hdcam|hd[ ._-]?cam|telesync|tele[ ._-]?sync|ts[ ._-]?(?:md|ac3|hd)?|telecine|dvdscr|dvd[ ._-]?scr|screener|workprint)(?:$|[\s._()[\]-])/i;
+            const usable = rows.filter(result => {
+              const title = normalizeGroupTitle(String(result.title || ''));
+              const mediaTitle = normalizeGroupTitle(String(result.mediaTitle || ''));
+              const size = Number(result.size) || 0;
+              const hasSource = Boolean(result.magnetUrl || result.downloadUrl || result.sourceUrl);
+              return expectedTitle && (title.includes(expectedTitle) || mediaTitle.includes(expectedTitle))
+                && hasSource && size <= maxSize
+                && !lowQuality.test(String(result.title || '') + ' ' + String(result.quality || ''));
+            });
+            const groups = groupTorrentResults(usable);
+            movieTorrentDetailsCacheRef.current.set(cacheKey, { groups, savedAt: Date.now() });
+            persistMovieTorrentCache();
+          } catch { /* Failed titles can be retried when the user opens Prepare. */ }
+        }
+      };
+      await Promise.all([worker(), worker()]);
+    } finally {
+      movieTorrentPrefetchRunningRef.current = false;
+    }
+  };
+
+  useEffect(() => {
+    // Warm the persistent torrent cache in the background, without blocking the UI.
+    void prefetchRegionalTorrentDetails();
+  }, []);
+
   const sortedResults = useMemo(() => {
     // Use the shared root search_limits.json settings.
     const maxSeedrFriendlySize = searchLimits.maxSizeGb * 1024 * 1024 * 1024;
