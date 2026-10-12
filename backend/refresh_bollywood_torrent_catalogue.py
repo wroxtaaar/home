@@ -27,11 +27,11 @@ METADATA_PATH = Path(os.getenv(
 ))
 OUTPUT_PATH = Path(os.getenv(
     "BOLLYWOOD_TORRENT_CATALOGUE_PATH",
-    str(BASE_DIR / "cache-seed" / "bollywood_torrent_matched_catalogue.json"),
+    str(Path(os.getenv("APP_DATA_DIR", "/app/data")) / "bollywood_torrent_matched_catalogue.json"),
 ))
 STATE_PATH = Path(os.getenv(
     "BOLLYWOOD_TORRENT_CATALOGUE_STATE_PATH",
-    str(BASE_DIR / "cache-seed" / "bollywood_torrent_catalogue_state.json"),
+    str(Path(os.getenv("APP_DATA_DIR", "/app/data")) / "bollywood_torrent_catalogue_state.json"),
 ))
 BATCH_SIZE = max(1, min(1000, int(os.getenv("BOLLYWOOD_TORRENT_REFRESH_BATCH_SIZE", "150"))))
 SEARCH_DELAY = max(0.0, min(5.0, float(os.getenv("BOLLYWOOD_TORRENT_SEARCH_DELAY_SECONDS", "0.5"))))
