@@ -38,8 +38,11 @@ Then run the defaults if the small run reports successful TMDB records and cache
    to a generic term like `movies`; TMDB discovery still handles these year/category queries.
 5. Torrent titles are cleaned of common release tags and uploader tails. Collections, season packs,
    music/audio compilations, common adult-content markers, and editorial/listicle results (for example
-   "Top 10", "latest Bollywood movies", "hand-picked prints", or actress compilations) are rejected
-   before TMDB lookup. Rejections are available in verbose debug logs.
+   "Top 10", "3 Best Bollywood Movies Of", "latest Bollywood movies", "hand-picked prints", or
+   actress compilations) are rejected before TMDB lookup. Rejections are available in debug logs.
+6. If scraper candidates do not contribute enough new, confident TMDB matches, the builder performs
+   a fallback TMDB discovery pass to fill unused capacity rather than returning an unnecessarily small
+   catalogue.
 6. Scraper candidates require an exact TMDB title match or a high title-similarity and token-overlap
    score; year mismatches are rejected rather than accepting loosely related popular results.
 7. TMDB transport failures get one bounded retry. Metrics separately report retry count, lookup
