@@ -36,22 +36,22 @@ DEFAULT_QUERIES = [
 ]
 log = logging.getLogger("home-catalogue-builder")
 PACK_OR_NOISE = re.compile(
-    r"(?i)\\b(collection|complete collection|movie pack|movies pack|mega pack|pack of movies|all movies|"
+    r"(?i)\b(collection|complete collection|movie pack|movies pack|mega pack|pack of movies|all movies|"
     r"filmography|discography|soundtrack|ost|songs|music album|mp3|flac|audio songs|"
-    r"full album|jukebox|best of|vol(?:ume)?\\s*\\d|season pack|episodes pack|"
+    r"full album|jukebox|best of|vol(?:ume)?\s*\d|season pack|episodes pack|"
     r"complete season|complete series|all episodes|xxx|porn|adult pack|uncensored|"
-    r"erotic|hot scene|web series pack)\\b"
+    r"erotic|hot scene|web series pack)\b"
 )
 EDITORIAL_NOISE = re.compile(
-    r"(?i)(?:^\\s*\\d+\\s+(?:best|top|latest|newest)\\b|"
-    r"\\b(?:top|best)\\s+\\d{1,2}\\b|"
-    r"\\b(?:latest|newest)\\s+(?:bollywood|hollywood|hindi|movies|films)\\b|"
-    r"\\b(?:bollywood|hollywood|hindi)\\s+movies?\\s+(?:in\\s+hindi|of\\s+\\d{4}|"
-    r"in\\s+best\\s+quality|available|download)\\b|"
-    r"\\b(?:hand[ -]?picked|best quality available|prints available|full movie collection|"
-    r"movie review|movie trailer|list of movies|movies list|actress|wet compilation)\\b|"
-    r"\\b(?:from|of)\\s+(?:the\\s+)?(?:bollywood|hollywood)\\s+movies?\\b|"
-    r"\\b(?:webhd|mega\\s+pack|avc|aac)\\b)"
+    r"(?i)(?:^\s*\d+\s+(?:best|top|latest|newest)\b|"
+    r"\b(?:top|best)\s+\d{1,2}\b|"
+    r"\b(?:latest|newest)\s+(?:bollywood|hollywood|hindi|movies|films)\b|"
+    r"\b(?:bollywood|hollywood|hindi)\s+movies?\s+(?:in\s+hindi|of\s+\d{4}|"
+    r"in\s+best\s+quality|available|download)\b|"
+    r"\b(?:hand[ -]?picked|best quality available|prints available|full movie collection|"
+    r"movie review|movie trailer|list of movies|movies list|actress|wet compilation)\b|"
+    r"\b(?:from|of)\s+(?:the\s+)?(?:bollywood|hollywood)\s+movies?\b|"
+    r"\b(?:webhd|mega\s+pack|avc|aac)\b)"
 )
 GENERIC_SCRAPER_QUERIES = {"movie", "movies", "film", "films", "tv", "series", "show", "shows", "anime"}
 RELEASE_TAIL = re.compile(r"(?i)(?:\s*[-|]\s*)?(?:yify|yts|rarbg|tgx|ettv|etrg|psa|mkvhub|world4ufree|mkvcinemas|katmoviehd|torrentgalaxy).*$")
