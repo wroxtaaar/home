@@ -390,6 +390,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [nexStreamResults, setNexStreamResults] = useState<NexStreamTitle[]>([]);
   const [nexStreamSearchMode, setNexStreamSearchMode] = useState<'movie' | 'tv' | null>(null);
   const [nexStreamLoading, setNexStreamLoading] = useState(false);
+  const nexStreamSearchControllerRef = useRef<AbortController | null>(null);
+  const nexStreamSearchGenerationRef = useRef(0);
   const [nexStreamError, setNexStreamError] = useState('');
   const [nexStreamPlayer, setNexStreamPlayer] = useState<{ title: string; sourceName: string; url: string; type: 'movie' | 'tv'; season?: number; episode?: number } | null>(null);
   const [nexStreamResolvingId, setNexStreamResolvingId] = useState<string | null>(null);
@@ -987,7 +989,14 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     movieTorrentSearchGenerationRef.current += 1;
     movieTorrentSearchControllerRef.current?.abort();
     movieTorrentSearchControllerRef.current = null;
+    nexStreamSearchGenerationRef.current += 1;
+    nexStreamSearchControllerRef.current?.abort();
+    nexStreamSearchControllerRef.current = null;
     setIsSearching(false);
+    setNexStreamLoading(false);
+    setNexStreamSearchMode(null);
+    setNexStreamResults([]);
+    setNexStreamError('');
     setCatalogueBuildProgress('');
     setError('');
     setShowRecentSearches(false);
@@ -998,6 +1007,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   };
 
   const searchNexStreamTitles = async (titleQuery: string, mediaType: 'movie' | 'tv' = 'movie') => {
+    nexStreamSearchControllerRef.current?.abort();
+    const controller = new AbortController();
+    nexStreamSearchControllerRef.current = controller;
+    const generation = ++nexStreamSearchGenerationRef.current;
     setNexStreamSearchMode(mediaType);
     setNexStreamLoading(true);
     setNexStreamError('');
@@ -1010,6 +1023,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         const response = await fetch('/api/nexstream/search?' + params.toString(), {
           headers: { Accept: 'application/json' },
           credentials: 'same-origin',
+          signal: controller.signal,
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data.success) {
@@ -1017,6 +1031,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         }
         return (Array.isArray(data.results) ? data.results : []) as NexStreamTitle[];
       }));
+      if (generation !== nexStreamSearchGenerationRef.current) return;
       const successfulResults = responses
         .filter((response): response is PromiseFulfilledResult<NexStreamTitle[]> => response.status === 'fulfilled')
         .flatMap(response => response.value);
@@ -1039,9 +1054,13 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         setNexStreamError('Some NexStream results could not be loaded. Try searching again to refresh them.');
       }
     } catch (error: any) {
+      if (generation !== nexStreamSearchGenerationRef.current || error?.name === 'AbortError') return;
       setNexStreamError(String(error?.message || 'NexStream search is temporarily unavailable.'));
     } finally {
-      setNexStreamLoading(false);
+      if (generation === nexStreamSearchGenerationRef.current) {
+        setNexStreamLoading(false);
+        if (nexStreamSearchControllerRef.current === controller) nexStreamSearchControllerRef.current = null;
+      }
     }
   };
 
@@ -1726,6 +1745,12 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 if (error) setError('');
                 if (recentSearches.length > 0) setShowRecentSearches(true);
               }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  setShowRecentSearches(false);
+                }
+              }}
               placeholder="Search movies, TV, music, software..."
               className="w-full pl-9 pr-10 py-2 sm:py-2.5 rounded-lg sm:rounded-xl bg-slate-950 border border-slate-800 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/20"
             />
@@ -1767,13 +1792,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           setQuery(search);
                           setError('');
                           setShowRecentSearches(false);
-                          // A recent search is already a known-good query, so
-                          // run it immediately instead of making the user press
-                          // Search again.
-                          window.setTimeout(() => {
-                            const form = document.querySelector('form[data-torrent-search="true"]') as HTMLFormElement | null;
-                            form?.requestSubmit();
-                          }, 0);
                         }}
                         className="min-w-0 flex-1 px-3 py-2.5 text-left flex items-center gap-2.5 active:bg-slate-700 transition"
                       >
@@ -1830,13 +1848,13 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             <span className="hidden sm:inline">NexStream TV</span><span className="sm:hidden">TV</span>
           </button>
           <button
-            type={isSearching ? 'button' : 'submit'}
-            onClick={isSearching ? cancelSearch : undefined}
-            aria-label={isSearching ? 'Cancel search' : 'Search'}
-            title={isSearching ? 'Cancel search' : 'Search'}
+            type={isSearching || nexStreamLoading ? 'button' : 'submit'}
+            onClick={isSearching || nexStreamLoading ? cancelSearch : undefined}
+            aria-label={isSearching || nexStreamLoading ? 'Cancel search' : 'Search'}
+            title={isSearching || nexStreamLoading ? 'Cancel search' : 'Search'}
             className={[
               'group relative isolate overflow-hidden w-10 sm:w-auto min-h-10 px-2.5 sm:px-5 py-2 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-2 transition-all duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 active:scale-[0.97]',
-              isSearching
+              isSearching || nexStreamLoading
                 ? 'border border-rose-300/70 bg-rose-500 text-white shadow-[0_0_0_1px_rgba(244,63,94,0.18),0_0_18px_rgba(244,63,94,0.20)] hover:bg-rose-400 hover:shadow-[0_0_24px_rgba(244,63,94,0.34)] focus-visible:ring-rose-300'
                 : 'border border-cyan-300/60 bg-cyan-400 text-slate-950 shadow-[0_0_0_1px_rgba(34,211,238,0.12)] hover:-translate-y-0.5 hover:border-cyan-200 hover:bg-cyan-300 hover:shadow-[0_0_22px_rgba(34,211,238,0.36)] focus-visible:ring-cyan-300'
             ].join(' ')}
