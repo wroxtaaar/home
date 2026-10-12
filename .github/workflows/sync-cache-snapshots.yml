@@ -85,7 +85,9 @@ jobs:
             tmdb_movie_catalogue_cache.json \
             tmdb_search_metadata_cache.json \
             imdb_rating_cache.json \
-            tmdb_ott_availability_cache.json; do
+            tmdb_ott_availability_cache.json \
+            marvel_tv_catalogue_cache.json \
+            dc_tv_catalogue_cache.json; do
             sync_remote_file "$DATA_DIR/$name" "backend/cache-seed/runtime/$name"
           done
 
