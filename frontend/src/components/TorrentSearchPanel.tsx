@@ -3551,7 +3551,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             )}
                           </div>
                           <div className="mt-auto grid grid-cols-1 gap-2">
-                            <button type="button" onClick={() => void searchNexStreamTitles(show.title, 'tv')} className="w-full rounded-lg border border-violet-400/50 bg-violet-500/15 px-2 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25">Find on NexStream</button>
+                            <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} className="w-full rounded-lg border border-violet-400/50 bg-violet-500/15 px-2 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25">Find on NexStream</button>
                             <a href={show.tmdbUrl || ('https://www.themoviedb.org/tv/' + show.id)} target="_blank" rel="noreferrer" className="block rounded-lg border border-slate-700 px-2 py-2 text-center text-[11px] font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">View on TMDB</a>
                           </div>
                         </div>
