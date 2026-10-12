@@ -916,17 +916,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       }
     };
 
-    // Ask the existing poster resolver first. This uses the same lookup and
-    // cache as normal image rendering, so successful work is shared.
-    const rawUrl = rawPosterUrlFor(result);
-    if (rawUrl) {
-      addCandidate(
-        rawUrl.split('?title=')[1]?.split('&')[0]
-          ? decodeURIComponent(rawUrl.split('?title=')[1].split('&')[0].replace(/\+/g, ' '))
-          : String(result.mediaTitle || result.title || ''),
-        String(result.year || '')
-      );
-    }
+    // Resolve from the actual title/year only. Indexer-provided poster URLs can
+    // be generic thumbnails for a different movie and must not be trusted.
 
     const explicitYear = result.year ? String(result.year) : '';
     const mediaTitle = String(result.mediaTitle || '').trim();
@@ -1112,7 +1103,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   };
 
   const posterUrlFor = (result: TorrentSearchResult) =>
-    posterOverrides[posterKeyFor(result)] || rawPosterUrlFor(result);
+    posterOverrides[posterKeyFor(result)] || '';
 
   const normalizeMatchText = (value: string) =>
     String(value || '')
@@ -3692,11 +3683,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         <div className="space-y-2">
           <div className="rounded-xl border border-slate-800 bg-slate-900 px-2.5 py-2.5">
             <div className="flex items-center gap-2 overflow-x-auto">
-              <span className="shrink-0 px-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">Filters</span>
-              <button type="button" onClick={() => setResolutionFilter(current => current === '720p' ? null : '720p')} className={resolutionFilter === '720p' ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950 shadow-[0_0_14px_rgba(34,211,238,0.45)]' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={resolutionFilter === '720p'}>720p</button>
-              <button type="button" onClick={() => setResolutionFilter(current => current === '1080p' ? null : '1080p')} className={resolutionFilter === '1080p' ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950 shadow-[0_0_14px_rgba(34,211,238,0.45)]' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={resolutionFilter === '1080p'}>1080p</button>
-              <button type="button" onClick={() => { setReleaseYearSort(null); setSizeSort(current => current === null ? 'asc' : current === 'asc' ? 'desc' : null); }} className={sizeSort ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950 shadow-[0_0_14px_rgba(34,211,238,0.45)]' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={Boolean(sizeSort)} title="Sort by torrent size">Size {sizeSort === 'asc' ? '↑' : sizeSort === 'desc' ? '↓' : ''}</button>
-              <button type="button" onClick={() => { setReleaseYearSort(null); setTimeSort(current => current === null ? 'desc' : current === 'desc' ? 'asc' : null); }} className={timeSort ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950 shadow-[0_0_14px_rgba(34,211,238,0.45)]' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={Boolean(timeSort)} title="Sort by torrent upload date">Time {timeSort === 'desc' ? '↓' : timeSort === 'asc' ? '↑' : ''}</button>
               <button type="button" onClick={() => { setSizeSort(null); setTimeSort(null); setReleaseYearSort(current => current === null ? 'newest' : current === 'newest' ? 'oldest' : null); }} className={releaseYearSort ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950 shadow-[0_0_14px_rgba(34,211,238,0.45)]' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={Boolean(releaseYearSort)} title="Sort movie cards by release year: newest first, oldest first, then default ranking">{releaseYearSort === 'newest' ? 'Year ↓ Newest' : releaseYearSort === 'oldest' ? 'Year ↑ Oldest' : 'Year'}</button>
               {isDcLiveActionEnglishResults && (
                 <button type="button" onClick={() => { if (showDcWebSeries) setShowDcWebSeries(false); else void loadDcWebSeries(); }} className={showDcWebSeries ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={showDcWebSeries} title="Show DC live-action web series">📺 Web Series</button>
