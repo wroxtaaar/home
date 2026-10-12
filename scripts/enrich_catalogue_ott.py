@@ -231,6 +231,18 @@ def main():
             continue
         backup = path.with_name(path.name + ".ott-backup-" + stamp)
         shutil.copy2(path, backup)
+        # Keep the newest rollback point for this catalogue; older timestamped
+        # copies otherwise accumulate on every scheduled enrichment run.
+        for old_backup in sorted(
+            path.parent.glob(path.name + ".ott-backup-*"),
+            key=lambda item: (item.stat().st_mtime, item.name),
+            reverse=True,
+        )[1:]:
+            try:
+                old_backup.unlink()
+            except OSError as exc:
+                log({"status": "OLD_BACKUP_CLEANUP_FAILED", "file": str(old_backup),
+                     "error": str(exc)[:200]})
         catalogues.append((name, path, data))
         log({"status": "BACKUP_CREATED", "file": name, "backup": str(backup),
              "entries": len(data["results"])})
