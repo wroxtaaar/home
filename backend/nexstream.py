@@ -3,7 +3,12 @@
 Provider credentials stay on the server. Only approved HTTPS EmbedMaster player
 URLs are returned to the browser; no direct media URLs are exposed by this adapter.
 """
+import json
 import os
+import tempfile
+import threading
+import time
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
@@ -13,6 +18,67 @@ router = APIRouter()
 NEXSTREAM_API_BASE = "https://api.codespecters.com"
 TMDB_API_BASE = "https://api.themoviedb.org/3"
 ALLOWED_EMBED_HOSTS = {"embedmaster.link", "www.embedmaster.link"}
+_NEXSTREAM_CACHE_PATH = Path(os.getenv("NEXSTREAM_CACHE_PATH", "/app/data/nexstream_cache.json"))
+_NEXSTREAM_CACHE_LOCK = threading.Lock()
+_NEXSTREAM_SEARCH_CACHE_TTL = 24 * 60 * 60
+_NEXSTREAM_RESOLVE_CACHE_TTL = 5 * 60
+
+
+def _read_nexstream_cache() -> dict[str, dict]:
+    try:
+        payload = json.loads(_NEXSTREAM_CACHE_PATH.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _get_nexstream_cache(key: str, ttl: int):
+    with _NEXSTREAM_CACHE_LOCK:
+        entry = _read_nexstream_cache().get(key)
+    if not isinstance(entry, dict):
+        return None
+    cached_at = entry.get("cachedAt")
+    if not isinstance(cached_at, (int, float)) or time.time() - cached_at >= ttl:
+        return None
+    value = entry.get("value")
+    return value if isinstance(value, dict) else None
+
+
+def _set_nexstream_cache(key: str, value: dict) -> None:
+    _NEXSTREAM_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _NEXSTREAM_CACHE_LOCK:
+        cache = _read_nexstream_cache()
+        now = time.time()
+        # Keep the persistent cache bounded and discard old/expired records.
+        cache = {
+            cache_key: entry
+            for cache_key, entry in cache.items()
+            if isinstance(entry, dict)
+            and isinstance(entry.get("cachedAt"), (int, float))
+            and now - entry["cachedAt"] < _NEXSTREAM_SEARCH_CACHE_TTL
+        }
+        cache[key] = {"cachedAt": now, "value": value}
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=str(_NEXSTREAM_CACHE_PATH.parent),
+                prefix="nexstream-cache-",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary_path = Path(handle.name)
+                json.dump(cache, handle, ensure_ascii=False, separators=(",", ":"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, _NEXSTREAM_CACHE_PATH)
+        finally:
+            if temporary_path is not None and temporary_path.exists():
+                try:
+                    temporary_path.unlink()
+                except OSError:
+                    pass
 
 
 def _env_values(*names: str) -> list[str]:
@@ -41,6 +107,12 @@ async def search_titles(
         )
 
     endpoint = "movie" if media_type == "movie" else "tv"
+    normalized_query = " ".join(query.split()).casefold()
+    cache_key = f"search:{media_type}:{normalized_query}"
+    cached = _get_nexstream_cache(cache_key, _NEXSTREAM_SEARCH_CACHE_TTL)
+    if cached is not None:
+        return cached
+
     params = {"query": query.strip(), "include_adult": "false", "page": "1"}
     payload = None
     last_status = None
@@ -105,7 +177,9 @@ async def search_titles(
             "poster": f"https://image.tmdb.org/t/p/w185{item['poster_path']}" if item.get("poster_path") else None,
             "type": media_type,
         })
-    return {"success": True, "type": media_type, "results": results}
+    result = {"success": True, "type": media_type, "results": results}
+    _set_nexstream_cache(cache_key, result)
+    return result
 
 
 @router.get("/api/nexstream/episodes")
@@ -188,6 +262,11 @@ async def resolve_nexstream(
             detail="NEXSTREAM_API_KEY is not configured on the server.",
         )
 
+    cache_key = f"resolve:{media_type}:{tmdb_id}:{season or 0}:{episode or 0}"
+    cached = _get_nexstream_cache(cache_key, _NEXSTREAM_RESOLVE_CACHE_TTL)
+    if cached is not None:
+        return cached
+
     if media_type == "tv":
         if season is None or episode is None:
             raise HTTPException(
@@ -251,7 +330,7 @@ async def resolve_nexstream(
             detail="NexStream returned no supported EmbedMaster player source.",
         )
 
-    return {
+    result = {
         "success": True,
         "type": media_type,
         "tmdbId": str(tmdb_id),
@@ -260,3 +339,5 @@ async def resolve_nexstream(
         "meta": payload.get("meta") if isinstance(payload.get("meta"), dict) else {},
         "sources": safe_sources,
     }
+    _set_nexstream_cache(cache_key, result)
+    return result
