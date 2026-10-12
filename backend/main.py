@@ -7562,7 +7562,14 @@ def _load_persistent_tv_catalogue(cache: dict[str, Any], path: Path) -> dict[str
     try:
         with path.open("r", encoding="utf-8") as handle:
             payload = json.load(handle)
-        if isinstance(payload, dict) and isinstance(payload.get("results"), list) and payload["results"]:
+        if (
+            isinstance(payload, dict)
+            and isinstance(payload.get("results"), list)
+            and payload["results"]
+            # Provider enrichment was added after the original permanent cache.
+            # Rebuild older cache files once so cards gain streaming-service data.
+            and all(isinstance(item, dict) and isinstance(item.get("streamingProviders"), list) for item in payload["results"])
+        ):
             cache.update({"expiresAt": float("inf"), "payload": payload})
             logger.info("Loaded persistent TV catalogue cache %s (%d titles)", path.name, len(payload["results"]))
             return payload
@@ -7584,6 +7591,47 @@ def _save_persistent_tv_catalogue(path: Path, payload: dict[str, Any]) -> None:
         logger.info("Saved persistent TV catalogue cache %s (%d titles)", path.name, len(payload.get("results") or []))
     except OSError as exc:
         logger.warning("Could not persist TV catalogue cache %s: %s", path, exc)
+
+
+async def _tv_streaming_providers(tmdb_id: int) -> list[dict[str, Any]]:
+    """Resolve India streaming/rent/buy providers for one TMDB TV series."""
+    try:
+        payload = await _tmdb_get_json(f"tv/{tmdb_id}/watch/providers", {})
+    except Exception as exc:
+        logger.info("TMDB TV provider lookup failed for %s: %s", tmdb_id, exc)
+        return []
+    region = (payload.get("results") or {}).get("IN") or {}
+    providers: list[dict[str, Any]] = []
+    seen: set[tuple[int | None, str]] = set()
+    for category, kind in (
+        ("flatrate", "subscription"),
+        ("free", "free"),
+        ("ads", "ads"),
+        ("rent", "rent"),
+        ("buy", "buy"),
+    ):
+        for item in region.get(category) or []:
+            name = str(item.get("provider_name") or "").strip()
+            if not name:
+                continue
+            try:
+                provider_id = int(item.get("provider_id")) if item.get("provider_id") is not None else None
+            except (TypeError, ValueError):
+                provider_id = None
+            identity = (provider_id, name.casefold())
+            if identity in seen:
+                continue
+            seen.add(identity)
+            logo_path = str(item.get("logo_path") or "").strip()
+            providers.append({
+                "providerId": provider_id,
+                "name": name,
+                "type": kind,
+                "region": "IN",
+                "logoUrl": "https://image.tmdb.org/t/p/w92" + logo_path if logo_path else "",
+                "webUrl": str(region.get("link") or ""),
+            })
+    return providers
 
 
 @app.get("/api/tv/catalogue/marvel")
@@ -7608,6 +7656,8 @@ async def api_tmdb_marvel_tv_catalogue(page: int = Query(1, ge=1, le=500)):
             "backdropUrl": "",
             "rating": 0.0,
             "tmdbUrl": "",
+            "streamingProviders": [],
+            "providerLink": "",
             "source": "Curated Marvel series list",
         }
         async with semaphore:
@@ -7647,6 +7697,8 @@ async def api_tmdb_marvel_tv_catalogue(page: int = Query(1, ge=1, le=500)):
                 "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop_path if backdrop_path else "",
                 "rating": float(item.get("vote_average") or 0),
                 "tmdbUrl": f"https://www.themoviedb.org/tv/{tmdb_id}",
+                "streamingProviders": await _tv_streaming_providers(tmdb_id),
+                "providerLink": "",
                 "source": "TMDB",
             }
 
@@ -7674,7 +7726,7 @@ async def api_tmdb_dc_live_action_tv_catalogue(page: int = Query(1, ge=1, le=500
         raise HTTPException(status_code=503, detail="TMDB credentials are not configured.")
     semaphore = asyncio.Semaphore(3)
     async def resolve_series(title: str, year: int) -> dict[str, Any]:
-        fallback = {"id": f"dc-tv:{re.sub(r'[^a-z0-9]+', '-', title.casefold()).strip('-')}:{year}", "title": title, "year": year, "releaseDate": str(year), "overview": "", "posterUrl": "", "backdropUrl": "", "rating": 0.0, "tmdbUrl": "", "source": "Curated DC live-action series list"}
+        fallback = {"id": f"dc-tv:{re.sub(r'[^a-z0-9]+', '-', title.casefold()).strip('-')}:{year}", "title": title, "year": year, "releaseDate": str(year), "overview": "", "posterUrl": "", "backdropUrl": "", "rating": 0.0, "tmdbUrl": "", "streamingProviders": [], "providerLink": "", "source": "Curated DC live-action series list"}
         async with semaphore:
             try:
                 payload = await _tmdb_get_json("search/tv", {"query": title, "first_air_date_year": year, "include_adult": "false", "language": "en-US", "page": 1})
@@ -7691,7 +7743,7 @@ async def api_tmdb_dc_live_action_tv_catalogue(page: int = Query(1, ge=1, le=500
             poster_path = str(item.get("poster_path") or "").strip()
             backdrop_path = str(item.get("backdrop_path") or "").strip()
             tmdb_id = int(item["id"])
-            return {"id": tmdb_id, "title": title, "year": int(year_match.group(1)) if year_match else year, "releaseDate": air_date, "overview": str(item.get("overview") or "").strip(), "posterUrl": TMDB_IMAGE_BASE + poster_path if poster_path else "", "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop_path if backdrop_path else "", "rating": float(item.get("vote_average") or 0), "tmdbUrl": f"https://www.themoviedb.org/tv/{tmdb_id}", "source": "TMDB"}
+            return {"id": tmdb_id, "title": title, "year": int(year_match.group(1)) if year_match else year, "releaseDate": air_date, "overview": str(item.get("overview") or "").strip(), "posterUrl": TMDB_IMAGE_BASE + poster_path if poster_path else "", "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop_path if backdrop_path else "", "rating": float(item.get("vote_average") or 0), "tmdbUrl": f"https://www.themoviedb.org/tv/{tmdb_id}", "streamingProviders": await _tv_streaming_providers(tmdb_id), "providerLink": "", "source": "TMDB"}
     results = await asyncio.gather(*(resolve_series(title, year) for title, year in DC_WEB_SERIES))
     result = {"catalogue": "dc-live-action-web-series", "page": 1, "totalPages": 1, "totalResults": len(results), "provider": "TMDB + curated DC live-action series list", "results": results}
     _DC_TV_CATALOGUE_CACHE.update({"expiresAt": float("inf"), "payload": result})
