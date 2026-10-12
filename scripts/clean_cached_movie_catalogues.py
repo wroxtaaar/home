@@ -178,6 +178,20 @@ def main() -> None:
             summary["backups"].append(str(backup_path))
             atomic_write(path, payload)
             backup = str(backup_path)
+            # Prune older rollback points only after the replacement catalogue
+            # has been written successfully.
+            for old_backup in sorted(
+                path.parent.glob(path.name + ".maintenance-backup-*"),
+                key=lambda item: (item.stat().st_mtime, item.name),
+                reverse=True,
+            )[1:]:
+                try:
+                    old_backup.unlink()
+                except OSError as exc:
+                    print(
+                        f"WARNING: could not remove old backup {old_backup}: {exc}",
+                        flush=True,
+                    )
 
         summary["catalogues"][filename] = {
             "status": "updated" if changed else "already_clean",
