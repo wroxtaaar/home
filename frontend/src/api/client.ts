@@ -111,6 +111,7 @@ export interface MovieCataloguePage {
   releasedOnly?: boolean;
   results: MovieCatalogueItem[];
   attribution?: string;
+  maxSizeGb?: number;
 }
 
 
