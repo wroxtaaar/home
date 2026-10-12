@@ -903,9 +903,14 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         .trim();
       if (!clean) return;
 
-      const yearMatch = clean.match(/\b((?:19|20)\d{2})\b/);
-      const inferredYear = year || yearMatch?.[1] || '';
-      const titleOnly = clean.replace(/\s*\b((?:19|20)\d{2})\b.*$/i, '').trim() || clean;
+      const yearMatches = [...clean.matchAll(/\b((?:19|20)\d{2})\b/g)];
+      const trailingYear = yearMatches[yearMatches.length - 1];
+      const inferredYear = year || trailingYear?.[1] || '';
+      // Keep years that are part of a title (e.g. Wonder Woman 1984). Strip a
+      // year from the query only when it matches the separately known release year.
+      const titleOnly = trailingYear && trailingYear[1] === inferredYear
+        ? clean.slice(0, trailingYear.index).trim() || clean
+        : clean;
 
       const params = new URLSearchParams({ title: titleOnly });
       if (inferredYear) params.set('year', inferredYear);
@@ -3841,19 +3846,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             }}
                             onError={event => {
                               const image = event.currentTarget;
-                              const fallbackUrl = String(mediaMetadata?.posterUrl || '').trim();
-                              // If the shared poster resolver URL fails, give the already-cached
-                              // catalogue image URL one chance before scheduling another resolve.
-                              if (
-                                fallbackUrl &&
-                                fallbackUrl !== compactPosterUrl &&
-                                image.dataset.fallbackAttempted !== 'true'
-                              ) {
-                                image.dataset.fallbackAttempted = 'true';
-                                image.src = fallbackUrl;
-                                return;
-                              }
-
+                              // Do not fall back to catalogue artwork here: metadata sources can
+                              // attach a poster for a different title/remake. Retry the strict
+                              // title-and-year resolver instead.
                               const key = posterKeyFor(posterResult);
                               if (canonicalPosterUrl && compactPosterUrl === canonicalPosterUrl) {
                                 posterMetadataFailedRef.current.add(key);
