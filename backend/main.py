@@ -9593,6 +9593,44 @@ async def api_search_metadata_batch(
 async def api_search(q: str = Query(..., min_length=1), limit: int = Query(50, ge=1, le=50)):
     return await search_1337x(q, limit)
 
+REGIONAL_MOVIE_PREBUILT_CACHE_PATH = Path(os.getenv("REGIONAL_MOVIE_PREBUILT_CACHE_PATH", "/app/data/regional_movie_prebuilt_cache.json"))
+
+
+@app.get("/api/regional-movies/prebuilt")
+async def api_regional_movie_prebuilt(
+    title: str = Query(..., min_length=1, max_length=200),
+    year: str = Query("", max_length=4),
+):
+    """Serve precomputed regional catalogue and torrent details from persistent VPS JSON."""
+    def cache_title_key(value: Any) -> str:
+        return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+
+    try:
+        payload = json.loads(REGIONAL_MOVIE_PREBUILT_CACHE_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"status": "cache_missing", "movie": None, "torrentDetails": None}
+    except Exception as exc:
+        logger.warning("Could not read regional movie cache: %s", exc)
+        return {"status": "cache_unavailable", "movie": None, "torrentDetails": None}
+    movies = payload.get("movies") if isinstance(payload, dict) else {}
+    key = cache_title_key(title) + "|" + str(year or "")
+    entry = (movies or {}).get(key)
+    if not entry and not year:
+        matches = [value for item_key, value in (movies or {}).items()
+                   if item_key.startswith(cache_title_key(title) + "|")]
+        entry = matches[0] if len(matches) == 1 else None
+    if not isinstance(entry, dict):
+        return {"status": "not_cached", "movie": None, "torrentDetails": None,
+                "builtAt": payload.get("builtAt")}
+    return {
+        "status": "ready",
+        "builtAt": payload.get("builtAt"),
+        "movie": entry.get("movie"),
+        "catalogues": entry.get("catalogues", []),
+        "torrentDetails": entry.get("torrentDetails"),
+    }
+
+
 @app.get("/api/health")
 async def api_health():
     return {"name": APP_NAME, "status": "ok"}
