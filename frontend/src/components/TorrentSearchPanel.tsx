@@ -3954,43 +3954,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               : 'No synopsis available from TMDB for this title.')}
                       </p>
 
-                      {!seriesTitle && (
-                        <button
-                          type="button"
-                          disabled={(nexStreamLoading && normalizeGroupTitle(nexStreamLoadingTitle) === normalizeGroupTitle(mediaDisplayTitle || group.title)) || nexStreamResolvingId !== null}
-                          onClick={() => {
-                            if (titleMatches.length > 0) {
-                              void playWithNexStream(titleMatches[0]);
-                            } else {
-                              // Prefer the catalogue's canonical TMDB ID so playback starts
-                              // directly instead of making the user wait for a second click.
-                              const tmdbId = Number(mediaMetadata?.tmdbId || mediaMetadata?.id);
-                              if (Number.isInteger(tmdbId) && tmdbId > 0) {
-                                void playWithNexStream({
-                                  id: tmdbId,
-                                  title: mediaDisplayTitle || group.title,
-                                  date: mediaMetadata?.year || group.year,
-                                  overview: mediaMetadata?.overview || '',
-                                  poster: mediaMetadata?.posterUrl || null,
-                                  type: 'movie',
-                                });
-                              } else {
-                                void searchNexStreamTitles(mediaDisplayTitle || group.title, 'movie');
-                              }
-                            }
-                          }}
-                          className="w-full rounded-lg border border-violet-400/40 bg-violet-500/15 px-2.5 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-60"
-                        >
-                          {nexStreamResolvingId && titleMatches.length > 0
-                            ? 'Opening NexStream…'
-                            : nexStreamLoading && normalizeGroupTitle(nexStreamLoadingTitle) === normalizeGroupTitle(mediaDisplayTitle || group.title)
-                              ? 'Searching NexStream…'
-                              : titleMatches.length > 0
-                                ? 'Play with NexStream'
-                                : 'Find on NexStream'}
-                        </button>
-                      )}
-
                       {compactProviders.length > 0 ? (
                         <div className="flex flex-wrap gap-1" aria-label={'Streaming services for ' + group.title}>
                           {compactProviders.slice(0, 5).map((provider, providerIndex) => {
@@ -4151,12 +4114,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               </button>
                             </div>
 
-                            <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[10px] sm:text-xs">
-                              <span className="font-semibold text-emerald-400">▲ {Number(result.seeders) || 0} seeders</span>
-                              <span className="font-semibold text-amber-400">▼ {Number(result.leechers) || 0} peers</span>
-
-                            </div>
-
                             
 
                             
@@ -4278,10 +4235,41 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       }
 
                       return (
-                        <div className="min-w-0 max-w-full flex flex-wrap items-center justify-end gap-1.5">
+                        <div className="min-w-0 max-w-full flex flex-col items-stretch gap-2">
                           <button
                             type="button"
-                            disabled={!source || isPreparing}
+                            disabled={nexStreamResolvingId !== null || (nexStreamLoading && normalizeGroupTitle(nexStreamLoadingTitle) === normalizeGroupTitle(mediaDisplayTitle || group.title))}
+                            onClick={() => {
+                              if (titleMatches.length > 0) {
+                                void playWithNexStream(titleMatches[0]);
+                                return;
+                              }
+                              const tmdbId = Number(mediaMetadata?.tmdbId || mediaMetadata?.id);
+                              if (Number.isInteger(tmdbId) && tmdbId > 0) {
+                                void playWithNexStream({
+                                  id: tmdbId,
+                                  title: mediaDisplayTitle || group.title,
+                                  date: mediaMetadata?.year || group.year,
+                                  overview: mediaMetadata?.overview || '',
+                                  poster: mediaMetadata?.posterUrl || null,
+                                  type: 'movie',
+                                });
+                              } else {
+                                void searchNexStreamTitles(mediaDisplayTitle || group.title, 'movie');
+                              }
+                            }}
+                            className="w-full rounded-lg border border-violet-400/40 bg-violet-500/15 px-2.5 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-60"
+                          >
+                            {nexStreamResolvingId !== null
+                              ? 'Resolving stream…'
+                              : nexStreamLoading && normalizeGroupTitle(nexStreamLoadingTitle) === normalizeGroupTitle(mediaDisplayTitle || group.title)
+                                ? 'Searching NexStream…'
+                                : 'Direct Stream'}
+                          </button>
+                          <div className="min-w-0 max-w-full flex flex-wrap items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              disabled={!source || isPreparing}
                             onClick={async () => {
                               if (!source || isPreparing) return;
 
