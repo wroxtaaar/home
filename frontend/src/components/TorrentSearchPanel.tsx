@@ -695,6 +695,13 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [selectedMovieTorrentQualityByGroup, setSelectedMovieTorrentQualityByGroup] = useState<Record<string, string>>({});
   const movieTorrentSearchControllerRef = useRef<AbortController | null>(null);
   const movieTorrentSearchGenerationRef = useRef(0);
+  // Keep per-title torrent results and grouped quality variants in memory across
+  // catalogue switches, so reopening a Bollywood/Hollywood movie uses the same
+  // already-resolved details as Marvel instead of repeating provider searches.
+  const movieTorrentDetailsCacheRef = useRef(new Map<string, {
+    groups: TorrentQualityGroup[];
+    savedAt: number;
+  }>());
 
   const [isSearching, setIsSearching] = useState(false);
   const [isPresetCatalogueAction, setIsPresetCatalogueAction] = useState(false);
@@ -2112,6 +2119,24 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     setQuery(titleQuery);
     setSelectedQualityByGroup({});
 
+    const cacheKey = normalizeGroupTitle(movie.title) + '|' + String(movie.year || '');
+    const cachedDetails = movieTorrentDetailsCacheRef.current.get(cacheKey);
+    if (cachedDetails && Date.now() - cachedDetails.savedAt < 6 * 60 * 60 * 1000) {
+      const groups = cachedDetails.groups;
+      if (groups.length === 1) {
+        const group = groups[0];
+        setSelectedMovieTorrentQualityByGroup({ [group.key]: torrentResultKey(group.variants[0]) });
+        setMovieTorrentPreviewGroup(group);
+        startPosterBackgroundSearch(group.variants);
+      } else if (groups.length > 1) {
+        setMovieTorrentPickerGroups(groups);
+      } else {
+        setMovieTorrentSearchError('No usable torrent releases were found for ' + titleQuery + '. Try again later or use a shorter title.');
+      }
+      setMovieTorrentSearchLoading(false);
+      return;
+    }
+
     try {
       let data = await api.searchTorrents(titleQuery, 50, controller.signal);
       if (generation !== movieTorrentSearchGenerationRef.current) return;
@@ -2184,6 +2209,16 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       // than reporting a false "no releases" failure.
       if (groups.length === 0) {
         groups = groupUsableResults(data, false);
+      }
+
+      // Cache the complete grouped release details (quality variants, sources,
+      // seed/leech counts and file sizes) so a later Prepare-card open is instant.
+      // Cache empty results briefly too, avoiding repeated indexer scans for titles
+      // that currently have no usable releases.
+      movieTorrentDetailsCacheRef.current.set(cacheKey, { groups, savedAt: Date.now() });
+      if (movieTorrentDetailsCacheRef.current.size > 250) {
+        const oldestKey = movieTorrentDetailsCacheRef.current.keys().next().value;
+        if (oldestKey) movieTorrentDetailsCacheRef.current.delete(oldestKey);
       }
 
       if (groups.length === 0) {
