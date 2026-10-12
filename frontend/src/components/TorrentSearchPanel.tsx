@@ -2434,9 +2434,27 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               const result = group.variants.find(variant => torrentResultKey(variant) === selectedKey) || group.variants[0];
               const posterResult = group.posterResult;
               const normalizedCardTitle = normalizeGroupTitle(group.title.replace(/\s*\((?:19|20)\d{2}\)\s*$/, ''));
-              const nexStreamMatches = nexStreamResults.filter(item =>
-                normalizeGroupTitle(item.title) === normalizedCardTitle
+              const cardYear = Number((group.title.match(/\b((?:19|20)\d{2})\b/) || [])[1] || group.year || 0);
+              const isTvTorrent = /\bS\d{1,2}E\d{1,2}\b|\bseason\s*\d+\b|\bcomplete\s+season\b|\bseries\s+complete\b/i.test(group.title);
+              const titleMatches = nexStreamResults.filter(item =>
+                normalizeGroupTitle(item.title) === normalizedCardTitle &&
+                (!cardYear || !item.date || Number(String(item.date).slice(0, 4)) === cardYear)
               );
+              // Don't attach TV results to movie torrents (or vice versa), and
+              // collapse duplicate TMDB entries so a card has one clear action.
+              const preferredType = isTvTorrent ? 'tv' : 'movie';
+              const nexStreamMatches = (() => {
+                const preferred = titleMatches.filter(item => item.type === preferredType);
+                const fallback = titleMatches.filter(item => item.type !== preferredType);
+                const chosen = preferred.length ? preferred : fallback;
+                const seen = new Set<string>();
+                return chosen.filter(item => {
+                  const key = item.type + ':' + normalizeGroupTitle(item.title) + ':' + String(item.date || '').slice(0, 4);
+                  if (seen.has(key)) return false;
+                  seen.add(key);
+                  return true;
+                }).slice(0, 1);
+              })();
               return (
               <div
                 key={group.key || (group.title + '-' + index)}
