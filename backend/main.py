@@ -5272,6 +5272,7 @@ _CACHE_SEED_FILES = (
     "latest_bollywood_catalogue.json",
     "latest_hollywood_catalogue.json",
     "marvel_catalogue.json",
+    "marvel_web_series_catalogue.json",
     "marvel_hindi_catalogue.json",
     "bollywood_torrent_matched_catalogue.json",
 )
@@ -5309,6 +5310,7 @@ def _seed_bundled_runtime_caches() -> None:
 def _seed_bundled_catalogue_caches() -> None:
     destinations = {
         "marvel_catalogue.json": MARVEL_CATALOGUE_PATH,
+        "marvel_web_series_catalogue.json": Path(os.getenv("MARVEL_WEB_SERIES_CATALOGUE_PATH", "/app/data/marvel_web_series_catalogue.json")),
         **{config["file"]: _EXTRA_CATALOGUE_PATHS[key] for key, config in _EXTRA_CATALOGUES.items()},
         "bollywood_torrent_matched_catalogue.json": Path(os.getenv(
             "BOLLYWOOD_TORRENT_CATALOGUE_PATH",
