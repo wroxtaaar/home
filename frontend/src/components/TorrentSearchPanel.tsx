@@ -643,6 +643,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const movieTorrentSearchGenerationRef = useRef(0);
 
   const [isSearching, setIsSearching] = useState(false);
+  const [isPresetCatalogueAction, setIsPresetCatalogueAction] = useState(false);
   const [searched, setSearched] = useState(false);
   const [error, setError] = useState('');
   const [catalogueBuildProgress, setCatalogueBuildProgress] = useState('');
@@ -1463,6 +1464,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
   const runSearch = async (event?: React.FormEvent, searchOverride?: string, searchMode?: 'marvel' | 'marvel-hindi' | 'dc-live-action' | 'dc-live-action-hindi' | 'dc-animated' | 'latest-hollywood' | 'latest-bollywood') => {
     event?.preventDefault();
+    setIsPresetCatalogueAction(Boolean(searchMode));
     setIsMarvelEnglishResults(searchMode === 'marvel');
     setIsDcLiveActionEnglishResults(searchMode === 'dc-live-action');
     setShowDcWebSeries(false);
@@ -1480,6 +1482,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     setMovieTorrentPreviewGroup(null);
 
     const trimmed = (searchOverride ?? query).trim();
+    if (!searchMode) setIsPresetCatalogueAction(false);
     if (trimmed.length < 2) {
       setError('Enter at least 2 characters to search.');
       setResults([]);
@@ -2180,6 +2183,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     searchRequestRef.current = controller;
 
     try {
+      setIsPresetCatalogueAction(true);
       setIsSearching(true);
       setCatalogueBuildProgress('Loading the ' + searchText.replace(/Movies?$/i, '').trim() + ' movie catalogue…');
       setMovieCatalogueSearchText(searchText);
@@ -2792,7 +2796,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         </div>
       </div>
 
-      {isSearching && (
+      {isSearching && !isPresetCatalogueAction && (
         <div className="p-5 sm:p-7 rounded-xl sm:rounded-2xl bg-slate-900 border border-slate-800 flex flex-col items-center justify-center gap-3">
           <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
           <div className="text-sm font-semibold text-slate-200">{catalogueBuildProgress ? 'Loading movie catalogue...' : 'Searching torrents...'}</div>
