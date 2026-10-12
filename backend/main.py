@@ -7355,6 +7355,14 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_on
     if released_only:
         params["release_date.lte"] = today
 
+    regional_modes = {
+        "popular-bollywood": ("hi", "popular"),
+        "trending-bollywood": ("hi", "trending"),
+        "latest-bollywood": ("hi", "latest"),
+        "popular-hollywood": ("en", "popular"),
+        "trending-hollywood": ("en", "trending"),
+        "latest-hollywood": ("en", "latest"),
+    }
     if catalogue_key in {"marvel", "dc-live-action", "dc-animated"}:
         franchise = "marvel" if catalogue_key == "marvel" else "dc"
         company_ids = await _tmdb_discovered_company_ids(franchise)
@@ -7363,14 +7371,35 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_on
             params["with_genres"] = "16"
         elif catalogue_key == "dc-live-action":
             params["without_genres"] = "16"
+        payload = await _tmdb_get_json("discover/movie", params)
+    elif catalogue_key in regional_modes:
+        language_code, mode = regional_modes[catalogue_key]
+        if mode == "trending":
+            # TMDB's trending feed uses a different ranking signal from Popular.
+            # Filter the feed by original language so the two menus stay distinct.
+            payload = await _tmdb_get_json("trending/movie/week", {
+                "language": "en-US",
+                "page": page,
+                "include_adult": "false",
+            })
+        else:
+            params["with_original_language"] = language_code
+            params["sort_by"] = "popularity.desc" if mode == "popular" else "primary_release_date.desc"
+            if mode == "latest":
+                # Limit "latest" to recent release dates, avoiding an endless
+                # catalogue of old titles with incomplete dates.
+                params["primary_release_date.gte"] = (datetime.now(timezone.utc).date().replace(year=max(1900, datetime.now(timezone.utc).year - 2))).isoformat()
+            payload = await _tmdb_get_json("discover/movie", params)
     else:
         raise HTTPException(status_code=404, detail="Unknown movie catalogue.")
 
-    payload = await _tmdb_get_json("discover/movie", params)
     raw_results = payload.get("results") or []
     results: list[dict[str, Any]] = []
+    regional = regional_modes.get(catalogue_key)
     for item in raw_results:
         if not isinstance(item, dict):
+            continue
+        if regional and str(item.get("original_language") or "").lower() != regional[0]:
             continue
         title = str(item.get("title") or item.get("original_title") or "").strip()
         if not title:
@@ -7406,7 +7435,6 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_on
         "results": results,
         "attribution": "This product uses the TMDB API but is not endorsed or certified by TMDB.",
     }
-
 
 MARVEL_WEB_SERIES: tuple[tuple[str, int], ...] = (
     ("WandaVision", 2021), ("The Falcon and the Winter Soldier", 2021), ("Loki", 2021),
@@ -7770,7 +7798,11 @@ async def api_tmdb_movie_catalogue(
     released_only: bool = Query(True),
     max_size_gb: int = Query(5, ge=1, le=5),
 ):
-    allowed = {"marvel", "dc-live-action", "dc-animated"}
+    allowed = {
+        "marvel", "dc-live-action", "dc-animated",
+        "popular-bollywood", "trending-bollywood", "latest-bollywood",
+        "popular-hollywood", "trending-hollywood", "latest-hollywood",
+    }
     if catalogue_key not in allowed:
         raise HTTPException(status_code=404, detail="Unknown movie catalogue.")
 
