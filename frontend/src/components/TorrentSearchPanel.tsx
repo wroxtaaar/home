@@ -900,7 +900,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     try {
       const parsed = new URL(url, window.location.origin);
       if (parsed.hostname !== 'image.tmdb.org') return url;
-      parsed.pathname = parsed.pathname.replace(/\\/t\\/p\\/(?:original|w780|w500|w185|w342|w300|w200|w154|w92)\\//, '/t/p/' + size + '/');
+      parsed.pathname = parsed.pathname.replace(/\/t\/p\/(?:original|w780|w500|w185|w342|w300|w200|w154|w92)\//, '/t/p/' + size + '/');
       return parsed.toString();
     } catch {
       return url;
