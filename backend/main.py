@@ -12950,7 +12950,7 @@ async def search_episode_release(
         raise HTTPException(status_code=502, detail="Episode release search temporarily failed")
 
     token = re.compile(rf"(?i)(?<![A-Z0-9])S{season:02d}E{episode:02d}(?![0-9])")
-    rejected_pack = re.compile(r"(?i)\\b(complete series|season pack|all seasons|complete season)\\b")
+    rejected_pack = re.compile(r"(?i)\b(complete series|season pack|all seasons|complete season)\b")
     results = []
     seen = set()
     for item in candidates if isinstance(candidates, list) else []:
