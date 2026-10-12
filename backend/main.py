@@ -6326,8 +6326,6 @@ async def _build_extra_catalogue(key: str) -> None:
                             timeout=14,
                         ),
                     ]
-                    if key == "latest-hollywood":
-                        calls.append(asyncio.wait_for(search_yts_movies(query, limit=20), timeout=12))
                     searched = await asyncio.gather(*calls, return_exceptions=True)
                     items = []
                     for value in searched:
@@ -7893,9 +7891,6 @@ async def api_tmdb_movie_catalogue(
     max_size_gb: int = Query(5, ge=1, le=5),
 ):
     allowed = {
-        "latest-hollywood", "latest-bollywood",
-        "popular-hollywood", "popular-bollywood",
-        "trending-hollywood", "trending-bollywood",
         "marvel", "dc-live-action", "dc-animated", "bollywood-library",
     }
     if catalogue_key not in allowed:
