@@ -3793,10 +3793,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   [imdbDisplayTitle || mediaDisplayTitle, imdbDisplayYear].filter(Boolean).join(' ')
                 ));
               const groupPosterKey = posterKeyFor(posterResult);
-              const canonicalPosterUrl = String(mediaMetadata?.posterUrl || '').trim();
-              const resolvedPosterUrl = posterMetadataFailedRef.current.has(groupPosterKey)
-                ? (posterOverrides[groupPosterKey] || rawPosterUrlFor(posterResult) || '')
-                : (canonicalPosterUrl || posterOverrides[groupPosterKey] || rawPosterUrlFor(posterResult) || '');
+              // Never trust an unrelated catalogue/indexer poster. Use only the
+              // title-and-year resolver result, which validates exact title matches.
+              const resolvedPosterUrl = posterOverrides[groupPosterKey] || '';
 
               // Normal searches use a poster-first two-state card. Clicking the poster
               // opens the Prepare/details card; clicking it again returns here.
