@@ -1966,6 +1966,14 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   >
                     <Maximize2 className="h-3.5 w-3.5" /> Full screen
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => window.open(nexStreamPlayer.url, '_blank', 'noopener,noreferrer')}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 px-2.5 py-1.5 text-[11px] font-semibold text-slate-300 hover:bg-slate-800"
+                    title="Open the provider player directly in a new tab"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" /> Open separately
+                  </button>
                   <button type="button" onClick={() => setNexStreamPlayer(null)} className="rounded-lg border border-slate-700 px-2.5 py-1.5 text-[11px] font-semibold text-slate-300 hover:bg-slate-800">Close player</button>
                 </div>
               </div>
