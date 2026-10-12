@@ -2444,7 +2444,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             <input
               value={query}
               onFocus={() => {
-                if (!searched && recentSearches.length > 0) setShowRecentSearches(true);
+                if (recentSearches.length > 0) setShowRecentSearches(true);
               }}
               onChange={(e) => {
                 setQuery(e.target.value);
@@ -3467,7 +3467,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
 
           <div
-            className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:rounded-2xl lg:border-0 lg:bg-transparent lg:gap-4 lg:w-full lg:max-w-none lg:mx-0 lg:p-0 lg:divide-y-0 lg:overflow-visible"
+            className="grid grid-cols-2 items-start gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:rounded-2xl lg:border-0 lg:bg-transparent lg:gap-4 lg:w-full lg:max-w-none lg:mx-0 lg:p-0 lg:divide-y-0 lg:overflow-visible"
           >
             {groupedResults.map((group, index) => {
               const selectedKey = selectedQualityByGroup[group.key];
@@ -3823,14 +3823,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               ) : null}
                             </div>
 
-                            <p className="mt-2 line-clamp-3 text-[10px] leading-relaxed text-slate-400">
-                              {mediaMetadata?.overview ||
-                                (searchMetadataStatus === 'loading'
-                                  ? 'Loading synopsis from TMDB…'
-                                  : searchMetadataStatus === 'unavailable'
-                                    ? 'TMDB synopsis is temporarily unavailable.'
-                                    : 'No synopsis available from TMDB for this title.')}
-                            </p>
+                            
 
                             {(() => {
                               const availability = searchAvailabilityByGroup[group.key];
