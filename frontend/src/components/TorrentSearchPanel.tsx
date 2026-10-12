@@ -21,6 +21,71 @@ import searchLimits from '../../search_limits.json';
 
 type MovieOttCardState = MovieOttAvailability | { status: 'loading' | 'error'; message?: string };
 
+type NexStreamEpisode = { episodeNumber: number; name: string; overview: string; airDate: string; still: string | null };
+type NexStreamSeason = { seasonNumber: number; name: string; episodeCount: number };
+type NexStreamEpisodePayload = { seasons: NexStreamSeason[]; episodes: NexStreamEpisode[]; selectedSeason: number };
+
+// Episode metadata is prefetched after TV search results appear. Keep it in a
+// module cache so opening the picker and revisiting a title is usually instant.
+const nexStreamEpisodeCache = new Map<string, NexStreamEpisodePayload>();
+const nexStreamEpisodeRequests = new Map<string, Promise<NexStreamEpisodePayload>>();
+const nexStreamEpisodeCacheKey = (id: number, season: number) => String(id) + ':' + String(season);
+
+async function fetchNexStreamEpisodeMetadata(tmdbId: number, season: number): Promise<NexStreamEpisodePayload> {
+  const key = nexStreamEpisodeCacheKey(tmdbId, season);
+  const cached = nexStreamEpisodeCache.get(key);
+  if (cached) return cached;
+  const pending = nexStreamEpisodeRequests.get(key);
+  if (pending) return pending;
+
+  const request = (async () => {
+    const params = new URLSearchParams({ tmdb_id: String(tmdbId), season: String(season) });
+    const response = await fetch('/api/nexstream/episodes?' + params.toString(), {
+      headers: { Accept: 'application/json' }, credentials: 'same-origin',
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.success) throw new Error(data.detail || 'Could not load episode list.');
+    const payload: NexStreamEpisodePayload = {
+      seasons: Array.isArray(data.seasons) ? data.seasons : [],
+      episodes: Array.isArray(data.episodes) ? data.episodes : [],
+      selectedSeason: Number(data.selectedSeason) || season,
+    };
+    // The endpoint may select a different valid season if season 1 is absent.
+    nexStreamEpisodeCache.set(nexStreamEpisodeCacheKey(tmdbId, payload.selectedSeason), payload);
+    nexStreamEpisodeCache.set(key, payload);
+    return payload;
+  })();
+  nexStreamEpisodeRequests.set(key, request);
+  try {
+    return await request;
+  } finally {
+    nexStreamEpisodeRequests.delete(key);
+  }
+}
+
+function prefetchNexStreamEpisodeMetadata(items: NexStreamTitleLike[]) {
+  const queue = items.slice();
+  let active = 0;
+  const pump = () => {
+    while (active < 3 && queue.length) {
+      const item = queue.shift();
+      if (!item) continue;
+      const key = nexStreamEpisodeCacheKey(item.id, 1);
+      if (nexStreamEpisodeCache.has(key) || nexStreamEpisodeRequests.has(key)) continue;
+      active += 1;
+      void fetchNexStreamEpisodeMetadata(item.id, 1).catch(() => {
+        // A failed background prefetch must not hide the results; retry on click.
+      }).finally(() => {
+        active -= 1;
+        pump();
+      });
+    }
+  };
+  pump();
+}
+
+type NexStreamTitleLike = { id: number; type: 'movie' | 'tv' };
+
 function isPresetSearchLabel(value: string): boolean {
   const normalized = String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
   return new Set([
@@ -944,7 +1009,12 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       for (const item of successfulResults) {
         unique.set(item.type + ':' + item.id, item);
       }
-      setNexStreamResults(Array.from(unique.values()));
+      const resolvedTitles = Array.from(unique.values());
+      setNexStreamResults(resolvedTitles);
+      // Fetch episode lists and thumbnails in the background, without delaying
+      // the result cards. The first few TV cards are ready by the time a user
+      // opens the episode picker; remaining cards are prefetched with 3 workers.
+      if (mediaType === 'tv') prefetchNexStreamEpisodeMetadata(resolvedTitles);
       if (failedSearches.length === types.length) {
         const firstFailure = failedSearches[0] as PromiseRejectedResult;
         throw firstFailure.reason instanceof Error ? firstFailure.reason : new Error('TMDB title search failed.');
@@ -967,18 +1037,23 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [nexStreamEpisodesError, setNexStreamEpisodesError] = useState('');
 
   const loadNexStreamEpisodes = async (item: NexStreamTitle, season: number) => {
+    const cached = nexStreamEpisodeCache.get(nexStreamEpisodeCacheKey(item.id, season));
+    if (cached) {
+      setNexStreamSeasons(cached.seasons);
+      setNexStreamEpisodes(cached.episodes);
+      setNexStreamSelectedSeason(cached.selectedSeason);
+      setNexStreamEpisodesError('');
+      setNexStreamEpisodesLoading(false);
+      return;
+    }
+
     setNexStreamEpisodesLoading(true);
     setNexStreamEpisodesError('');
     try {
-      const params = new URLSearchParams({ tmdb_id: String(item.id), season: String(season) });
-      const response = await fetch('/api/nexstream/episodes?' + params.toString(), {
-        headers: { Accept: 'application/json' }, credentials: 'same-origin',
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data.success) throw new Error(data.detail || 'Could not load episode list.');
-      setNexStreamSeasons(Array.isArray(data.seasons) ? data.seasons : []);
-      setNexStreamEpisodes(Array.isArray(data.episodes) ? data.episodes : []);
-      setNexStreamSelectedSeason(Number(data.selectedSeason) || season);
+      const data = await fetchNexStreamEpisodeMetadata(item.id, season);
+      setNexStreamSeasons(data.seasons);
+      setNexStreamEpisodes(data.episodes);
+      setNexStreamSelectedSeason(data.selectedSeason);
     } catch (error: any) {
       setNexStreamEpisodesError(String(error?.message || 'Could not load episode list.'));
       setNexStreamEpisodes([]);
