@@ -31,6 +31,65 @@ type NexStreamEpisodePayload = { seasons: NexStreamSeason[]; episodes: NexStream
 const nexStreamEpisodeCache = new Map<string, NexStreamEpisodePayload>();
 const nexStreamEpisodeRequests = new Map<string, Promise<NexStreamEpisodePayload>>();
 const nexStreamEpisodeCacheKey = (id: number, season: number) => String(id) + ':' + String(season);
+const POSTER_TITLE_CACHE_STORAGE_KEY = 'home_poster_title_cache_v1';
+const POSTER_TITLE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+type CachedTitlePoster = { url: string; expiresAt: number };
+const posterByTitleCache = new Map<string, CachedTitlePoster>();
+
+function normalizePosterTitle(value: unknown): string {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/\\.[a-z0-9]{2,5}$/i, '')
+    .replace(/[._]+/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\\s+/g, ' ')
+    .trim();
+}
+
+function posterTitleCacheKeys(result: TorrentSearchResult): string[] {
+  const title = normalizePosterTitle(result.mediaTitle || result.title);
+  if (!title) return [];
+  const rawYear = String(result.year || (String(result.title || '').match(/\\b((?:19|20)\\d{2})\\b/) || [])[1] || '').trim();
+  const year = /^\\d{4}$/.test(rawYear) ? rawYear : '';
+  return year ? [title + '|' + year, title + '|'] : [title + '|'];
+}
+
+function readPosterTitleCache(): void {
+  try {
+    const raw = localStorage.getItem(POSTER_TITLE_CACHE_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== 'object') return;
+    const now = Date.now();
+    for (const [key, value] of Object.entries(parsed as Record<string, CachedTitlePoster>)) {
+      if (value && typeof value.url === 'string' && value.url && Number(value.expiresAt) > now) {
+        posterByTitleCache.set(key, { url: value.url, expiresAt: Number(value.expiresAt) });
+      }
+    }
+  } catch {}
+}
+
+function savePosterTitleCache(key: string, url: string): void {
+  if (!key || !url) return;
+  posterByTitleCache.set(key, { url, expiresAt: Date.now() + POSTER_TITLE_CACHE_TTL_MS });
+  try {
+    const now = Date.now();
+    const entries = Array.from(posterByTitleCache.entries())
+      .filter(([, value]) => value.expiresAt > now)
+      .slice(-500);
+    localStorage.setItem(POSTER_TITLE_CACHE_STORAGE_KEY, JSON.stringify(Object.fromEntries(entries)));
+  } catch {}
+}
+
+function cachedPosterForTitle(result: TorrentSearchResult): string {
+  const now = Date.now();
+  for (const key of posterTitleCacheKeys(result)) {
+    const cached = posterByTitleCache.get(key);
+    if (cached && cached.expiresAt > now) return cached.url;
+    if (cached) posterByTitleCache.delete(key);
+  }
+  return '';
+}
+
 
 async function fetchNexStreamEpisodeMetadata(tmdbId: number, season: number): Promise<NexStreamEpisodePayload> {
   const key = nexStreamEpisodeCacheKey(tmdbId, season);
@@ -840,6 +899,11 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   // Results are queued in seed order, but only two background resolutions run
   // at once so this never becomes a search bottleneck.
   const [posterOverrides, setPosterOverrides] = useState<Record<string, string>>({});
+  const posterTitleCacheLoadedRef = useRef(false);
+  if (!posterTitleCacheLoadedRef.current) {
+    readPosterTitleCache();
+    posterTitleCacheLoadedRef.current = true;
+  }
   const posterLoadedRef = useRef(new Set<string>());
   const posterMetadataFailedRef = useRef(new Set<string>());
   const posterBackgroundQueueRef = useRef<Array<{ key: string; result: TorrentSearchResult }>>([]);
@@ -1054,6 +1118,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
             const resolved = await resolvePosterInBackground(candidate, generation);
             if (resolved) {
+              for (const titleCacheKey of posterTitleCacheKeys(job.result)) {
+                savePosterTitleCache(titleCacheKey, resolved);
+              }
               setPosterOverrides(prev => (
                 prev[key] === resolved ? prev : { ...prev, [key]: resolved }
               ));
@@ -1103,6 +1170,15 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     for (const result of items) {
       const key = posterKeyFor(result);
       if (!key || posterBackgroundQueuedRef.current.has(key)) continue;
+
+      // Reuse title/year artwork across different torrent releases and searches.
+      const cachedPoster = cachedPosterForTitle(result);
+      if (cachedPoster) {
+        setPosterOverrides(prev => (
+          prev[key] === cachedPoster ? prev : { ...prev, [key]: cachedPoster }
+        ));
+        continue;
+      }
 
       posterBackgroundQueuedRef.current.add(key);
       posterBackgroundQueueRef.current.push({ key, result });
