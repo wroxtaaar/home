@@ -36,28 +36,27 @@ DEFAULT_QUERIES = [
 ]
 log = logging.getLogger("home-catalogue-builder")
 PACK_OR_NOISE = re.compile(
-    r"(?i)\b(collection|complete collection|movie pack|movies pack|all movies|"
+    r"(?i)\\b(collection|complete collection|movie pack|movies pack|mega pack|pack of movies|all movies|"
     r"filmography|discography|soundtrack|ost|songs|music album|mp3|flac|audio songs|"
-    r"full album|jukebox|best of|vol(?:ume)?\s*\d|season pack|episodes pack|"
+    r"full album|jukebox|best of|vol(?:ume)?\\s*\\d|season pack|episodes pack|"
     r"complete season|complete series|all episodes|xxx|porn|adult pack|uncensored|"
-    r"erotic|hot scene|web series pack)\b"
+    r"erotic|hot scene|web series pack)\\b"
 )
-# Broad category searches often return editorial/listing pages rather than individual films.
-# Keep these phrase-level checks specific so legitimate titles containing words like "best"
-# or "latest" are not rejected on those words alone.
 EDITORIAL_NOISE = re.compile(
-    r"(?i)(?:\b(?:top|best)\s+\d{1,2}\b|"
-    r"\b(?:latest|newest)\s+(?:bollywood|hollywood|hindi|movies|films)\b|"
-    r"\b(?:bollywood|hollywood|hindi)\s+movies?\s+(?:in\s+hindi|of\s+\d{4}|"
-    r"in\s+best\s+quality|available|download)\b|"
-    r"\b(?:hand[ -]?picked|best quality available|prints available|full movie collection|"
-    r"movie review|movie trailer|list of movies|movies list|actress|wet compilation)\b|"
-    r"\b(?:from|of)\s+(?:the\s+)?(?:bollywood|hollywood)\s+movies?\b)"
+    r"(?i)(?:^\\s*\\d+\\s+(?:best|top|latest|newest)\\b|"
+    r"\\b(?:top|best)\\s+\\d{1,2}\\b|"
+    r"\\b(?:latest|newest)\\s+(?:bollywood|hollywood|hindi|movies|films)\\b|"
+    r"\\b(?:bollywood|hollywood|hindi)\\s+movies?\\s+(?:in\\s+hindi|of\\s+\\d{4}|"
+    r"in\\s+best\\s+quality|available|download)\\b|"
+    r"\\b(?:hand[ -]?picked|best quality available|prints available|full movie collection|"
+    r"movie review|movie trailer|list of movies|movies list|actress|wet compilation)\\b|"
+    r"\\b(?:from|of)\\s+(?:the\\s+)?(?:bollywood|hollywood)\\s+movies?\\b|"
+    r"\\b(?:webhd|mega\\s+pack|avc|aac)\\b)"
 )
 GENERIC_SCRAPER_QUERIES = {"movie", "movies", "film", "films", "tv", "series", "show", "shows", "anime"}
 RELEASE_TAIL = re.compile(r"(?i)(?:\s*[-|]\s*)?(?:yify|yts|rarbg|tgx|ettv|etrg|psa|mkvhub|world4ufree|mkvcinemas|katmoviehd|torrentgalaxy).*$")
 QUALITY_TAGS = re.compile(
-    r"(?i)\b(2160p|1080p|720p|480p|4k|uhd|web[- .]?dl|webrip|bluray|brrip|"
+    r"(?i)\b(2160p|1080p|720p|480p|4k|uhd|web[- .]?dl|webhd|webrip|bluray|brrip|"
     r"hdrip|x264|x265|hevc|h264|h265|proper|repack|yify|yts|10bit|8bit)\b"
 )
 
@@ -364,6 +363,33 @@ async def build_catalogue(queries: list[str], max_titles: int, per_query: int) -
                 log.debug("No confident TMDB match for scraper title %r (year=%s, query=%r)", title, year or "unknown", source_query)
 
     await asyncio.gather(*(resolve(item) for item in selected))
+
+    # If scraping yielded no confident new TMDB IDs, spend unused capacity on
+    # canonical TMDB discovery pages instead of returning an artificially small
+    # catalogue (e.g. 13 rows when cap=20).
+    if len(output_by_id) < cap:
+        for query in queries:
+            if len(output_by_id) >= cap:
+                break
+            rows = await _discover_query(query, min(100, max(per_query, cap)))
+            added = 0
+            for candidate in rows:
+                key = (str(candidate["mediaType"]), int(candidate["tmdbId"]))
+                if key in output_by_id:
+                    continue
+                output_by_id[key] = candidate
+                added += 1
+                if len(output_by_id) >= cap:
+                    break
+            if added:
+                log.info(
+                    "TMDB fallback discovery %r: added %d new records, %d total",
+                    query,
+                    added,
+                    len(output_by_id),
+                )
+            await asyncio.sleep(0.15)
+
     output = list(output_by_id.values())[:cap]
     persisted = home_backend._persist_search_metadata_cache_rows(output)
     return {
