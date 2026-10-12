@@ -1,53 +1,48 @@
-# Background scraper-driven catalogue builder
+# Background catalogue builder
 
-The Home scraper can discover titles for the metadata catalogue without making normal
-search requests slower. This job runs separately from the user's search and Seedr flow.
+The builder runs independently from interactive search and Seedr preparation. It writes
+canonical movie/TV metadata into the persistent search metadata cache; it does not edit or
+delete the checked-in franchise/popular catalogue files.
 
 ## Run it on the Oracle VPS
 
-From the VPS, check the running Home container name with `docker ps`, then run:
+Pull/build the experimental branch in the test checkout, then rebuild the separate test image.
+Do not rebuild or replace the original home container while validating this branch.
 
-```bash
-docker exec -it home python /app/catalogue_builder.py --defaults --max-titles 150 --per-query 30
-```
+    cd ~/home-catalogue-test
+    git pull origin feature/background-scraped-catalogue
+    docker build -t home-catalogue-test .
+    docker rm -f home-catalogue-test
+    docker run -d --name home-catalogue-test --restart unless-stopped -p 3000:10000 -e PORT=10000 home-catalogue-test
 
-Or target specific areas/titles:
+Make sure the test container has TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS configured
+without printing the values in your terminal history or logs.
 
-```bash
-docker exec -it home python /app/catalogue_builder.py \
-  --query "2025 movies" \
-  --query "Bollywood movies" \
-  --query "popular TV series" \
-  --max-titles 100
-```
+Run a small test first:
 
-The container needs the same `TMDB_API_KEYS` or `TMDB_READ_ACCESS_TOKENS` environment
-configuration as the Home backend. Use `--verbose` to see query progress.
+    docker exec -it home-catalogue-test python /app/catalogue_builder.py --query "2025 movies" --query "Bollywood movies" --max-titles 20 --per-query 10 --verbose
 
-## What it does
+Then run the defaults if the small run reports successful TMDB records and cache writes:
 
-1. Runs the existing 1337x-backed Home scraper for a list of broad or user-provided queries.
-2. Cleans release tags from discovered torrent names and deduplicates title/year pairs.
-3. Resolves candidates against TMDB's multi-search endpoint, keeping movie and TV matches.
-4. Merges useful title metadata into the existing persistent search metadata cache at
-   `TMDB_SEARCH_METADATA_CACHE_FILE` (normally `/app/data/tmdb_search_metadata_cache.json`).
-5. Leaves the existing committed franchise/popular catalogue files untouched.
+    docker exec -it home-catalogue-test python /app/catalogue_builder.py --defaults --max-titles 150 --per-query 30 --verbose
 
-The metadata cache is the same source already read by the search metadata batch resolver, so
-catalogued matches can be returned from local data instead of requiring a fresh metadata API
-lookup. It does not store torrent files or magnets in the metadata catalogue.
+## Discovery strategy
 
-## Scheduling
+1. TMDB discover/movie and discover/tv provide canonical IDs, titles, release years,
+   artwork, ratings, and overviews first.
+2. Year-specific queries preserve their year filter; Hindi/Bollywood queries filter to Hindi
+   titles, Hollywood queries filter to English titles, and anime queries filter by animation genre.
+3. A portion of the result limit is reserved for plausible scraper-discovered titles, allowing
+   less-popular/newly indexed titles to supplement the discovery results.
+4. Torrent title candidates with pack/collection/music noise and excessive release-description
+   text are rejected before TMDB multi-search.
+5. Transport/API failures are counted separately from successful lookups with no matching title.
 
-For recurring discovery, schedule the command on the VPS with cron after confirming one manual
-run succeeds. Example: run daily at 04:20 server time (adjust the container name if needed):
+## Cache destination
 
-```cron
-20 4 * * * docker exec home python /app/catalogue_builder.py --defaults --max-titles 150 --per-query 30 >> /home/ubuntu/catalogue-builder.log 2>&1
-```
+Metadata is merged through the existing _persist_search_metadata_cache_rows writer into
+TMDB_SEARCH_METADATA_CACHE_FILE (normally /app/data/tmdb_search_metadata_cache.json).
+The builder does not store torrent files or magnets.
 
-**Persistence note:** the cache must live on persistent storage for additions to survive container
-replacement. If `/app/data` is not backed by a Docker volume or bind mount in the current
-deployment, configure one before relying on scheduled runs; otherwise the container's writable
-layer can be lost on recreation. The job does not automatically run at app startup, so it won't
-add load to interactive searches.
+**Persistence note:** confirm that /app/data is mounted to persistent storage before relying
+on results surviving container recreation. The job is not run automatically at app startup.
