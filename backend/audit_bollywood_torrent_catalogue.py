@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 DATA_DIR = Path("/app/data")
-CACHE_PATH = Path(__import__("os")..getenv(
+CACHE_PATH = Path(__import__("os").getenv(
     "BOLLYWOOD_TORRENT_CATALOGUE_PATH",
     str(DATA_DIR / "bollywood_torrent_matched_catalogue.json"),
 ))
