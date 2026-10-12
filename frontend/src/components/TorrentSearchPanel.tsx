@@ -2843,21 +2843,54 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   {movie.overview && (
                     <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{movie.overview}</p>
                   )}
+                  {movieCatalogue?.catalogue === 'bollywood-library' && movie.torrentMatch && (
+                    <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-2.5 py-2">
+                      <p className="line-clamp-2 text-[10px] font-semibold leading-relaxed text-emerald-200" title={movie.torrentMatch.title || ''}>
+                        Matched release: {movie.torrentMatch.title || movie.title}
+                      </p>
+                      <p className="mt-1 text-[10px] text-slate-400">
+                        {movie.torrentMatch.indexer || 'Torrent provider'}
+                        {movie.torrentMatch.size ? ' · ' + formatBytes(Number(movie.torrentMatch.size) || 0) : ''}
+                        {movie.torrentMatch.seeders != null ? ' · ▲ ' + Number(movie.torrentMatch.seeders) : ''}
+                      </p>
+                    </div>
+                  )}
                   <button
                     type="button"
-                    disabled={isSearching || movieTorrentSearchLoading}
+                    disabled={isSearching || (movieCatalogue?.catalogue !== 'bollywood-library' && movieTorrentSearchLoading)}
                     onClick={() => {
                       setResolutionFilter(null);
                       setSizeSort(null);
                       setTimeSort(null);
                       setReleaseYearSort(null);
+                      const cached = movieCatalogue?.catalogue === 'bollywood-library' ? movie.torrentMatch : undefined;
+                      if (cached) {
+                        const cachedResult: TorrentSearchResult = {
+                          title: cached.title || movie.title,
+                          mediaTitle: movie.title,
+                          size: Number(cached.size) || 0,
+                          seeders: Number(cached.seeders) || 0,
+                          leechers: Number(cached.leechers) || 0,
+                          indexer: cached.indexer || 'Cached match',
+                          infoHash: cached.infoHash || undefined,
+                          magnetUrl: cached.magnetUrl || undefined,
+                          sourceUrl: cached.infoUrl || undefined,
+                          infoUrl: cached.infoUrl || undefined,
+                          year: movie.year,
+                          posterUrl: movie.posterUrl,
+                        };
+                        void prepareMovieTorrent(cachedResult);
+                        return;
+                      }
                       void searchMovieTorrents(movie);
                     }}
                     className="mt-auto w-full rounded-lg bg-cyan-500 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-50"
                   >
-                    {movieTorrentSearchLoading && movieTorrentSearchTitle === movie.title + (movie.year ? ' ' + movie.year : '')
-                      ? <><Loader2 className="mr-1.5 inline h-3.5 w-3.5 animate-spin" />Searching…</>
-                      : <><Download className="mr-1.5 inline h-3.5 w-3.5" />Prepare</>}
+                    {movieCatalogue?.catalogue === 'bollywood-library' && movie.torrentMatch
+                      ? <><Download className="mr-1.5 inline h-3.5 w-3.5" />Get</>
+                      : movieTorrentSearchLoading && movieTorrentSearchTitle === movie.title + (movie.year ? ' ' + movie.year : '')
+                        ? <><Loader2 className="mr-1.5 inline h-3.5 w-3.5 animate-spin" />Searching…</>
+                        : <><Download className="mr-1.5 inline h-3.5 w-3.5" />Prepare</>}
                   </button>
                 </div>
               </article>
