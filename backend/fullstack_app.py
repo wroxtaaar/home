@@ -10,6 +10,9 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse
 
 from main import app
+from nexstream import router as nexstream_router
+
+app.include_router(nexstream_router)
 
 # main.py already exposes "/" as the API health endpoint. In the full-stack
 # container that route would win before the SPA route below, so replace only
