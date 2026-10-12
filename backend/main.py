@@ -7477,8 +7477,7 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_on
             "source": "TMDB",
         })
 
-    upstream_total_pages = max(1, min(500, int(payload.get("total_pages") or 1)))
-    total_pages = max(1, min(500, (upstream_total_pages + 2) // 3)) if catalogue_key in {"popular-bollywood", "latest-bollywood", "trending-bollywood", "trending-hollywood"} else upstream_total_pages
+    total_pages = max(1, min(500, int(payload.get("total_pages") or 1)))
     current_page = max(1, min(500, int(payload.get("page") or page)))
     return {
         "catalogue": catalogue_key,
