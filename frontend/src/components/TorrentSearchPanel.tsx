@@ -35,6 +35,7 @@ function isPresetSearchLabel(value: string): boolean {
     'trending bollywood movies',
     'latest hollywood',
     'latest bollywood',
+    'full bollywood library',
   ]).has(normalized);
 }
 
@@ -1868,6 +1869,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         'trending-hollywood': 'latest-hollywood',
         'popular-bollywood': 'latest-bollywood',
         'trending-bollywood': 'latest-bollywood',
+        'bollywood-library': 'latest-bollywood',
       };
       const fallbackKey = legacyFallbackKey[key];
       if (fallbackKey) {
@@ -2304,6 +2306,21 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
           >
             🎬 Bollywood
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setResolutionFilter(null);
+              setSizeSort(null);
+              setTimeSort(null);
+              setReleaseYearSort(null);
+              setStreamingOnly(false);
+              void openMovieCatalogue('bollywood-library', 'Full Bollywood Library', 1);
+            }}
+            className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
+          >
+            📚 Full Bollywood Library
           </button>
 
           {([
