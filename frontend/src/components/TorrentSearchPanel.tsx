@@ -3153,7 +3153,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 );
               }
               return (
-                <MovieCatalogueCard key={String(movie.id)}              return (
                 <MovieCatalogueCard key={String(movie.id)} className="border-slate-800 transition hover:border-cyan-500/40 hover:bg-slate-900/95">
                 <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
                   {movie.posterUrl ? (
@@ -3281,7 +3280,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   <div className="min-h-[3.75rem]">
                     {movie.overview && <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{movie.overview}</p>}
                   </div>
-                  <div className="mt-auto space-y-2">                  <div className="mt-auto space-y-2">
+                  <div className="mt-auto space-y-2">
                     <div className="grid grid-cols-2 gap-2">
                       <a
                         href={'https://www.themoviedb.org/movie/' + String(movie.tmdbId || movie.id)}
@@ -3297,7 +3296,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       type="button"
                       disabled={isSearching || movieTorrentSearchLoading}
                       onClick={() => {
-                        void searchMovieTorrents(movie);                        void searchMovieTorrents(movie);
+                        void searchMovieTorrents(movie);
                       }}
                       className={'w-full rounded-lg bg-cyan-500 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-50'}
                     >
