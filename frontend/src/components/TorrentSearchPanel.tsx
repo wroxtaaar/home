@@ -1483,6 +1483,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       // Normal search also searches NexStream movies in parallel; neither source blocks cached torrent cards.
       if (!searchMode && trimmed.length >= 2) void searchNexStreamTitles(trimmed, 'movie');
       else {
+        nexStreamSearchGenerationRef.current += 1;
+        nexStreamSearchControllerRef.current?.abort();
+        nexStreamSearchControllerRef.current = null;
+        setNexStreamLoading(false);
         setNexStreamSearchMode(null);
         setNexStreamResults([]);
         setNexStreamError('');
