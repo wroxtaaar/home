@@ -5228,14 +5228,6 @@ _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
             ("Justice League: Doom", 2012), ("Superman vs. The Elite", 2012),
         ],
     },
-    "latest-hollywood": {
-        "file": "latest_hollywood_catalogue.json", "version": 7, "refresh_days": 30,
-        "minimum_movies": 1, "mode": "latest", "discovery_pages": 2,
-    },
-    "latest-bollywood": {
-        "file": "latest_bollywood_catalogue.json", "version": 7, "refresh_days": 30,
-        "minimum_movies": 1, "mode": "latest", "discovery_pages": 2,
-    },
 }
 # Separate persistent caches keep English-original and Hindi/dubbed options
 # independent so neither language can pollute the other catalogue.
@@ -6162,68 +6154,6 @@ def _extra_item_year(item: dict[str, Any], fallback: int = 0) -> int:
         pass
     match = re.search(r"\b((?:19|20)\d{2})\b", str(item.get("title") or ""))
     return int(match.group(1)) if match else fallback
-
-
-async def _discover_latest_catalogue_jobs(key: str) -> list[tuple[str, int]]:
-    """Discover recently released movie titles from TMDB instead of a hardcoded query list."""
-    if key not in {"latest-hollywood", "latest-bollywood"}:
-        raise ValueError(f"Unsupported dynamic latest catalogue: {key}")
-
-    config = _EXTRA_CATALOGUES[key]
-    today = datetime.now(timezone.utc).date()
-    first_page = await api_tmdb_movie_catalogue(key, 1, released_only=True)
-    payloads: list[dict[str, Any]] = [first_page]
-    total_pages = max(1, int(first_page.get("totalPages") or 1))
-    pages_to_fetch = min(max(1, int(config.get("discovery_pages") or 2)), total_pages)
-    if pages_to_fetch > 1:
-        page_results = await asyncio.gather(
-            *(
-                api_tmdb_movie_catalogue(key, page, released_only=True)
-                for page in range(2, pages_to_fetch + 1)
-            ),
-            return_exceptions=True,
-        )
-        for page, result in enumerate(page_results, start=2):
-            if isinstance(result, dict):
-                payloads.append(result)
-            else:
-                logger.warning(
-                    "TMDB title discovery for %s page %d failed: %s",
-                    key, page, str(result) or type(result).__name__,
-                )
-
-    jobs: list[tuple[str, int]] = []
-    seen: set[str] = set()
-    current_year = today.year
-    for payload in payloads:
-        for item in payload.get("results") or []:
-            if not isinstance(item, dict):
-                continue
-            title = str(item.get("title") or item.get("original_title") or "").strip()
-            release_date = str(item.get("releaseDate") or "").strip()
-            if not title or not _tmdb_release_date_is_released(release_date, today.isoformat()):
-                continue
-            try:
-                year = int(item.get("year") or 0)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if year < current_year - 1 or year > current_year:
-                continue
-            identity = _normalize_title(title) + "|" + str(year)
-            if identity in seen:
-                continue
-            seen.add(identity)
-            jobs.append((title, year))
-
-    if not jobs:
-        raise RuntimeError(
-            f"TMDB returned no released {key} titles from the current or previous year; keeping the previous catalogue."
-        )
-    logger.info(
-        "Discovered %d released movie titles for %s from TMDB across %d page(s)",
-        len(jobs), key, len(payloads),
-    )
-    return jobs
 
 
 async def _build_extra_catalogue(key: str) -> None:
@@ -7425,25 +7355,7 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_on
     if released_only:
         params["release_date.lte"] = today
 
-    if catalogue_key in {"latest-hollywood", "popular-hollywood"}:
-        params["with_original_language"] = "en"
-        if catalogue_key == "popular-hollywood":
-            params["sort_by"] = "popularity.desc"
-    elif catalogue_key in {"latest-bollywood", "popular-bollywood"}:
-        params["with_original_language"] = "hi"
-        params["with_origin_country"] = "IN"
-        if catalogue_key == "latest-bollywood":
-            # Keep the latest catalogue focused on established Hindi feature
-            # films, not obscure/poorly documented entries or short videos.
-            # TMDB applies these before pagination, improving the usefulness of
-            # each page while retaining newest-release ordering.
-            params["vote_count.gte"] = 75
-            params["vote_average.gte"] = 5.5
-            params["with_runtime.gte"] = 70
-        elif catalogue_key == "popular-bollywood":
-            # Preserve the existing popularity-ranked catalogue unchanged.
-            params["sort_by"] = "popularity.desc"
-    elif catalogue_key in {"marvel", "dc-live-action", "dc-animated"}:
+    if catalogue_key in {"marvel", "dc-live-action", "dc-animated"}:
         franchise = "marvel" if catalogue_key == "marvel" else "dc"
         company_ids = await _tmdb_discovered_company_ids(franchise)
         params["with_companies"] = "|".join(company_ids)
@@ -7451,42 +7363,10 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_on
             params["with_genres"] = "16"
         elif catalogue_key == "dc-live-action":
             params["without_genres"] = "16"
-    elif catalogue_key in {"trending-hollywood", "trending-bollywood"}:
-        # TMDB's global weekly trending feed contains very few Hindi-language
-        # titles, so filtering it directly can leave a page with only 1–2 cards.
-        # Use popularity-ranked discovery constrained to the requested film market
-        # to provide a useful, full catalogue page instead.
-        params["with_original_language"] = "en" if catalogue_key == "trending-hollywood" else "hi"
-        if catalogue_key == "trending-bollywood":
-            params["with_origin_country"] = "IN"
-        params["sort_by"] = "popularity.desc"
     else:
         raise HTTPException(status_code=404, detail="Unknown movie catalogue.")
 
-    if catalogue_key in {"popular-bollywood", "latest-bollywood", "trending-bollywood", "trending-hollywood"}:
-        # One Home page represents up to 50 results. TMDB returns at most
-        # 20 per discover page, so collect three upstream pages.
-        upstream_start = (page - 1) * 3 + 1
-        upstream_pages = range(upstream_start, min(upstream_start + 3, 501))
-        upstream_payloads = await asyncio.gather(*(
-            _tmdb_get_json("discover/movie", {**params, "page": upstream_page})
-            for upstream_page in upstream_pages
-        ))
-        first_payload = upstream_payloads[0] if upstream_payloads else {}
-        payload = dict(first_payload)
-        payload["results"] = [
-            item
-            for upstream_payload in upstream_payloads
-            for item in (upstream_payload.get("results") or [])
-        ][:50]
-        payload["page"] = page
-        upstream_total_pages = max(
-            (int(upstream_payload.get("total_pages") or 1) for upstream_payload in upstream_payloads),
-            default=1,
-        )
-        payload["total_pages"] = max(1, min(500, (upstream_total_pages + 2) // 3))
-    else:
-        payload = await _tmdb_get_json("discover/movie", params)
+    payload = await _tmdb_get_json("discover/movie", params)
     raw_results = payload.get("results") or []
     results: list[dict[str, Any]] = []
     for item in raw_results:
@@ -7519,7 +7399,7 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_on
     return {
         "catalogue": catalogue_key,
         "releasedOnly": released_only,
-        "provider": "TMDB Popularity Discovery" if catalogue_key in {"trending-bollywood", "trending-hollywood"} else "TMDB",
+        "provider": "TMDB",
         "page": current_page,
         "totalPages": total_pages,
         "totalResults": int(payload.get("total_results") or len(results)),
@@ -7890,112 +7770,14 @@ async def api_tmdb_movie_catalogue(
     released_only: bool = Query(True),
     max_size_gb: int = Query(5, ge=1, le=5),
 ):
-    allowed = {
-        "marvel", "dc-live-action", "dc-animated", "bollywood-library",
-    }
+    allowed = {"marvel", "dc-live-action", "dc-animated"}
     if catalogue_key not in allowed:
         raise HTTPException(status_code=404, detail="Unknown movie catalogue.")
-
-    # The Bollywood library is a separate, disk-backed catalogue. Browsing only
-    # reads the incrementally populated cache; it never starts bulk torrent scans.
-    if catalogue_key == "bollywood-library":
-        metadata_path = Path(os.getenv(
-            "BOLLYWOOD_TORRENT_CATALOGUE_PATH",
-            str(Path(os.getenv("APP_DATA_DIR", "/app/data")) / "bollywood_torrent_matched_catalogue.json"),
-        ))
-        try:
-            metadata_payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-            source_rows = metadata_payload.get("records", []) if isinstance(metadata_payload, dict) else []
-            if not isinstance(source_rows, list):
-                raise ValueError("matched catalogue records must be a list")
-        except (OSError, ValueError, TypeError) as exc:
-            logger.warning("Bollywood torrent-matched library unavailable: %s", type(exc).__name__)
-            raise HTTPException(status_code=503, detail="The torrent-matched Bollywood cache has not been generated yet.") from exc
-
-        today = datetime.now(timezone.utc).date().isoformat()
-        max_catalogue_size_bytes = min(max_size_gb, 5) * 1024 * 1024 * 1024
-        rows = []
-        for source_row in source_rows:
-            if not isinstance(source_row, dict):
-                continue
-            title = str(source_row.get("title") or "").strip()
-            if not title:
-                continue
-            raw_matches = source_row.get("torrentMatches")
-            if not isinstance(raw_matches, list) or not raw_matches:
-                legacy_match = source_row.get("torrentMatch")
-                raw_matches = [legacy_match] if isinstance(legacy_match, dict) else []
-            torrent_matches = []
-            for candidate in raw_matches:
-                if not isinstance(candidate, dict):
-                    continue
-                try:
-                    torrent_size = int(float(candidate.get("size") or 0))
-                except (TypeError, ValueError):
-                    torrent_size = 0
-                if torrent_size <= 0 or torrent_size > max_catalogue_size_bytes or torrent_size > 5 * 1024 * 1024 * 1024:
-                    continue
-                torrent_matches.append(candidate)
-            if not torrent_matches:
-                continue
-            release_date = str(source_row.get("releaseDate") or "").strip()
-            if released_only and release_date and release_date > today:
-                continue
-            try:
-                tmdb_id = int(source_row.get("tmdbId")) if source_row.get("tmdbId") is not None else None
-            except (TypeError, ValueError):
-                tmdb_id = None
-            try:
-                year = int(source_row.get("year")) if source_row.get("year") is not None else None
-            except (TypeError, ValueError):
-                year = None
-            poster_path = str(source_row.get("posterPath") or "").strip()
-            backdrop_path = str(source_row.get("backdropPath") or "").strip()
-            rows.append({
-                "id": tmdb_id if tmdb_id is not None else "historical:" + _normalize_title(title) + ":" + str(year or ""),
-                "tmdbId": tmdb_id,
-                "imdbId": source_row.get("imdbId"),
-                "title": title,
-                "year": year,
-                "releaseDate": release_date,
-                "overview": str(source_row.get("overview") or "").strip(),
-                "posterUrl": "https://image.tmdb.org/t/p/w500" + poster_path if poster_path else "",
-                "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop_path if backdrop_path else "",
-                "rating": source_row.get("rating"),
-                "genres": source_row.get("genres") if isinstance(source_row.get("genres"), list) else [],
-                "source": "TMDB Hindi/India catalogue" if tmdb_id is not None else "Historical IMDb seed (unverified)",
-                "verified": tmdb_id is not None,
-                "tmdbUrl": f"https://www.themoviedb.org/movie/{tmdb_id}" if tmdb_id is not None else "",
-                "imdbUrl": f"https://www.imdb.com/title/{source_row.get('imdbId')}/" if source_row.get("imdbId") else "",
-                "torrentMatch": torrent_matches[0],
-                "torrentMatches": torrent_matches,
-                "torrentCheckedAt": source_row.get("torrentCheckedAt") or "",
-            })
-        rows.sort(key=lambda item: (
-            bool(item.get("tmdbId")),
-            str(item.get("releaseDate") or ""),
-            str(item.get("title") or "").casefold(),
-        ), reverse=True)
-        page_size = 50
-        total_results = len(rows)
-        total_pages = max(1, (total_results + page_size - 1) // page_size)
-        start = (page - 1) * page_size
-        return {
-            "catalogue": catalogue_key,
-            "provider": "TMDB + cached torrent-provider matches",
-            "page": page,
-            "totalPages": total_pages,
-            "totalResults": total_results,
-            "releasedOnly": released_only,
-            "maxSizeGb": max_size_gb,
-            "results": rows[start:start + page_size],
-            "attribution": "TMDB metadata filtered to titles with cached torrent-provider matches.",
-        }
 
     # Keep released-only and include-upcoming responses in separate cache slots.
     cache_key = (catalogue_key + ("|released-v4" if released_only else "|upcoming-v3"), page)
     now = time.monotonic()
-    cache_ttl = 30 * 60 if catalogue_key.startswith("trending-") else TMDB_CATALOGUE_CACHE_SECONDS
+    cache_ttl = TMDB_CATALOGUE_CACHE_SECONDS
     cached = _tmdb_movie_catalogue_cache.get(cache_key)
     if cached and now - cached[0] < cache_ttl:
         _schedule_tmdb_catalogue_synopsis_enrichment(cached[1])
