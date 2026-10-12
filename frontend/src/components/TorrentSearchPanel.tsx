@@ -1947,18 +1947,18 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   <button
                     type="button"
                     onClick={async () => {
-                      const frame = document.getElementById('nexstream-player-frame') as HTMLIFrameElement | null;
-                      if (!frame) return;
+                      const playerContainer = document.getElementById('nexstream-player-container') as HTMLDivElement | null;
+                      if (!playerContainer) return;
                       try {
                         if (document.fullscreenElement) {
                           await document.exitFullscreen();
-                        } else if (frame.requestFullscreen) {
-                          await frame.requestFullscreen();
+                        } else if (playerContainer.requestFullscreen) {
+                          await playerContainer.requestFullscreen();
                         } else {
                           setNexStreamError('Fullscreen is not supported by this browser.');
                         }
                       } catch {
-                        setNexStreamError('Fullscreen was blocked by the browser. Try the player’s own fullscreen control or open the player in a new tab.');
+                        setNexStreamError('Fullscreen was blocked by the browser. Use the player’s own fullscreen control or open the player directly in a new tab.');
                       }
                     }}
                     className="inline-flex items-center gap-1.5 rounded-lg border border-violet-400/40 px-2.5 py-1.5 text-[11px] font-semibold text-violet-200 hover:bg-violet-500/15"
@@ -1969,13 +1969,16 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   <button type="button" onClick={() => setNexStreamPlayer(null)} className="rounded-lg border border-slate-700 px-2.5 py-1.5 text-[11px] font-semibold text-slate-300 hover:bg-slate-800">Close player</button>
                 </div>
               </div>
-              <div className="aspect-video overflow-hidden rounded-lg bg-black max-sm:aspect-[9/16] max-sm:max-h-[70vh]">
+              <div
+                id="nexstream-player-container"
+                className="aspect-video overflow-hidden rounded-lg bg-black max-sm:aspect-[9/16] max-sm:max-h-[70vh] [&:fullscreen]:!fixed [&:fullscreen]:!inset-0 [&:fullscreen]:!z-[9999] [&:fullscreen]:!h-screen [&:fullscreen]:!w-screen [&:fullscreen]:!max-h-none [&:fullscreen]:!aspect-auto [&:fullscreen]:!rounded-none [&:fullscreen]:!p-0"
+              >
                 <iframe
                   id="nexstream-player-frame"
                   key={nexStreamPlayer.url}
                   src={nexStreamPlayer.url}
                   title={'NexStream player for ' + nexStreamPlayer.title}
-                  allow="autoplay; fullscreen *; encrypted-media; picture-in-picture *"
+                  allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
                   allowFullScreen
                   referrerPolicy="strict-origin-when-cross-origin"
                   className="h-full w-full border-0"
