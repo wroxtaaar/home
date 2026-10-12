@@ -130,6 +130,14 @@ function normalizeGroupTitle(value: string): string {
     .replace(/^(?:the|a|an)\s+/, '');
 }
 
+function normalizeTorrentTitleForNexStream(value: string): string {
+  return normalizeGroupTitle(String(value || '')
+    .replace(/\b(?:19|20)\d{2}\b/g, ' ')
+    .replace(/\b(?:s\d{1,2}(?:e\d{1,2})?|season\s*\d+|complete\s*(?:series|season)?|all\s*episodes|episodes?)\b/gi, ' ')
+    .replace(/\b(?:2160p|1080p|720p|480p|4k|uhd|hdr|bluray|blu[ -]?ray|brrip|bdrip|web[ -]?dl|webrip|hdtv|x264|x265|hevc|aac|proper|repack|extended|remastered)\b/gi, ' ')
+    .replace(/\[[^\]]*\]|\([^)]*\)/g, ' '));
+}
+
 function uniqueOttProviders<T extends { name: string; type?: string; webUrl?: string }>(providers: T[]): T[] {
   const seen = new Set<string>();
   return providers.filter(provider => {
@@ -2470,13 +2478,17 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               const selectedKey = selectedQualityByGroup[group.key];
               const result = group.variants.find(variant => torrentResultKey(variant) === selectedKey) || group.variants[0];
               const posterResult = group.posterResult;
-              const normalizedCardTitle = normalizeGroupTitle(group.title.replace(/\s*\((?:19|20)\d{2}\)\s*$/, ''));
+              const normalizedCardTitle = normalizeTorrentTitleForNexStream(group.title);
               const cardYear = Number((group.title.match(/\b((?:19|20)\d{2})\b/) || [])[1] || group.year || 0);
-              const isTvTorrent = /\bS\d{1,2}E\d{1,2}\b|\bseason\s*\d+\b|\bcomplete\s+season\b|\bseries\s+complete\b/i.test(group.title);
-              const titleMatches = nexStreamResults.filter(item =>
-                normalizeGroupTitle(item.title) === normalizedCardTitle &&
-                (!cardYear || !item.date || Number(String(item.date).slice(0, 4)) === cardYear)
-              );
+              const isTvTorrent = /\bS\d{1,2}(?:E\d{1,2})?\b|\bseason\s*\d+\b|\bcomplete\s*(?:series|season)?\b|\ball\s*episodes\b|\bepisodes?\b/i.test(group.title);
+              const titleMatches = nexStreamResults.filter(item => {
+                const candidateTitle = normalizeTorrentTitleForNexStream(item.title);
+                const exactTitle = candidateTitle === normalizedCardTitle;
+                const titleContains = candidateTitle.length >= 4 && normalizedCardTitle.length >= 4 &&
+                  (normalizedCardTitle.startsWith(candidateTitle + ' ') || candidateTitle.startsWith(normalizedCardTitle + ' '));
+                const yearMatches = !cardYear || !item.date || Number(String(item.date).slice(0, 4)) === cardYear;
+                return (exactTitle || titleContains) && yearMatches;
+              });
               // Don't attach TV results to movie torrents (or vice versa), and
               // collapse duplicate TMDB entries so a card has one clear action.
               const preferredType = isTvTorrent ? 'tv' : 'movie';
