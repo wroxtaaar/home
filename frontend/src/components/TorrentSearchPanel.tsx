@@ -3006,7 +3006,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           )}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
             {visibleMovieCatalogueItems.map(movie => {
-              const isFranchiseCatalogue = ['marvel', 'dc-live-action', 'dc-animated'].includes(String(movieCatalogue.catalogue));
+              const showNexStreamButton = true;
               const previewGroup = movieTorrentPreviewCatalogueId === String(movie.id)
                 ? movieTorrentPreviewGroup
                 : null;
@@ -3132,7 +3132,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           })}
                         </select>
                       )}
-                      {['marvel', 'dc-live-action', 'dc-animated'].includes(String(movieCatalogue.catalogue)) && (
+                      {(
                         <button
                           type="button"
                           disabled={!Number(movie.tmdbId || movie.id) || nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id)}
@@ -3305,8 +3305,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   {movie.overview && (
                     <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{movie.overview}</p>
                   )}
-                  <div className={isFranchiseCatalogue ? 'mt-auto grid grid-cols-2 gap-2' : 'mt-auto'}>
-                    {isFranchiseCatalogue && (
+                  <div className="mt-auto grid grid-cols-2 gap-2">
+                    {showNexStreamButton && (
                       <button
                         type="button"
                         disabled={!Number(movie.tmdbId || movie.id) || nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id)}
