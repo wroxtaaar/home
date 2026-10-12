@@ -7674,7 +7674,6 @@ async def api_tmdb_movie_catalogue(
     if catalogue_key not in allowed:
         raise HTTPException(status_code=404, detail="Unknown movie catalogue.")
 
-    if catalogue_key == "bollywood-library":
     # This is a separate metadata-only library sourced from the refreshed export.
     # It never reads or writes the existing torrent-result catalogues.
     if catalogue_key == "bollywood-library":
