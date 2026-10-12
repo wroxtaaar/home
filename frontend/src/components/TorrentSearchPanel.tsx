@@ -2133,6 +2133,21 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     }
   };
 
+  const loadDcWebSeries = async () => {
+    setShowDcWebSeries(true);
+    setShowMarvelWebSeries(false);
+    if (dcWebSeriesCatalogue || dcWebSeriesLoading) return;
+    setDcWebSeriesLoading(true);
+    setDcWebSeriesError('');
+    try {
+      setDcWebSeriesCatalogue(await api.getTvCatalogue('dc-live-action'));
+    } catch (error: any) {
+      setDcWebSeriesError(String(error?.message || 'Could not load DC web series.'));
+    } finally {
+      setDcWebSeriesLoading(false);
+    }
+  };
+
   const loadMarvelWebSeries = async () => {
     setShowMarvelWebSeries(true);
     if (marvelWebSeriesCatalogue || marvelWebSeriesLoading) return;
@@ -3700,6 +3715,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               {isDcLiveActionEnglishResults && (
                 <button type="button" onClick={() => { if (showDcWebSeries) setShowDcWebSeries(false); else void loadDcWebSeries(); }} className={showDcWebSeries ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={showDcWebSeries} title="Show DC live-action web series">📺 Web Series</button>
               )}
+              {isDcLiveActionEnglishResults && (
+                <button type="button" onClick={() => { if (showDcWebSeries) setShowDcWebSeries(false); else void loadDcWebSeries(); }} className={showDcWebSeries ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={showDcWebSeries} title="Show DC live-action web series">📺 Web Series</button>
+              )}
               {isMarvelEnglishResults && (
                 <button type="button" onClick={() => { if (showMarvelWebSeries) setShowMarvelWebSeries(false); else void loadMarvelWebSeries(); }} className={showMarvelWebSeries ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={showMarvelWebSeries} title="Show Marvel web series">📺 Web Series</button>
               )}
@@ -3721,7 +3739,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 <>
                   <div className="px-1 text-xs text-slate-400">{dcWebSeriesCatalogue.totalResults.toLocaleString()} DC web series · Page {dcWebSeriesCatalogue.page} of {dcWebSeriesCatalogue.totalPages.toLocaleString()} · Metadata by TMDB</div>
                   <div className="grid grid-cols-2 items-start gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
-                    {dcWebSeriesCatalogue.results.map(show => (
+                    {[...dcWebSeriesCatalogue.results].sort((a, b) => (Number(b.year) || 0) - (Number(a.year) || 0) || a.title.localeCompare(b.title)).map(show => (
                       <article key={String(show.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900">
                         <div className="relative aspect-[2/3] bg-slate-950">
                           {show.posterUrl ? <img src={show.posterUrl} alt={show.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="flex h-full items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
