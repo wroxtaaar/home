@@ -702,6 +702,51 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     groups: TorrentQualityGroup[];
     savedAt: number;
   }>());
+  const movieTorrentPrefetchRunningRef = useRef(false);
+  const MOVIE_TORRENT_CACHE_STORAGE_KEY = 'home_movie_torrent_details_v1';
+  const MOVIE_TORRENT_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+  const NEXSTREAM_SEARCH_CACHE_KEY = 'home_nexstream_search_v1';
+  const NEXSTREAM_RESOLVE_CACHE_KEY = 'home_nexstream_resolve_v1';
+  const NEXSTREAM_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+  const persistMovieTorrentCache = () => {
+    try {
+      const entries = Array.from(movieTorrentDetailsCacheRef.current.entries())
+        .filter(([, value]) => Date.now() - value.savedAt < MOVIE_TORRENT_CACHE_TTL_MS)
+        .slice(-250);
+      localStorage.setItem(MOVIE_TORRENT_CACHE_STORAGE_KEY, JSON.stringify(entries));
+    } catch { /* Storage can be unavailable or full; in-memory caching still works. */ }
+  };
+
+  const readLocalCache = <T,>(key: string, cacheKey: string): T | null => {
+    try {
+      const entries = JSON.parse(localStorage.getItem(key) || '{}') as Record<string, { value: T; savedAt: number }>;
+      const entry = entries[cacheKey];
+      if (entry && Date.now() - entry.savedAt < NEXSTREAM_CACHE_TTL_MS) return entry.value;
+    } catch {}
+    return null;
+  };
+
+  const writeLocalCache = <T,>(key: string, cacheKey: string, value: T) => {
+    try {
+      const entries = JSON.parse(localStorage.getItem(key) || '{}') as Record<string, { value: T; savedAt: number }>;
+      entries[cacheKey] = { value, savedAt: Date.now() };
+      const keys = Object.keys(entries);
+      for (const oldKey of keys.slice(0, Math.max(0, keys.length - 300))) delete entries[oldKey];
+      localStorage.setItem(key, JSON.stringify(entries));
+    } catch { /* Storage can be unavailable or full. */ }
+  };
+
+  useEffect(() => {
+    try {
+      const entries = JSON.parse(localStorage.getItem(MOVIE_TORRENT_CACHE_STORAGE_KEY) || '[]') as Array<[string, { groups: TorrentQualityGroup[]; savedAt: number }]>;
+      for (const [key, value] of entries) {
+        if (value && Array.isArray(value.groups) && Date.now() - value.savedAt < MOVIE_TORRENT_CACHE_TTL_MS) {
+          movieTorrentDetailsCacheRef.current.set(key, value);
+        }
+      }
+    } catch {}
+  }, []);
 
   const [isSearching, setIsSearching] = useState(false);
   const [isPresetCatalogueAction, setIsPresetCatalogueAction] = useState(false);
@@ -1435,6 +1480,19 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     setNexStreamPlayer(null);
     try {
       const types: Array<'movie' | 'tv'> = [mediaType];
+      const cachedNexResults = readLocalCache<NexStreamTitle[]>(NEXSTREAM_SEARCH_CACHE_KEY, mediaType + ':' + String(titleQuery || '').trim().toLowerCase());
+      if (cachedNexResults) {
+        setNexStreamResults(cachedNexResults);
+        if (mediaType === 'tv') {
+          setNexStreamEpisodePrefetchStatus({});
+          prefetchNexStreamEpisodeMetadata(cachedNexResults, (id, status) => {
+            setNexStreamEpisodePrefetchStatus(previous => ({ ...previous, [String(id)]: status }));
+          });
+        }
+        setNexStreamLoading(false);
+        setNexStreamLoadingTitle('');
+        return;
+      }
       const responses = await Promise.allSettled(types.map(async type => {
         const params = new URLSearchParams({ query: titleQuery, type });
         const response = await fetch('/api/nexstream/search?' + params.toString(), {
@@ -1458,6 +1516,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         unique.set(item.type + ':' + item.id, item);
       }
       const resolvedTitles = Array.from(unique.values());
+      writeLocalCache(NEXSTREAM_SEARCH_CACHE_KEY, mediaType + ':' + String(titleQuery || '').trim().toLowerCase(), resolvedTitles);
       setNexStreamResults(resolvedTitles);
       // Fetch episode lists and thumbnails in the background, without delaying
       // the result cards. The first few TV cards are ready by the time a user
@@ -1537,12 +1596,18 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     setNexStreamResolvingId(resolvingId);
     setNexStreamError('');
     try {
-      const params = new URLSearchParams({ type: item.type, tmdb_id: String(item.id) });
-      if (item.type === 'tv') {
-        params.set('season', String(season));
-        params.set('episode', String(episode));
-      }
-      const response = await fetch('/api/nexstream/resolve?' + params.toString(), {
+      const resolveCacheKey = item.type + ':' + item.id + ':' + String(season ?? '') + ':' + String(episode ?? '');
+      const cachedResolve = readLocalCache<{ url: string; name: string }>(NEXSTREAM_RESOLVE_CACHE_KEY, resolveCacheKey);
+      let source: { url: string; name?: string } | undefined;
+      if (cachedResolve && /^https:\/\//i.test(cachedResolve.url)) {
+        source = cachedResolve;
+      } else {
+        const params = new URLSearchParams({ type: item.type, tmdb_id: String(item.id) });
+        if (item.type === 'tv') {
+          params.set('season', String(season));
+          params.set('episode', String(episode));
+        }
+        const response = await fetch('/api/nexstream/resolve?' + params.toString(), {
         headers: { Accept: 'application/json' },
         credentials: 'same-origin',
       });
@@ -1550,14 +1615,18 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       if (!response.ok || !data.success || !Array.isArray(data.sources) || !data.sources.length) {
         throw new Error(data.detail || 'NexStream could not resolve this title.');
       }
-      const source = data.sources.find((candidate: any) => {
-        try {
-          const url = new URL(String(candidate?.url || ''));
-          return url.protocol === 'https:' && ['embedmaster.link', 'www.embedmaster.link'].includes(url.hostname);
-        } catch {
-          return false;
-        }
-      });
+        const resolvedSource = data.sources.find((candidate: any) => {
+          try {
+            const url = new URL(String(candidate?.url || ''));
+            return url.protocol === 'https:' && ['embedmaster.link', 'www.embedmaster.link'].includes(url.hostname);
+          } catch {
+            return false;
+          }
+        });
+        if (!resolvedSource) throw new Error('NexStream returned no supported player source.');
+        source = { url: String(resolvedSource.url), name: String(resolvedSource.name || 'NexStream') };
+        writeLocalCache(NEXSTREAM_RESOLVE_CACHE_KEY, resolveCacheKey, source);
+      }
       if (!source) throw new Error('NexStream returned no supported player source.');
       if (popup) {
         popup.location.href = String(source.url);
@@ -2121,7 +2190,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
     const cacheKey = normalizeGroupTitle(movie.title) + '|' + String(movie.year || '');
     const cachedDetails = movieTorrentDetailsCacheRef.current.get(cacheKey);
-    if (cachedDetails && Date.now() - cachedDetails.savedAt < 6 * 60 * 60 * 1000) {
+    const persistedDetails = cachedDetails || readLocalCache<{ groups: TorrentQualityGroup[]; savedAt: number }>(MOVIE_TORRENT_CACHE_STORAGE_KEY, cacheKey);
+    if (persistedDetails && Date.now() - persistedDetails.savedAt < MOVIE_TORRENT_CACHE_TTL_MS) {
+      movieTorrentDetailsCacheRef.current.set(cacheKey, persistedDetails);
       const groups = cachedDetails.groups;
       if (groups.length === 1) {
         const group = groups[0];
@@ -2216,6 +2287,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       // Cache empty results briefly too, avoiding repeated indexer scans for titles
       // that currently have no usable releases.
       movieTorrentDetailsCacheRef.current.set(cacheKey, { groups, savedAt: Date.now() });
+      persistMovieTorrentCache();
       if (movieTorrentDetailsCacheRef.current.size > 250) {
         const oldestKey = movieTorrentDetailsCacheRef.current.keys().next().value;
         if (oldestKey) movieTorrentDetailsCacheRef.current.delete(oldestKey);
