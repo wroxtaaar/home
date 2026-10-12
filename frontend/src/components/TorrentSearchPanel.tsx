@@ -959,21 +959,45 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     }
   };
 
-  const playWithNexStream = async (item: NexStreamTitle) => {
-    let season: number | undefined;
-    let episode: number | undefined;
-    if (item.type === 'tv') {
-      const seasonInput = window.prompt('Season number:', '1');
-      if (seasonInput === null) return;
-      const episodeInput = window.prompt('Episode number:', '1');
-      if (episodeInput === null) return;
-      season = Number(seasonInput);
-      episode = Number(episodeInput);
-      if (!Number.isInteger(season) || season < 1 || !Number.isInteger(episode) || episode < 1) {
-        setNexStreamError('Season and episode must be positive whole numbers.');
-        return;
-      }
+  const [nexStreamEpisodePicker, setNexStreamEpisodePicker] = useState<NexStreamTitle | null>(null);
+  const [nexStreamSeasons, setNexStreamSeasons] = useState<Array<{ seasonNumber: number; name: string; episodeCount: number }>>([]);
+  const [nexStreamEpisodes, setNexStreamEpisodes] = useState<Array<{ episodeNumber: number; name: string; overview: string; airDate: string; still: string | null }>>([]);
+  const [nexStreamSelectedSeason, setNexStreamSelectedSeason] = useState(1);
+  const [nexStreamEpisodesLoading, setNexStreamEpisodesLoading] = useState(false);
+  const [nexStreamEpisodesError, setNexStreamEpisodesError] = useState('');
+
+  const loadNexStreamEpisodes = async (item: NexStreamTitle, season: number) => {
+    setNexStreamEpisodesLoading(true);
+    setNexStreamEpisodesError('');
+    try {
+      const params = new URLSearchParams({ tmdb_id: String(item.id), season: String(season) });
+      const response = await fetch('/api/nexstream/episodes?' + params.toString(), {
+        headers: { Accept: 'application/json' }, credentials: 'same-origin',
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.success) throw new Error(data.detail || 'Could not load episode list.');
+      setNexStreamSeasons(Array.isArray(data.seasons) ? data.seasons : []);
+      setNexStreamEpisodes(Array.isArray(data.episodes) ? data.episodes : []);
+      setNexStreamSelectedSeason(Number(data.selectedSeason) || season);
+    } catch (error: any) {
+      setNexStreamEpisodesError(String(error?.message || 'Could not load episode list.'));
+      setNexStreamEpisodes([]);
+    } finally {
+      setNexStreamEpisodesLoading(false);
     }
+  };
+
+  const playWithNexStream = async (item: NexStreamTitle, chosenSeason?: number, chosenEpisode?: number) => {
+    if (item.type === 'tv' && (chosenSeason === undefined || chosenEpisode === undefined)) {
+      setNexStreamEpisodePicker(item);
+      setNexStreamEpisodes([]);
+      setNexStreamSeasons([]);
+      setNexStreamEpisodesError('');
+      await loadNexStreamEpisodes(item, 1);
+      return;
+    }
+    const season = chosenSeason;
+    const episode = chosenEpisode;
 
     const resolvingId = item.type + ':' + item.id;
     setNexStreamResolvingId(resolvingId);
@@ -1986,6 +2010,55 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
           {nexStreamSearchMode === 'tv' && !nexStreamLoading && !nexStreamError && nexStreamResults.length === 0 && (
             <p className="text-xs text-slate-400">No TV shows found. Try a different title.</p>
+          )}
+
+          {nexStreamEpisodePicker && (
+            <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/80 p-3 sm:p-6" role="dialog" aria-modal="true" aria-labelledby="nexstream-episode-picker-title">
+              <div className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-violet-400/30 bg-slate-950 shadow-2xl">
+                <div className="flex items-start justify-between gap-3 border-b border-slate-800 p-4">
+                  <div className="min-w-0">
+                    <h3 id="nexstream-episode-picker-title" className="text-lg font-bold text-white">Choose an episode</h3>
+                    <p className="mt-1 truncate text-sm text-slate-400">{nexStreamEpisodePicker.title}</p>
+                  </div>
+                  <button type="button" onClick={() => setNexStreamEpisodePicker(null)} className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800">Close</button>
+                </div>
+                <div className="flex items-center gap-3 border-b border-slate-800 p-4">
+                  <label htmlFor="nexstream-season-select" className="shrink-0 text-sm font-semibold text-slate-300">Season</label>
+                  <select id="nexstream-season-select" value={nexStreamSelectedSeason} onChange={event => { const season = Number(event.target.value); void loadNexStreamEpisodes(nexStreamEpisodePicker, season); }} className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white">
+                    {nexStreamSeasons.map(season => <option key={season.seasonNumber} value={season.seasonNumber}>{season.name || 'Season ' + season.seasonNumber}{season.episodeCount ? ' (' + season.episodeCount + ' episodes)' : ''}</option>)}
+                  </select>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-4">
+                  {nexStreamEpisodesLoading ? (
+                    <div className="flex items-center justify-center gap-2 py-12 text-sm text-slate-300"><Loader2 className="h-4 w-4 animate-spin" />Loading episodes…</div>
+                  ) : nexStreamEpisodesError ? (
+                    <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">{nexStreamEpisodesError} You can still enter an episode number below.</div>
+                  ) : nexStreamEpisodes.length > 0 ? (
+                    <div className="space-y-2">
+                      {nexStreamEpisodes.map(episode => (
+                        <button key={episode.episodeNumber} type="button" onClick={() => { const selected = nexStreamEpisodePicker; setNexStreamEpisodePicker(null); if (selected) void playWithNexStream(selected, nexStreamSelectedSeason, episode.episodeNumber); }} className="flex w-full items-start gap-3 rounded-xl border border-slate-800 bg-slate-900/70 p-3 text-left transition hover:border-violet-400/60 hover:bg-violet-500/10">
+                          {episode.still ? <img src={episode.still} alt="" loading="lazy" className="hidden h-20 w-32 shrink-0 rounded-lg bg-slate-800 object-cover sm:block" onError={event => { event.currentTarget.style.display = 'none'; }} /> : null}
+                          <div className="min-w-0 flex-1">
+                            <div className="text-sm font-bold text-slate-100">E{String(episode.episodeNumber).padStart(2, '0')} · {episode.name || 'Episode ' + episode.episodeNumber}</div>
+                            {episode.airDate && <div className="mt-1 text-[11px] text-slate-500">{episode.airDate}</div>}
+                            {episode.overview && <p className="mt-1 line-clamp-3 text-xs leading-relaxed text-slate-400">{episode.overview}</p>}
+                          </div>
+                          <Play className="mt-1 h-4 w-4 shrink-0 text-violet-300" />
+                        </button>
+                      ))}
+                    </div>
+                  ) : !nexStreamEpisodesLoading && !nexStreamEpisodesError ? (
+                    <div className="py-8 text-center text-sm text-slate-400">No episode metadata was returned for this season.</div>
+                  ) : null}
+                  {nexStreamEpisodesError && (
+                    <form className="mt-4 flex flex-wrap items-end gap-3" onSubmit={event => { event.preventDefault(); const form = event.currentTarget; const input = form.elements.namedItem('episodeNumber') as HTMLInputElement; const number = Number(input.value); if (Number.isInteger(number) && number > 0 && nexStreamEpisodePicker) { const selected = nexStreamEpisodePicker; setNexStreamEpisodePicker(null); void playWithNexStream(selected, nexStreamSelectedSeason, number); } }}>
+                      <label className="flex-1 text-xs text-slate-400">Episode number<input name="episodeNumber" type="number" min="1" defaultValue="1" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white" /></label>
+                      <button type="submit" className="rounded-lg bg-violet-500 px-4 py-2 text-sm font-bold text-white">Play episode</button>
+                    </form>
+                  )}
+                </div>
+              </div>
+            </div>
           )}
 
           {nexStreamPlayer && (
