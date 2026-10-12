@@ -2193,7 +2193,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     const persistedDetails = cachedDetails || readLocalCache<{ groups: TorrentQualityGroup[]; savedAt: number }>(MOVIE_TORRENT_CACHE_STORAGE_KEY, cacheKey);
     if (persistedDetails && Date.now() - persistedDetails.savedAt < MOVIE_TORRENT_CACHE_TTL_MS) {
       movieTorrentDetailsCacheRef.current.set(cacheKey, persistedDetails);
-      const groups = cachedDetails.groups;
+      const groups = persistedDetails.groups;
       if (groups.length === 1) {
         const group = groups[0];
         setSelectedMovieTorrentQualityByGroup({ [group.key]: torrentResultKey(group.variants[0]) });
@@ -2209,7 +2209,22 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     }
 
     try {
-      let data = await api.searchTorrents(titleQuery, 50, controller.signal);
+      let data: TorrentSearchResult[] | null = null;
+      // Prefer the shared, precomputed VPS JSON cache. It is common to all
+      // devices and avoids re-running indexer searches for prebuilt titles.
+      try {
+        const params = new URLSearchParams({ title: movie.title, year: String(movie.year || '') });
+        const response = await fetch(API_BASE + '/api/regional-movies/prebuilt?' + params.toString(), {
+          signal: controller.signal, credentials: 'include', cache: 'no-store',
+        });
+        if (response.ok) {
+          const cached = await response.json();
+          const rows = cached?.torrentDetails?.results;
+          if (cached?.status === 'ready' && Array.isArray(rows) && rows.length > 0) data = rows as TorrentSearchResult[];
+        }
+      } catch { /* The live search remains the fallback if the shared cache is unavailable. */ }
+      if (generation !== movieTorrentSearchGenerationRef.current) return;
+      if (!data) data = await api.searchTorrents(titleQuery, 50, controller.signal);
       if (generation !== movieTorrentSearchGenerationRef.current) return;
 
       // Prefer active swarms, but don't let missing seeder metadata hide every
