@@ -48,9 +48,6 @@ def main():
     cache = {"version":1,"builtAt":old.get("builtAt"),"catalogues":old.get("catalogues",{}),"movies":old.get("movies",{}),"status":"building"}
     for cat in CATALOGUES:
         prior = cache["catalogues"].get(cat,{})
-        if prior.get("builtAt") and not os.getenv("FORCE_REGIONAL_CACHE"):
-            # Reuse page snapshots for this run; refreshed weekly via cron.
-            continue
         pages = []
         for page in range(1, PAGE_LIMIT + 1):
             try:
@@ -73,9 +70,6 @@ def main():
     cache["movies"] = movies
     total = len(movies)
     for idx,(key,entry) in enumerate(movies.items(),1):
-        if key in state.get("completed",{}) and not os.getenv("FORCE_REGIONAL_CACHE"):
-            entry["torrentDetails"] = state["completed"][key]
-            continue
         title = str(entry["movie"].get("title") or "").strip()
         year = entry["movie"].get("year")
         if not title: continue
