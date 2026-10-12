@@ -71,12 +71,12 @@ def _tmdb_candidate(title: str, year: int, payload: dict[str, Any]) -> dict[str,
         if not isinstance(row, dict) or row.get("media_type") not in {"movie", "tv"} or not row.get("id"):
             continue
         media_type = str(row["media_type"])
-        canonical = str(row.get("title") if media_type == "movie" else row.get("name") or "").strip()
+        canonical = str((row.get("title") if media_type == "movie" else row.get("name")) or "").strip()
         if not canonical:
             canonical = str(row.get("name") or row.get("title") or "").strip()
         if not canonical:
             continue
-        release_date = str(row.get("release_date") if media_type == "movie" else row.get("first_air_date") or "")
+        release_date = str((row.get("release_date") if media_type == "movie" else row.get("first_air_date")) or "")
         try:
             result_year = int(release_date[:4]) if len(release_date) >= 4 else 0
         except ValueError:
