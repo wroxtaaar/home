@@ -71,6 +71,17 @@ export interface MovieCatalogueItem {
     leechers?: number | null;
     matchScore?: number;
   };
+  torrentMatches?: Array<{
+    title?: string;
+    indexer?: string;
+    infoUrl?: string;
+    magnetUrl?: string | null;
+    infoHash?: string;
+    size?: number | null;
+    seeders?: number | null;
+    leechers?: number | null;
+    matchScore?: number;
+  }>;
   torrentCheckedAt?: string;
   ottAvailability?: {
     region?: string;
