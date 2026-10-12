@@ -56,6 +56,10 @@ export interface MovieCatalogueItem {
   genres?: number[];
   source?: string;
   tmdbId?: number | string;
+  verified?: boolean;
+  imdbId?: string | null;
+  tmdbUrl?: string;
+  imdbUrl?: string;
   ottAvailability?: {
     region?: string;
     status?: string;
