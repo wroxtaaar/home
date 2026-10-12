@@ -7704,14 +7704,24 @@ async def api_tmdb_movie_catalogue(
             title = str(source_row.get("title") or "").strip()
             if not title:
                 continue
-            torrent_match = source_row.get("torrentMatch") if isinstance(source_row.get("torrentMatch"), dict) else {}
-            try:
-                torrent_size = int(float(torrent_match.get("size") or 0))
-            except (TypeError, ValueError):
-                torrent_size = 0
-            # Never expose uncapped cache entries, even if an old cache predates size validation.
-            if torrent_size <= 0 or torrent_size > max_catalogue_size_bytes or torrent_size > 5 * 1024 * 1024 * 1024:
+            raw_matches = source_row.get("torrentMatches")
+            if not isinstance(raw_matches, list) or not raw_matches:
+                legacy_match = source_row.get("torrentMatch")
+                raw_matches = [legacy_match] if isinstance(legacy_match, dict) else []
+            torrent_matches = []
+            for candidate in raw_matches:
+                if not isinstance(candidate, dict):
+                    continue
+                try:
+                    torrent_size = int(float(candidate.get("size") or 0))
+                except (TypeError, ValueError):
+                    torrent_size = 0
+                if torrent_size <= 0 or torrent_size > max_catalogue_size_bytes or torrent_size > 5 * 1024 * 1024 * 1024:
+                    continue
+                torrent_matches.append(candidate)
+            if not torrent_matches:
                 continue
+            torrent_match = torrent_matches[0]
             release_date = str(source_row.get("releaseDate") or "").strip()
             if released_only and release_date and release_date > today:
                 continue
@@ -7743,6 +7753,7 @@ async def api_tmdb_movie_catalogue(
                 "tmdbUrl": f"https://www.themoviedb.org/movie/{tmdb_id}" if tmdb_id is not None else "",
                 "imdbUrl": f"https://www.imdb.com/title/{source_row.get('imdbId')}/" if source_row.get("imdbId") else "",
                 "torrentMatch": torrent_match,
+                "torrentMatches": torrent_matches,
                 "torrentCheckedAt": source_row.get("torrentCheckedAt") or "",
             })
 
