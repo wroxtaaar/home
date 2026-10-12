@@ -117,6 +117,38 @@ def atomic_write(path: Path, payload: Any) -> None:
     temp.replace(path)
 
 
+def publish_cache(matched: dict[str, dict[str, Any]], source_rows: list[Any], *, checked: int, newly_matched: int, failed_searches: int, batch_size: int) -> int:
+    latest_by_id = {
+        str(row.get("tmdbId")): row for row in source_rows
+        if isinstance(row, dict) and row.get("tmdbId") is not None
+    }
+    published = []
+    for row in matched.values():
+        fresh = latest_by_id.get(str(row.get("tmdbId")))
+        if fresh:
+            row = {**fresh, **row}
+        published.append(row)
+    published.sort(key=lambda row: (
+        str(row.get("releaseDate") or ""), str(row.get("title") or "").casefold()
+    ), reverse=True)
+    generated = datetime.now(timezone.utc).isoformat()
+    atomic_write(OUTPUT_PATH, {
+        "schemaVersion": 1,
+        "generatedAt": generated,
+        "source": "TMDB metadata filtered by cached torrent-provider matches",
+        "stats": {
+            "metadataCandidates": len(source_rows),
+            "matchedTitles": published_count,
+            "checkedThisRun": checked,
+            "newMatchesThisRun": newly_matched,
+            "providerSearchFailures": failed_searches,
+            "batchSize": batch_size,
+        },
+        "records": published,
+    })
+    return len(published)
+
+
 async def run() -> int:
     metadata = load_json(METADATA_PATH, {})
     # Bootstrap from the bundled export on the first run; subsequent runs use the
@@ -236,40 +268,20 @@ async def run() -> int:
             matched[key] = record
         else:
             matched.pop(key, None)
+        # Publish atomically after each title so the live library grows during a long scan.
+        # Readers see either the previous complete JSON or this complete snapshot.
+        publish_cache(
+            matched, source_rows, checked=checked, newly_matched=newly_matched,
+            failed_searches=failed_searches, batch_size=BATCH_SIZE,
+        )
         if SEARCH_DELAY:
             await asyncio.sleep(SEARCH_DELAY)
 
-    # Keep metadata current for retained matches while preserving the matched torrent.
-    latest_by_id = {
-        str(row.get("tmdbId")): row for row in source_rows
-        if isinstance(row, dict) and row.get("tmdbId") is not None
-    }
-    published = []
-    for key, row in matched.items():
-        fresh = latest_by_id.get(str(row.get("tmdbId")))
-        if fresh:
-            torrent = row.get("torrentMatch")
-            row = {**fresh, **row, "torrentMatch": torrent}
-        published.append(row)
-    published.sort(key=lambda row: (
-        str(row.get("releaseDate") or ""), str(row.get("title") or "").casefold()
-    ), reverse=True)
-
+    published_count = publish_cache(
+        matched, source_rows, checked=checked, newly_matched=newly_matched,
+        failed_searches=failed_searches, batch_size=BATCH_SIZE,
+    )
     generated = datetime.now(timezone.utc).isoformat()
-    atomic_write(OUTPUT_PATH, {
-        "schemaVersion": 1,
-        "generatedAt": generated,
-        "source": "TMDB metadata filtered by cached torrent-provider matches",
-        "stats": {
-            "metadataCandidates": len(source_rows),
-            "matchedTitles": len(published),
-            "checkedThisRun": checked,
-            "newMatchesThisRun": newly_matched,
-            "providerSearchFailures": failed_searches,
-            "batchSize": BATCH_SIZE,
-        },
-        "records": published,
-    })
     atomic_write(STATE_PATH, {
         "cursor": cursor,
         "lastRunAt": generated,
