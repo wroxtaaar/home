@@ -3715,9 +3715,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               {isDcLiveActionEnglishResults && (
                 <button type="button" onClick={() => { if (showDcWebSeries) setShowDcWebSeries(false); else void loadDcWebSeries(); }} className={showDcWebSeries ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={showDcWebSeries} title="Show DC live-action web series">📺 Web Series</button>
               )}
-              {isDcLiveActionEnglishResults && (
-                <button type="button" onClick={() => { if (showDcWebSeries) setShowDcWebSeries(false); else void loadDcWebSeries(); }} className={showDcWebSeries ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={showDcWebSeries} title="Show DC live-action web series">📺 Web Series</button>
-              )}
               {isMarvelEnglishResults && (
                 <button type="button" onClick={() => { if (showMarvelWebSeries) setShowMarvelWebSeries(false); else void loadMarvelWebSeries(); }} className={showMarvelWebSeries ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={showMarvelWebSeries} title="Show Marvel web series">📺 Web Series</button>
               )}
