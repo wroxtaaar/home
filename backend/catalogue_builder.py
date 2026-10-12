@@ -81,24 +81,28 @@ def _normalize(value: str) -> str:
     return home_backend._normalize_title(value)
 
 
-def _is_plausible_scraped_title(title: str) -> bool:
-    cleaned = re.sub(r"\s+", " ", title).strip(" -|:")
-    if (
-        len(cleaned) < 2
-        or len(cleaned) > 90
-        or PACK_OR_NOISE.search(cleaned)
-        or EDITORIAL_NOISE.search(cleaned)
-    ):
-        return False
-    words = cleaned.split()
-    if len(words) > 10:
-        return False
+def _scraped_title_rejection_reason(title: str) -> str | None:
+    """Explain why a raw indexer title is not safe to resolve as a movie/TV title."""
+    cleaned = re.sub(r"\s+", " ", str(title or "")).strip(" -|:")
+    if len(cleaned) < 2:
+        return "empty_or_too_short"
+    if len(cleaned) > 90:
+        return "too_long"
+    if PACK_OR_NOISE.search(cleaned):
+        return "pack_or_non_media_collection"
+    if EDITORIAL_NOISE.search(cleaned):
+        return "editorial_or_listicle"
+    if len(cleaned.split()) > 10:
+        return "too_many_words"
     if re.search(r"(?i)\b(1080p|720p|2160p|x264|x265|hevc|webrip|bluray|\d+\s*gb|season \d|episode \d|complete pack)\b", cleaned):
-        return False
+        return "release_or_episode_noise"
     if len(re.findall(r"(?i)\b(?:19|20|21)\d{2}\b", cleaned)) > 1:
-        return False
-    return True
+        return "multiple_years"
+    return None
 
+
+def _is_plausible_scraped_title(title: str) -> bool:
+    return _scraped_title_rejection_reason(title) is None
 
 def _scraper_query_is_useful(query: str) -> bool:
     """Avoid broad searches that the provider normalizes to a generic keyword."""
@@ -271,10 +275,24 @@ async def _scrape_query(query: str, per_query: int) -> list[tuple[str, int, str]
     candidates: list[tuple[str, int, str]] = []
     rejected = 0
     for row in rows:
-        title, year = _title_and_year(str(row.get("title") or ""))
-        if not _is_plausible_scraped_title(title):
+        raw_title = str(row.get("title") or "")
+        # Some indexers attach a canonical film title separately from the full
+        # release name. Prefer that metadata when present, while retaining the
+        # raw release title for diagnosis if it is rejected.
+        source_title = str(row.get("mediaTitle") or "").strip() or raw_title
+        title, year = _title_and_year(source_title)
+        rejection = _scraped_title_rejection_reason(title)
+        if rejection:
             rejected += 1
-            log.debug("Rejected non-title/noisy scraper result %r from query %r", title, query)
+            log.debug(
+                "Rejected scraper result reason=%s query=%r indexer=%r title=%r mediaTitle=%r cleaned=%r",
+                rejection,
+                query,
+                row.get("indexer") or row.get("source") or "unknown",
+                raw_title[:180],
+                str(row.get("mediaTitle") or "")[:120],
+                title,
+            )
             continue
         if _normalize(title):
             candidates.append((title, year, query))
@@ -426,7 +444,9 @@ def main() -> int:
     parser.add_argument("--per-query", type=int, default=30, help="Maximum discovery/scraper results per query (default: 30).")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(message)s")
+    # --verbose is DEBUG so rejected scraper candidates include their source
+    # title and the exact plausibility rule that rejected them.
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING, format="%(levelname)s %(message)s")
     try:
         asyncio.run(_run(args))
     except KeyboardInterrupt:
