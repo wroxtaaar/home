@@ -3228,7 +3228,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 );
               }
               return (
-                <article key={String(movie.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 flex flex-col">
+                <article key={String(movie.id)} onClick={() => movieCatalogue.catalogue === 'bollywood-library' && setExpandedBollywoodMovieKey(current => current === String(movie.tmdbId || movie.id) ? null : String(movie.tmdbId || movie.id))} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 flex flex-col cursor-pointer transition hover:border-cyan-500/40">
                 <div className="relative aspect-[2/3] bg-slate-950">
                   {movie.posterUrl ? (
                     <img
@@ -3373,7 +3373,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     const selectedIndex = Math.min(bollywoodReleaseSelection[selectionKey] || 0, releases.length - 1);
                     const release = releases[selectedIndex];
                     return (
-                      <div className="space-y-1.5 rounded-lg border border-slate-800 bg-slate-950/70 p-2">
+                      <div className="space-y-1.5 rounded-lg border border-slate-800 bg-slate-950/70 p-2" onClick={event => event.stopPropagation()}>
                         {releases.length > 1 && (
                           <select
                             aria-label={'Torrent release for ' + movie.title}
