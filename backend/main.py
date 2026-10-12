@@ -7537,7 +7537,20 @@ MARVEL_WEB_SERIES: tuple[tuple[str, int], ...] = (
     ("Silver Surfer", 1998), ("Spider-Man Unlimited", 1999),
     ("The Avengers: Earth's Mightiest Heroes", 2010), ("Wolverine", 2011),
 )
+DC_WEB_SERIES: tuple[tuple[str, int], ...] = (
+    ("Adventures of Superman", 1952), ("Batman", 1966), ("Shazam!", 1974), ("Wonder Woman", 1975),
+    ("Superboy", 1988), ("Swamp Thing", 1990), ("The Flash", 1990), ("Lois & Clark: The New Adventures of Superman", 1993),
+    ("Smallville", 2001), ("Birds of Prey", 2002), ("Human Target", 2010), ("Arrow", 2012),
+    ("The Flash", 2014), ("Constantine", 2014), ("Gotham", 2014), ("Supergirl", 2015),
+    ("Legends of Tomorrow", 2016), ("Lucifer", 2016), ("Preacher", 2016), ("Powerless", 2017),
+    ("Krypton", 2018), ("Titans", 2018), ("Black Lightning", 2018), ("Doom Patrol", 2019),
+    ("Swamp Thing", 2019), ("Watchmen", 2019), ("Batwoman", 2019), ("Stargirl", 2020),
+    ("Superman & Lois", 2021), ("Sweet Tooth", 2021), ("Y: The Last Man", 2021), ("Naomi", 2022),
+    ("The Sandman", 2022), ("Peacemaker", 2022), ("Gotham Knights", 2023), ("The Penguin", 2024), ("Lanterns", 2026),
+)
+
 _MARVEL_TV_CATALOGUE_CACHE: dict[str, Any] = {"expiresAt": 0.0, "payload": None}
+_DC_TV_CATALOGUE_CACHE: dict[str, Any] = {"expiresAt": 0.0, "payload": None}
 
 
 @app.get("/api/tv/catalogue/marvel")
@@ -7615,6 +7628,41 @@ async def api_tmdb_marvel_tv_catalogue(page: int = Query(1, ge=1, le=500)):
         "results": results,
     }
     _MARVEL_TV_CATALOGUE_CACHE.update({"expiresAt": time.monotonic() + 6 * 60 * 60, "payload": result})
+    return result
+
+
+@app.get("/api/tv/catalogue/dc-live-action")
+async def api_tmdb_dc_live_action_tv_catalogue(page: int = Query(1, ge=1, le=500)):
+    """Return curated live-action DC TV series cards enriched from TMDB."""
+    now = time.monotonic()
+    cached_payload = _DC_TV_CATALOGUE_CACHE.get("payload")
+    if cached_payload and now < float(_DC_TV_CATALOGUE_CACHE.get("expiresAt") or 0.0):
+        return cached_payload
+    if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
+        raise HTTPException(status_code=503, detail="TMDB credentials are not configured.")
+    semaphore = asyncio.Semaphore(3)
+    async def resolve_series(title: str, year: int) -> dict[str, Any]:
+        fallback = {"id": f"dc-tv:{re.sub(r'[^a-z0-9]+', '-', title.casefold()).strip('-')}:{year}", "title": title, "year": year, "releaseDate": str(year), "overview": "", "posterUrl": "", "backdropUrl": "", "rating": 0.0, "tmdbUrl": "", "source": "Curated DC live-action series list"}
+        async with semaphore:
+            try:
+                payload = await _tmdb_get_json("search/tv", {"query": title, "first_air_date_year": year, "include_adult": "false", "language": "en-US", "page": 1})
+            except HTTPException as exc:
+                logger.info("TMDB DC TV lookup failed for %s (%s): %s", title, year, exc.detail)
+                return fallback
+            target = _normalize_title(title)
+            candidates = [row for row in (payload.get("results") or []) if isinstance(row, dict) and row.get("id")]
+            candidates.sort(key=lambda row: (_normalize_title(str(row.get("name") or "")) == target, str(row.get("first_air_date") or "").startswith(str(year)), float(row.get("popularity") or 0)), reverse=True)
+            if not candidates: return fallback
+            item = candidates[0]
+            air_date = str(item.get("first_air_date") or "").strip()
+            year_match = re.match(r"^(\d{4})", air_date)
+            poster_path = str(item.get("poster_path") or "").strip()
+            backdrop_path = str(item.get("backdrop_path") or "").strip()
+            tmdb_id = int(item["id"])
+            return {"id": tmdb_id, "title": title, "year": int(year_match.group(1)) if year_match else year, "releaseDate": air_date, "overview": str(item.get("overview") or "").strip(), "posterUrl": TMDB_IMAGE_BASE + poster_path if poster_path else "", "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop_path if backdrop_path else "", "rating": float(item.get("vote_average") or 0), "tmdbUrl": f"https://www.themoviedb.org/tv/{tmdb_id}", "source": "TMDB"}
+    results = await asyncio.gather(*(resolve_series(title, year) for title, year in DC_WEB_SERIES))
+    result = {"catalogue": "dc-live-action-web-series", "page": 1, "totalPages": 1, "totalResults": len(results), "provider": "TMDB + curated DC live-action series list", "results": results}
+    _DC_TV_CATALOGUE_CACHE.update({"expiresAt": time.monotonic() + 6 * 60 * 60, "payload": result})
     return result
 
 
