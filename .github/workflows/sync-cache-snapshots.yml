@@ -1,8 +1,6 @@
 name: Sync portable cache snapshots
 
 on:
-  schedule:
-    - cron: "17 4 * * *"
   workflow_dispatch:
 
 permissions:
