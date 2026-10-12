@@ -27,5 +27,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m py_compile backend/main.py backend/refresh_franchise_ott.py scripts/clean_cached_movie_catalogues.py scripts/enrich_catalogue_ott.py
+      - run: python -m py_compile backend/main.py backend/fullstack_app.py backend/nexstream.py backend/refresh_franchise_ott.py scripts/clean_cached_movie_catalogues.py scripts/enrich_catalogue_ott.py
       - run: python -m pip install -r backend/requirements.txt
