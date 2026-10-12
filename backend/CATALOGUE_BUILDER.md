@@ -37,7 +37,9 @@ Then run the defaults if the small run reports successful TMDB records and cache
 4. Generic scraper requests such as `2026 movies` are skipped when the provider normalizes them
    to a generic term like `movies`; TMDB discovery still handles these year/category queries.
 5. Torrent titles are cleaned of common release tags and uploader tails. Collections, season packs,
-   music/audio compilations, and common adult-content markers are rejected before TMDB lookup.
+   music/audio compilations, common adult-content markers, and editorial/listicle results (for example
+   "Top 10", "latest Bollywood movies", "hand-picked prints", or actress compilations) are rejected
+   before TMDB lookup. Rejections are available in verbose debug logs.
 6. Scraper candidates require an exact TMDB title match or a high title-similarity and token-overlap
    score; year mismatches are rejected rather than accepting loosely related popular results.
 7. TMDB transport failures get one bounded retry. Metrics separately report retry count, lookup
