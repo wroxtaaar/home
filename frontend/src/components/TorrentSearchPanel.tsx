@@ -688,6 +688,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [timeSort, setTimeSort] = useState<'desc' | 'asc' | null>(null);
   const [releaseYearSort, setReleaseYearSort] = useState<'newest' | 'oldest' | null>(null);
   const [bollywoodLibraryMaxSizeGb, setBollywoodLibraryMaxSizeGb] = useState(5);
+  const [bollywoodReleaseSelection, setBollywoodReleaseSelection] = useState<Record<string, number>>({});
   const [showRecentSearches, setShowRecentSearches] = useState(false);
   const [preparingTorrentKey, setPreparingTorrentKey] = useState<string | null>(null);
   const [playingTorrentKey, setPlayingTorrentKey] = useState<string | null>(null);
@@ -2868,18 +2869,37 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   {movie.overview && (
                     <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{movie.overview}</p>
                   )}
-                  {movieCatalogue?.catalogue === 'bollywood-library' && movie.torrentMatch && (
-                    <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-2.5 py-2">
-                      <p className="line-clamp-2 text-[10px] font-semibold leading-relaxed text-emerald-200" title={movie.torrentMatch.title || ''}>
-                        Matched release: {movie.torrentMatch.title || movie.title}
-                      </p>
-                      <p className="mt-1 text-[10px] text-slate-400">
-                        {movie.torrentMatch.indexer || 'Torrent provider'}
-                        {movie.torrentMatch.size ? ' · ' + formatBytes(Number(movie.torrentMatch.size) || 0) : ''}
-                        {movie.torrentMatch.seeders != null ? ' · ▲ ' + Number(movie.torrentMatch.seeders) : ''}
-                      </p>
-                    </div>
-                  )}
+                  {movieCatalogue?.catalogue === 'bollywood-library' && (movie.torrentMatches?.length || movie.torrentMatch) && (() => {
+                    const releases = movie.torrentMatches?.length ? movie.torrentMatches : [movie.torrentMatch!];
+                    const selectionKey = String(movie.tmdbId || movie.id);
+                    const selectedIndex = Math.min(bollywoodReleaseSelection[selectionKey] || 0, releases.length - 1);
+                    const selectedRelease = releases[selectedIndex];
+                    return (
+                      <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-2.5 py-2">
+                        <div className="mb-1.5 flex items-center justify-between gap-2">
+                          <p className="text-[10px] font-bold text-emerald-200">Available releases</p>
+                          <span className="text-[10px] text-slate-400">{releases.length} option{releases.length === 1 ? '' : 's'}</span>
+                        </div>
+                        <select
+                          aria-label={'Torrent release for ' + movie.title}
+                          value={String(selectedIndex)}
+                          onChange={event => setBollywoodReleaseSelection(current => ({ ...current, [selectionKey]: Number(event.target.value) }))}
+                          className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-[10px] text-slate-200"
+                        >
+                          {releases.map((release, index) => (
+                            <option key={(release.infoHash || release.title || 'release') + ':' + index} value={index}>
+                              {(release.title || movie.title) + ' · ' + (release.size ? formatBytes(Number(release.size) || 0) : 'Size unknown') + (release.seeders != null ? ' · ▲ ' + Number(release.seeders) : '')}
+                            </option>
+                          ))}
+                        </select>
+                        <p className="mt-1 text-[10px] text-slate-400">
+                          {selectedRelease.indexer || 'Torrent provider'}
+                          {selectedRelease.size ? ' · ' + formatBytes(Number(selectedRelease.size) || 0) : ''}
+                          {selectedRelease.seeders != null ? ' · ▲ ' + Number(selectedRelease.seeders) : ''}
+                        </p>
+                      </div>
+                    );
+                  })()}
                   <button
                     type="button"
                     disabled={isSearching || (movieCatalogue?.catalogue !== 'bollywood-library' && movieTorrentSearchLoading)}
@@ -2888,7 +2908,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       setSizeSort(null);
                       setTimeSort(null);
                       setReleaseYearSort(null);
-                      const cached = movieCatalogue?.catalogue === 'bollywood-library' ? movie.torrentMatch : undefined;
+                      const movieReleases = movie.torrentMatches?.length ? movie.torrentMatches : (movie.torrentMatch ? [movie.torrentMatch] : []);
+                      const selectionKey = String(movie.tmdbId || movie.id);
+                      const selectedReleaseIndex = Math.min(bollywoodReleaseSelection[selectionKey] || 0, Math.max(0, movieReleases.length - 1));
+                      const cached = movieCatalogue?.catalogue === 'bollywood-library' ? movieReleases[selectedReleaseIndex] : undefined;
                       if (cached) {
                         const cachedResult: TorrentSearchResult = {
                           title: cached.title || movie.title,
@@ -2911,7 +2934,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     }}
                     className="mt-auto w-full rounded-lg bg-cyan-500 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-50"
                   >
-                    {movieCatalogue?.catalogue === 'bollywood-library' && movie.torrentMatch
+                    {movieCatalogue?.catalogue === 'bollywood-library' && (movie.torrentMatches?.length || movie.torrentMatch)
                       ? <><Download className="mr-1.5 inline h-3.5 w-3.5" />Get</>
                       : movieTorrentSearchLoading && movieTorrentSearchTitle === movie.title + (movie.year ? ' ' + movie.year : '')
                         ? <><Loader2 className="mr-1.5 inline h-3.5 w-3.5 animate-spin" />Searching…</>
