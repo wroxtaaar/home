@@ -7668,10 +7668,91 @@ async def api_tmdb_movie_catalogue(
         "latest-hollywood", "latest-bollywood",
         "popular-hollywood", "popular-bollywood",
         "trending-hollywood", "trending-bollywood",
-        "marvel", "dc-live-action", "dc-animated",
+        "marvel", "dc-live-action", "dc-animated", "bollywood-library",
     }
     if catalogue_key not in allowed:
         raise HTTPException(status_code=404, detail="Unknown movie catalogue.")
+
+    # This is a separate metadata-only library sourced from the refreshed export.
+    # It never reads or writes the existing torrent-result catalogues.
+    if catalogue_key == "bollywood-library":
+        metadata_path = Path(os.getenv(
+            "BOLLYWOOD_METADATA_CATALOGUE_PATH",
+            str(_CACHE_SEED_DIR / "bollywood_tmdb_updated_metadata.json"),
+        ))
+        try:
+            metadata_payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            source_rows = metadata_payload.get("records", [])
+            if not isinstance(source_rows, list):
+                raise ValueError("metadata records must be a list")
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning("Bollywood metadata library unavailable: %s", type(exc).__name__)
+            raise HTTPException(
+                status_code=503,
+                detail="Bollywood metadata library is not available in this test deployment yet.",
+            ) from exc
+
+        today = datetime.now(timezone.utc).date().isoformat()
+        rows = []
+        for source_row in source_rows:
+            if not isinstance(source_row, dict):
+                continue
+            title = str(source_row.get("title") or "").strip()
+            if not title:
+                continue
+            release_date = str(source_row.get("releaseDate") or "").strip()
+            if released_only and release_date and release_date > today:
+                continue
+            raw_tmdb_id = source_row.get("tmdbId")
+            try:
+                tmdb_id = int(raw_tmdb_id) if raw_tmdb_id is not None else None
+            except (TypeError, ValueError):
+                tmdb_id = None
+            try:
+                year = int(source_row.get("year")) if source_row.get("year") is not None else None
+            except (TypeError, ValueError):
+                year = None
+            poster_path = str(source_row.get("posterPath") or "").strip()
+            backdrop_path = str(source_row.get("backdropPath") or "").strip()
+            rows.append({
+                "id": tmdb_id if tmdb_id is not None else (
+                    "historical:" + _normalize_title(title) + ":" + str(year or "")
+                ),
+                "tmdbId": tmdb_id,
+                "imdbId": source_row.get("imdbId"),
+                "title": title,
+                "year": year,
+                "releaseDate": release_date,
+                "overview": str(source_row.get("overview") or "").strip(),
+                "posterUrl": "https://image.tmdb.org/t/p/w500" + poster_path if poster_path else "",
+                "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop_path if backdrop_path else "",
+                "source": "TMDB Hindi/India catalogue" if tmdb_id is not None else "Historical IMDb seed (unverified)",
+                "verified": tmdb_id is not None,
+                "tmdbUrl": f"https://www.themoviedb.org/movie/{tmdb_id}" if tmdb_id is not None else "",
+                "imdbUrl": f"https://www.imdb.com/title/{source_row.get('imdbId')}/" if source_row.get("imdbId") else "",
+            })
+
+        # TMDB-enriched records first, then newest release dates; stable title ordering
+        # keeps pages consistent when records share a date or have no release date.
+        rows.sort(key=lambda item: (
+            bool(item.get("tmdbId")),
+            str(item.get("releaseDate") or ""),
+            str(item.get("title") or "").casefold(),
+        ), reverse=True)
+        page_size = 50
+        total_results = len(rows)
+        total_pages = max(1, (total_results + page_size - 1) // page_size)
+        start = (page - 1) * page_size
+        return {
+            "catalogue": catalogue_key,
+            "provider": "TMDB + historical IMDb seed",
+            "page": page,
+            "totalPages": total_pages,
+            "totalResults": total_results,
+            "releasedOnly": released_only,
+            "results": rows[start:start + page_size],
+            "attribution": "Metadata from TMDB and the preserved historical IMDb seed; unmatched historical records are marked unverified.",
+        }
 
     # Keep released-only and include-upcoming responses in separate cache slots.
     cache_key = (catalogue_key + ("|released-v4" if released_only else "|upcoming-v3"), page)
