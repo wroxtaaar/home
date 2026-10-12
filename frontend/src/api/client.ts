@@ -41,7 +41,8 @@ export type MovieCatalogueKey =
   | 'popular-hollywood'
   | 'popular-bollywood'
   | 'trending-hollywood'
-  | 'trending-bollywood';
+  | 'trending-bollywood'
+  | 'bollywood-library';
 
 export interface MovieCatalogueItem {
   id: number | string;
