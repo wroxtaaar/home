@@ -42,6 +42,23 @@ def normalize(value: Any) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", str(value or "").casefold()))
 
 
+MAX_CACHED_TORRENT_SIZE_BYTES = 5 * 1024 * 1024 * 1024
+
+
+def size_bytes(value: Any) -> int:
+    """Normalize provider sizes to bytes; unknown sizes are not cacheable."""
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    text = str(value or "").strip().casefold().replace(",", "")
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(b|bytes?|kb|kib|mb|mib|gb|gib|tb|tib)?", text)
+    if not match:
+        return 0
+    amount = float(match.group(1))
+    unit = match.group(2) or "b"
+    factors = {"b": 1, "byte": 1, "bytes": 1, "kb": 1000, "kib": 1024, "mb": 1000**2, "mib": 1024**2, "gb": 1000**3, "gib": 1024**3, "tb": 1000**4, "tib": 1024**4}
+    return int(amount * factors[unit])
+
+
 def year_from_title(value: Any) -> int | None:
     match = re.search(r"\b(?:19|20)\d{2}\b", str(value or ""))
     return int(match.group(0)) if match else None
@@ -170,6 +187,9 @@ async def run() -> int:
             if not isinstance(result, dict):
                 continue
             result_title = str(result.get("title") or "").strip()
+            result_size = size_bytes(result.get("size"))
+            if result_size <= 0 or result_size > MAX_CACHED_TORRENT_SIZE_BYTES:
+                continue
             if is_adult_result(result_title):
                 continue
             score = title_similarity(title, result_title)
@@ -192,7 +212,7 @@ async def run() -> int:
                 "infoUrl": str(result.get("infoUrl") or result.get("sourceUrl") or ""),
                 "magnetUrl": result.get("magnetUrl"),
                 "infoHash": str(result.get("infoHash") or ""),
-                "size": result.get("size"),
+                "size": size_bytes(result.get("size")),
                 "seeders": result.get("seeders"),
                 "leechers": result.get("leechers"),
                 "matchScore": round(best[0], 3),
