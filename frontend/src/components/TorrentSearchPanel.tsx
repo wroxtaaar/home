@@ -79,7 +79,10 @@ async function fetchNexStreamEpisodeMetadata(tmdbId: number, season: number): Pr
   }
 }
 
-function prefetchNexStreamEpisodeMetadata(items: NexStreamTitleLike[]) {
+function prefetchNexStreamEpisodeMetadata(
+  items: NexStreamTitleLike[],
+  onStatus: (id: number, status: 'loading' | 'ready' | 'error') => void,
+) {
   const queue = items.slice();
   let active = 0;
   const pump = () => {
@@ -87,11 +90,24 @@ function prefetchNexStreamEpisodeMetadata(items: NexStreamTitleLike[]) {
       const item = queue.shift();
       if (!item) continue;
       const key = nexStreamEpisodeCacheKey(item.id, 1);
-      if (nexStreamEpisodeCache.has(key) || nexStreamEpisodeRequests.has(key)) continue;
+      if (nexStreamEpisodeCache.has(key)) {
+        onStatus(item.id, 'ready');
+        continue;
+      }
+      if (nexStreamEpisodeRequests.has(key)) {
+        onStatus(item.id, 'loading');
+        void fetchNexStreamEpisodeMetadata(item.id, 1).then(
+          () => onStatus(item.id, 'ready'),
+          () => onStatus(item.id, 'error'),
+        );
+        continue;
+      }
+      onStatus(item.id, 'loading');
       active += 1;
-      void fetchNexStreamEpisodeMetadata(item.id, 1).catch(() => {
-        // A failed background prefetch must not hide the results; retry on click.
-      }).finally(() => {
+      void fetchNexStreamEpisodeMetadata(item.id, 1).then(
+        () => onStatus(item.id, 'ready'),
+        () => onStatus(item.id, 'error'),
+      ).finally(() => {
         active -= 1;
         pump();
       });
@@ -390,6 +406,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [nexStreamResults, setNexStreamResults] = useState<NexStreamTitle[]>([]);
   const [nexStreamSearchMode, setNexStreamSearchMode] = useState<'movie' | 'tv' | null>(null);
   const [nexStreamLoading, setNexStreamLoading] = useState(false);
+  const [nexStreamEpisodePrefetchStatus, setNexStreamEpisodePrefetchStatus] = useState<Record<string, 'loading' | 'ready' | 'error'>>({});
   const nexStreamSearchControllerRef = useRef<AbortController | null>(null);
   const nexStreamSearchGenerationRef = useRef(0);
   const [nexStreamError, setNexStreamError] = useState('');
@@ -1045,7 +1062,12 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       // Fetch episode lists and thumbnails in the background, without delaying
       // the result cards. The first few TV cards are ready by the time a user
       // opens the episode picker; remaining cards are prefetched with 3 workers.
-      if (mediaType === 'tv') prefetchNexStreamEpisodeMetadata(resolvedTitles);
+      if (mediaType === 'tv') {
+        setNexStreamEpisodePrefetchStatus({});
+        prefetchNexStreamEpisodeMetadata(resolvedTitles, (id, status) => {
+          setNexStreamEpisodePrefetchStatus(previous => ({ ...previous, [String(id)]: status }));
+        });
+      }
       if (failedSearches.length === types.length) {
         const firstFailure = failedSearches[0] as PromiseRejectedResult;
         throw firstFailure.reason instanceof Error ? firstFailure.reason : new Error('TMDB title search failed.');
@@ -2108,8 +2130,16 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     <h4 className="line-clamp-2 text-sm font-bold text-slate-100">{item.title}</h4>
                     <p className="text-[11px] text-slate-500">{item.date ? item.date.slice(0, 4) : 'Release year unknown'} · TV series</p>
                     {item.overview && <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{item.overview}</p>}
-                    <button type="button" disabled={nexStreamResolvingId === 'tv:' + item.id} onClick={() => void playWithNexStream(item)} className="mt-auto w-full rounded-lg bg-violet-500 px-3 py-2 text-xs font-bold text-white hover:bg-violet-400 disabled:opacity-50">
-                      {nexStreamResolvingId === 'tv:' + item.id ? <><Loader2 className="mr-1.5 inline h-3.5 w-3.5 animate-spin" />Resolving…</> : <><Play className="mr-1.5 inline h-3.5 w-3.5" />Choose episode</>}
+                    <button
+                      type="button"
+                      disabled={nexStreamResolvingId === 'tv:' + item.id || nexStreamEpisodePrefetchStatus[String(item.id)] === 'loading'}
+                      onClick={() => void playWithNexStream(item)}
+                      className="mt-auto w-full rounded-lg bg-violet-500 px-3 py-2 text-xs font-bold text-white hover:bg-violet-400 disabled:cursor-wait disabled:opacity-60"
+                    >
+                      {nexStreamResolvingId === 'tv:' + item.id ? <><Loader2 className="mr-1.5 inline h-3.5 w-3.5 animate-spin" />Resolving…</>
+                        : nexStreamEpisodePrefetchStatus[String(item.id)] === 'loading' ? <><Loader2 className="mr-1.5 inline h-3.5 w-3.5 animate-spin" />Preparing episodes…</>
+                        : nexStreamEpisodePrefetchStatus[String(item.id)] === 'ready' ? <><Play className="mr-1.5 inline h-3.5 w-3.5" />Choose episode</>
+                        : <><Play className="mr-1.5 inline h-3.5 w-3.5" />{nexStreamEpisodePrefetchStatus[String(item.id)] === 'error' ? 'Retry episode data' : 'Choose episode'}</>}
                     </button>
                   </div>
                 </article>
