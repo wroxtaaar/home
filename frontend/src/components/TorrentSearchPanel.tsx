@@ -891,6 +891,22 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     return raw.startsWith('/') ? API_BASE + raw : raw;
   };
 
+  // Poster cards render at a small fixed size, so request TMDB's lightweight
+  // thumbnail variant rather than downloading the larger w500/original image.
+  // Keep non-TMDB URLs unchanged.
+  const lowQualityPosterUrl = (value: unknown) => {
+    const url = String(value || '').trim();
+    if (!url) return '';
+    try {
+      const parsed = new URL(url, window.location.origin);
+      if (parsed.hostname !== 'image.tmdb.org') return url;
+      parsed.pathname = parsed.pathname.replace(/\\/t\\/p\\/(?:original|w500|w780|w342|w300|w200|w154|w92)\\//, '/t/p/w185/');
+      return parsed.toString();
+    } catch {
+      return url;
+    }
+  };
+
   const posterResolveCandidateUrlsFor = (result: TorrentSearchResult) => {
     const candidates: string[] = [];
     const seen = new Set<string>();
@@ -1108,7 +1124,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   };
 
   const posterUrlFor = (result: TorrentSearchResult) =>
-    posterOverrides[posterKeyFor(result)] || '';
+    lowQualityPosterUrl(posterOverrides[posterKeyFor(result)] || '');
 
   const normalizeMatchText = (value: string) =>
     String(value || '')
@@ -2867,7 +2883,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               {nexStreamResults.filter(item => item.type === 'tv').map(item => (
                 <article key={'nexstream-tv-' + item.id} className="min-w-0 overflow-hidden rounded-xl border border-violet-500/25 bg-slate-950">
                   <div className="aspect-[2/3] bg-slate-900">
-                    {item.poster ? <img src={item.poster} alt={item.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="flex h-full items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
+                    {item.poster ? <img src={lowQualityPosterUrl(item.poster)} alt={item.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="flex h-full items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
                   </div>
                   <div className="flex flex-col gap-2 p-2.5">
                     <h4 className="line-clamp-2 text-sm font-bold text-slate-100">{item.title}</h4>
@@ -3122,7 +3138,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     <div className="relative aspect-[2/3] w-full overflow-hidden rounded-t-xl bg-slate-950">
                       {posterUrl ? (
                         <img
-                          src={posterUrl}
+                          src={lowQualityPosterUrl(posterUrl)}
                           alt={previewGroup.title}
                           loading="lazy"
                           className="h-full w-full object-cover"
@@ -3276,7 +3292,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   <article key={String(movie.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-slate-700 hover:bg-slate-900/95 flex flex-col">
                     <button type="button" className="text-left flex flex-1 flex-col" onClick={() => setExpandedBollywoodMovieKey(String(movie.tmdbId || movie.id))} aria-label={'Open preparation details for ' + movie.title}>
                       <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
-                        {movie.posterUrl ? <img src={movie.posterUrl} alt={movie.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="absolute inset-0 flex items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
+                        {movie.posterUrl ? <img src={lowQualityPosterUrl(movie.posterUrl)} alt={movie.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="absolute inset-0 flex items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
                         {imdb?.imdbRating != null && imdb.imdbRating > 0 && <span className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow">⭐ {imdb.imdbRating.toFixed(1)}/10</span>}
                       </div>
                       <div className="flex flex-1 flex-col gap-2 p-2.5">
@@ -3691,7 +3707,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     {[...dcWebSeriesCatalogue.results].sort((a, b) => (Number(b.year) || 0) - (Number(a.year) || 0) || a.title.localeCompare(b.title)).map(show => (
                       <article key={String(show.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-cyan-500/40 hover:bg-slate-900/95 flex flex-col">
                         <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
-                          {show.posterUrl ? <img src={show.posterUrl} alt={show.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="absolute inset-0 flex items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
+                          {show.posterUrl ? <img src={lowQualityPosterUrl(show.posterUrl)} alt={show.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="absolute inset-0 flex items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
                           {show.rating ? <span className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow">⭐ {show.rating.toFixed(1)}/10</span> : null}
                         </div>
                         <div className="flex flex-1 flex-col gap-2 p-2.5">
@@ -3864,7 +3880,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       {compactPosterUrl ? (
                         <>
                           <img
-                            src={compactPosterUrl}
+                            src={lowQualityPosterUrl(compactPosterUrl)}
                             alt={mediaDisplayTitle}
                             loading="lazy"
                             className="h-full w-full object-cover cursor-pointer"
@@ -4008,7 +4024,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                         {resolvedPosterUrl ? (
                           <>
                             <img
-                              src={resolvedPosterUrl}
+                              src={lowQualityPosterUrl(resolvedPosterUrl)}
                               alt={group.title}
                               loading="lazy"
                               className="w-full h-full object-cover cursor-pointer"
