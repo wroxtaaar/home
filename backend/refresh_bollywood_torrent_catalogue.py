@@ -52,11 +52,17 @@ def title_similarity(movie_title: str, result_title: str) -> float:
     result = normalize(result_title)
     if not movie or not result:
         return 0.0
-    if movie in result or result in movie:
-        shorter = min(len(movie), len(result))
-        longer = max(len(movie), len(result))
-        return 0.88 if shorter / max(1, longer) >= 0.45 else 0.0
-    return SequenceMatcher(None, movie, result).ratio()
+    movie_tokens = set(movie.split())
+    result_tokens = set(result.split())
+    # Torrent names often append year, resolution, codecs, release groups and language.
+    # Token coverage handles those suffixes better than whole-string similarity alone.
+    coverage = len(movie_tokens & result_tokens) / max(1, len(movie_tokens))
+    sequence = SequenceMatcher(None, movie, result).ratio()
+    if coverage == 1.0:
+        return max(0.90, sequence)
+    if coverage >= 0.8:
+        return max(0.76, sequence)
+    return max(coverage * 0.8, sequence)
 
 
 def load_json(path: Path, default: Any) -> Any:
