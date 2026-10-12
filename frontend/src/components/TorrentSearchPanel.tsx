@@ -39,21 +39,37 @@ async function fetchNexStreamEpisodeMetadata(tmdbId: number, season: number): Pr
   if (pending) return pending;
 
   const request = (async () => {
-    const params = new URLSearchParams({ tmdb_id: String(tmdbId), season: String(season) });
-    const response = await fetch('/api/nexstream/episodes?' + params.toString(), {
-      headers: { Accept: 'application/json' }, credentials: 'same-origin',
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || !data.success) throw new Error(data.detail || 'Could not load episode list.');
-    const payload: NexStreamEpisodePayload = {
-      seasons: Array.isArray(data.seasons) ? data.seasons : [],
-      episodes: Array.isArray(data.episodes) ? data.episodes : [],
-      selectedSeason: Number(data.selectedSeason) || season,
-    };
-    // The endpoint may select a different valid season if season 1 is absent.
-    nexStreamEpisodeCache.set(nexStreamEpisodeCacheKey(tmdbId, payload.selectedSeason), payload);
-    nexStreamEpisodeCache.set(key, payload);
-    return payload;
+    let lastError: unknown = null;
+    // Transient network errors / TMDB 429s happen occasionally. Retry in the
+    // background and on demand instead of leaving the picker permanently empty.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const params = new URLSearchParams({ tmdb_id: String(tmdbId), season: String(season) });
+        const response = await fetch('/api/nexstream/episodes?' + params.toString(), {
+          headers: { Accept: 'application/json' }, credentials: 'same-origin',
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.success) {
+          const error = new Error(data.detail || 'Could not load episode list.');
+          // Retry server errors and rate limits; don't retry invalid requests.
+          if (response.status < 500 && response.status !== 429) throw Object.assign(error, { permanent: true });
+          throw error;
+        }
+        const payload: NexStreamEpisodePayload = {
+          seasons: Array.isArray(data.seasons) ? data.seasons : [],
+          episodes: Array.isArray(data.episodes) ? data.episodes : [],
+          selectedSeason: Number(data.selectedSeason) || season,
+        };
+        nexStreamEpisodeCache.set(nexStreamEpisodeCacheKey(tmdbId, payload.selectedSeason), payload);
+        nexStreamEpisodeCache.set(key, payload);
+        return payload;
+      } catch (error: any) {
+        lastError = error;
+        if (error?.permanent || attempt === 2) break;
+        await new Promise(resolve => window.setTimeout(resolve, 400 * (attempt + 1)));
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error('Could not load episode list after retries.');
   })();
   nexStreamEpisodeRequests.set(key, request);
   try {
@@ -2107,7 +2123,13 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   {nexStreamEpisodesLoading ? (
                     <div className="flex items-center justify-center gap-2 py-12 text-sm text-slate-300"><Loader2 className="h-4 w-4 animate-spin" />Loading episodes…</div>
                   ) : nexStreamEpisodesError ? (
-                    <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">{nexStreamEpisodesError} You can still enter an episode number below.</div>
+                    <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">
+                      <p>{nexStreamEpisodesError}</p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <button type="button" onClick={() => { if (nexStreamEpisodePicker) void loadNexStreamEpisodes(nexStreamEpisodePicker, nexStreamSelectedSeason); }} className="rounded-lg border border-amber-300/40 px-3 py-1.5 font-semibold hover:bg-amber-400/10">Retry episode list</button>
+                        <span className="text-xs text-amber-100/70">You can also enter an episode number below.</span>
+                      </div>
+                    </div>
                   ) : nexStreamEpisodes.length > 0 ? (
                     <div className="space-y-2">
                       {nexStreamEpisodes.map(episode => (
