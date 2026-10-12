@@ -3338,21 +3338,23 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 );
               }
               return (
-                <article key={String(movie.id)} onClick={() => movieCatalogue.catalogue === 'bollywood-library' && setExpandedBollywoodMovieKey(current => current === String(movie.tmdbId || movie.id) ? null : String(movie.tmdbId || movie.id))} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 flex flex-col cursor-pointer transition hover:border-cyan-500/40">
-                <div className="relative aspect-[2/3] bg-slate-950">
+                <article key={String(movie.id)} onClick={() => movieCatalogue.catalogue === 'bollywood-library' && setExpandedBollywoodMovieKey(current => current === String(movie.tmdbId || movie.id) ? null : String(movie.tmdbId || movie.id))} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 flex flex-col transition hover:border-cyan-500/40 hover:bg-slate-900/95">
+                <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
                   {movie.posterUrl ? (
                     <img
                       src={movie.posterUrl}
                       alt={movie.title}
                       loading="lazy"
                       className="h-full w-full object-cover"
-                      onError={(event) => { event.currentTarget.style.display = 'none'; }}
+                      onError={(event) => {
+                        event.currentTarget.style.display = 'none';
+                        event.currentTarget.parentElement?.querySelector('[data-movie-poster-placeholder="true"]')?.classList.remove('hidden');
+                      }}
                     />
-                  ) : (
-                    <div className="absolute inset-0 flex items-center justify-center text-slate-600">
-                      <Film className="h-8 w-8" />
-                    </div>
-                  )}
+                  ) : null}
+                  <div data-movie-poster-placeholder="true" className={(movie.posterUrl ? 'hidden ' : '') + 'absolute inset-0 flex items-center justify-center bg-slate-950 text-slate-600'}>
+                    <Film className="h-8 w-8" />
+                  </div>
                   {(() => {
                     const imdb = imdbRatingsByKey[imdbRatingKey(movie.title, movie.year)];
                     if (imdb?.imdbRating != null && imdb.imdbRating > 0) {
@@ -3376,8 +3378,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   })()}
                 </div>
                 <div className="flex flex-1 flex-col gap-2 p-2.5">
-                  <div>
-                    <h3 className="text-sm font-bold leading-snug text-slate-100">{movie.title}</h3>
+                  <div className="min-h-[3.2rem]">
+                    <h3 className="line-clamp-2 text-sm font-bold leading-snug text-slate-100">{movie.title}</h3>
                     <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
                       <span className="text-slate-500">{movie.year || 'Release year unknown'}</span>
                       {(() => {
@@ -3513,31 +3515,42 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       </div>
                     );
                   })()}
-                  <div className="mt-auto grid grid-cols-2 gap-2">
-                    {showNexStreamButton && (
-                      <button
-                        type="button"
-                        disabled={!Number(movie.tmdbId || movie.id) || nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id)}
-                        onClick={() => {
-                          const tmdbId = Number(movie.tmdbId || movie.id);
-                          if (!Number.isInteger(tmdbId) || tmdbId <= 0) {
-                            setNexStreamError('This catalogue card has no valid TMDB ID for NexStream.');
-                            return;
-                          }
-                          void playWithNexStream({
-                            id: tmdbId,
-                            title: movie.title,
-                            date: movie.releaseDate || (movie.year ? String(movie.year) : ''),
-                            overview: movie.overview || '',
-                            poster: movie.posterUrl || null,
-                            type: 'movie',
-                          });
-                        }}
-                        className="w-full rounded-lg border border-violet-400/50 bg-violet-500/15 px-2 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-50"
+                  <div className="mt-auto space-y-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      {showNexStreamButton && (
+                        <button
+                          type="button"
+                          disabled={!Number(movie.tmdbId || movie.id) || nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id)}
+                          onClick={() => {
+                            const tmdbId = Number(movie.tmdbId || movie.id);
+                            if (!Number.isInteger(tmdbId) || tmdbId <= 0) {
+                              setNexStreamError('This catalogue card has no valid TMDB ID for NexStream.');
+                              return;
+                            }
+                            void playWithNexStream({
+                              id: tmdbId,
+                              title: movie.title,
+                              date: movie.releaseDate || (movie.year ? String(movie.year) : ''),
+                              overview: movie.overview || '',
+                              poster: movie.posterUrl || null,
+                              type: 'movie',
+                            });
+                          }}
+                          className="w-full rounded-lg border border-violet-400/50 bg-violet-500/15 px-2 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-50"
+                        >
+                          {nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id) ? 'Opening…' : 'Find on NexStream'}
+                        </button>
+                      )}
+                      <a
+                        href={'https://www.themoviedb.org/movie/' + String(movie.tmdbId || movie.id)}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={event => event.stopPropagation()}
+                        className="block w-full rounded-lg border border-slate-700 px-2 py-2 text-center text-[11px] font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
                       >
-                        {nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id) ? 'Opening…' : 'NexStream'}
-                      </button>
-                    )}
+                        View on TMDB
+                      </a>
+                    </div>
                     <button
                       type="button"
                       disabled={isSearching || movieTorrentSearchLoading}
