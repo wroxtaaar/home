@@ -7489,7 +7489,31 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_on
     else:
         raise HTTPException(status_code=404, detail="Unknown movie catalogue.")
 
-    payload = await _tmdb_get_json("discover/movie", params)
+    if catalogue_key in {"popular-bollywood", "latest-bollywood"}:
+        # One Home page represents 50 Hindi-film results. TMDB returns at most
+        # 20 per discover page, so collect three upstream pages and persist the
+        # combined result in the existing catalogue cache.
+        upstream_start = (page - 1) * 3 + 1
+        upstream_pages = range(upstream_start, min(upstream_start + 3, 501))
+        upstream_payloads = await asyncio.gather(*(
+            _tmdb_get_json("discover/movie", {**params, "page": upstream_page})
+            for upstream_page in upstream_pages
+        ))
+        first_payload = upstream_payloads[0] if upstream_payloads else {}
+        payload = dict(first_payload)
+        payload["results"] = [
+            item
+            for upstream_payload in upstream_payloads
+            for item in (upstream_payload.get("results") or [])
+        ][:50]
+        payload["page"] = page
+        upstream_total_pages = max(
+            (int(upstream_payload.get("total_pages") or 1) for upstream_payload in upstream_payloads),
+            default=1,
+        )
+        payload["total_pages"] = max(1, min(500, (upstream_total_pages + 2) // 3))
+    else:
+        payload = await _tmdb_get_json("discover/movie", params)
     raw_results = payload.get("results") or []
     results: list[dict[str, Any]] = []
     for item in raw_results:
