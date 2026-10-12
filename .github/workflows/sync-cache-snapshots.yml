@@ -30,7 +30,7 @@ jobs:
           test -n "$VPS_HOST" || { echo "Missing VPS_HOST"; exit 1; }
           test -n "$VPS_SSH_KEY" || { echo "Missing VPS_SSH_KEY"; exit 1; }
           mkdir -p ~/.ssh
-          printf '%s\\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -p "$VPS_SSH_PORT" "$VPS_HOST" >> ~/.ssh/known_hosts
 
