@@ -20,6 +20,104 @@ import searchLimits from '../../search_limits.json';
 
 type MovieOttCardState = MovieOttAvailability | { status: 'loading' | 'error'; message?: string };
 
+type NexStreamEpisode = { episodeNumber: number; name: string; overview: string; airDate: string; still: string | null };
+type NexStreamSeason = { seasonNumber: number; name: string; episodeCount: number };
+type NexStreamEpisodePayload = { seasons: NexStreamSeason[]; episodes: NexStreamEpisode[]; selectedSeason: number };
+
+// Episode metadata is prefetched after TV search results appear. Keep it in a
+// module cache so opening the picker and revisiting a title is usually instant.
+const nexStreamEpisodeCache = new Map<string, NexStreamEpisodePayload>();
+const nexStreamEpisodeRequests = new Map<string, Promise<NexStreamEpisodePayload>>();
+const nexStreamEpisodeCacheKey = (id: number, season: number) => String(id) + ':' + String(season);
+
+async function fetchNexStreamEpisodeMetadata(tmdbId: number, season: number): Promise<NexStreamEpisodePayload> {
+  const key = nexStreamEpisodeCacheKey(tmdbId, season);
+  const cached = nexStreamEpisodeCache.get(key);
+  if (cached) return cached;
+  const pending = nexStreamEpisodeRequests.get(key);
+  if (pending) return pending;
+
+  const request = (async () => {
+    let lastError: unknown = null;
+    // Transient network errors / TMDB 429s happen occasionally. Retry in the
+    // background and on demand instead of leaving the picker permanently empty.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const params = new URLSearchParams({ tmdb_id: String(tmdbId), season: String(season) });
+        const response = await fetch('/api/nexstream/episodes?' + params.toString(), {
+          headers: { Accept: 'application/json' }, credentials: 'same-origin',
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.success) {
+          const error = new Error(data.detail || 'Could not load episode list.');
+          // Retry server errors and rate limits; don't retry invalid requests.
+          if (response.status < 500 && response.status !== 429) throw Object.assign(error, { permanent: true });
+          throw error;
+        }
+        const payload: NexStreamEpisodePayload = {
+          seasons: Array.isArray(data.seasons) ? data.seasons : [],
+          episodes: Array.isArray(data.episodes) ? data.episodes : [],
+          selectedSeason: Number(data.selectedSeason) || season,
+        };
+        nexStreamEpisodeCache.set(nexStreamEpisodeCacheKey(tmdbId, payload.selectedSeason), payload);
+        nexStreamEpisodeCache.set(key, payload);
+        return payload;
+      } catch (error: any) {
+        lastError = error;
+        if (error?.permanent || attempt === 2) break;
+        await new Promise(resolve => window.setTimeout(resolve, 400 * (attempt + 1)));
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error('Could not load episode list after retries.');
+  })();
+  nexStreamEpisodeRequests.set(key, request);
+  try {
+    return await request;
+  } finally {
+    nexStreamEpisodeRequests.delete(key);
+  }
+}
+
+function prefetchNexStreamEpisodeMetadata(
+  items: NexStreamTitleLike[],
+  onStatus: (id: number, status: 'loading' | 'ready' | 'error') => void,
+) {
+  const queue = items.slice();
+  let active = 0;
+  const pump = () => {
+    while (active < 3 && queue.length) {
+      const item = queue.shift();
+      if (!item) continue;
+      const key = nexStreamEpisodeCacheKey(item.id, 1);
+      if (nexStreamEpisodeCache.has(key)) {
+        onStatus(item.id, 'ready');
+        continue;
+      }
+      if (nexStreamEpisodeRequests.has(key)) {
+        onStatus(item.id, 'loading');
+        void fetchNexStreamEpisodeMetadata(item.id, 1).then(
+          () => onStatus(item.id, 'ready'),
+          () => onStatus(item.id, 'error'),
+        );
+        continue;
+      }
+      onStatus(item.id, 'loading');
+      active += 1;
+      void fetchNexStreamEpisodeMetadata(item.id, 1).then(
+        () => onStatus(item.id, 'ready'),
+        () => onStatus(item.id, 'error'),
+      ).finally(() => {
+        active -= 1;
+        pump();
+      });
+    }
+  };
+  pump();
+}
+
+type NexStreamTitleLike = { id: number; type: 'movie' | 'tv' };
+
+
 function isPresetSearchLabel(value: string): boolean {
   const normalized = String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
   return new Set([
@@ -489,6 +587,16 @@ function groupTorrentResults(results: TorrentSearchResult[]): TorrentQualityGrou
 export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepare, onCancelPrepare, onOpenProgress, seedrFiles = [], seedrDeletedFolderIds = [], onPlaySeedrFile }) => {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<TorrentSearchResult[]>([]);
+  type NexStreamTitle = { id: number; title: string; date: string; overview: string; poster: string | null; type: 'movie' | 'tv' };
+  const [nexStreamResults, setNexStreamResults] = useState<NexStreamTitle[]>([]);
+  const [nexStreamSearchMode, setNexStreamSearchMode] = useState<'movie' | 'tv' | null>(null);
+  const [nexStreamLoading, setNexStreamLoading] = useState(false);
+  const [nexStreamEpisodePrefetchStatus, setNexStreamEpisodePrefetchStatus] = useState<Record<string, 'loading' | 'ready' | 'error'>>({});
+  const nexStreamSearchControllerRef = useRef<AbortController | null>(null);
+  const nexStreamSearchGenerationRef = useRef(0);
+  const [nexStreamError, setNexStreamError] = useState('');
+  const [nexStreamPlayer, setNexStreamPlayer] = useState<{ title: string; sourceName: string; url: string; type: 'movie' | 'tv'; season?: number; episode?: number } | null>(null);
+  const [nexStreamResolvingId, setNexStreamResolvingId] = useState<string | null>(null);
   const [searchMetadata, setSearchMetadata] = useState<SearchMediaMetadata[]>([]);
   const [searchMetadataStatus, setSearchMetadataStatus] = useState<'idle' | 'loading' | 'ready' | 'not_found' | 'unavailable'>('idle');
   const [imdbRatingsByKey, setImdbRatingsByKey] = useState<Record<string, ImdbRatingResult>>({});
@@ -1150,6 +1258,13 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     movieTorrentSearchGenerationRef.current += 1;
     movieTorrentSearchControllerRef.current?.abort();
     movieTorrentSearchControllerRef.current = null;
+    nexStreamSearchGenerationRef.current += 1;
+    nexStreamSearchControllerRef.current?.abort();
+    nexStreamSearchControllerRef.current = null;
+    setNexStreamLoading(false);
+    setNexStreamSearchMode(null);
+    setNexStreamResults([]);
+    setNexStreamError('');
     setIsSearching(false);
     setCatalogueBuildProgress('');
     setError('');
@@ -1158,6 +1273,156 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     setResults([]);
     setSearchAvailabilityByGroup({});
     setSearched(false);
+  };
+
+  const searchNexStreamTitles = async (titleQuery: string, mediaType: 'movie' | 'tv' = 'movie') => {
+    nexStreamSearchControllerRef.current?.abort();
+    const controller = new AbortController();
+    nexStreamSearchControllerRef.current = controller;
+    const generation = ++nexStreamSearchGenerationRef.current;
+    setNexStreamSearchMode(mediaType);
+    setNexStreamLoading(true);
+    setNexStreamError('');
+    setNexStreamResults([]);
+    setNexStreamPlayer(null);
+    try {
+      const types: Array<'movie' | 'tv'> = [mediaType];
+      const responses = await Promise.allSettled(types.map(async type => {
+        const params = new URLSearchParams({ query: titleQuery, type });
+        const response = await fetch('/api/nexstream/search?' + params.toString(), {
+          headers: { Accept: 'application/json' },
+          credentials: 'same-origin',
+          signal: controller.signal,
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.success) {
+          throw new Error(data.detail || 'NexStream title search failed.');
+        }
+        return (Array.isArray(data.results) ? data.results : []) as NexStreamTitle[];
+      }));
+      if (generation !== nexStreamSearchGenerationRef.current) return;
+      const successfulResults = responses
+        .filter((response): response is PromiseFulfilledResult<NexStreamTitle[]> => response.status === 'fulfilled')
+        .flatMap(response => response.value);
+      const failedSearches = responses.filter(response => response.status === 'rejected');
+      const unique = new Map<string, NexStreamTitle>();
+      for (const item of successfulResults) {
+        unique.set(item.type + ':' + item.id, item);
+      }
+      const resolvedTitles = Array.from(unique.values());
+      setNexStreamResults(resolvedTitles);
+      // Fetch episode lists and thumbnails in the background, without delaying
+      // the result cards. The first few TV cards are ready by the time a user
+      // opens the episode picker; remaining cards are prefetched with 3 workers.
+      if (mediaType === 'tv') {
+        setNexStreamEpisodePrefetchStatus({});
+        prefetchNexStreamEpisodeMetadata(resolvedTitles, (id, status) => {
+          setNexStreamEpisodePrefetchStatus(previous => ({ ...previous, [String(id)]: status }));
+        });
+      }
+      if (failedSearches.length === types.length) {
+        const firstFailure = failedSearches[0] as PromiseRejectedResult;
+        throw firstFailure.reason instanceof Error ? firstFailure.reason : new Error('TMDB title search failed.');
+      }
+      if (failedSearches.length > 0) {
+        setNexStreamError('Some NexStream results could not be loaded. Try searching again to refresh them.');
+      }
+    } catch (error: any) {
+      if (generation !== nexStreamSearchGenerationRef.current || error?.name === 'AbortError') return;
+      setNexStreamError(String(error?.message || 'NexStream search is temporarily unavailable.'));
+    } finally {
+      if (generation === nexStreamSearchGenerationRef.current) {
+        setNexStreamLoading(false);
+        if (nexStreamSearchControllerRef.current === controller) nexStreamSearchControllerRef.current = null;
+      }
+    }
+  };
+
+  const [nexStreamEpisodePicker, setNexStreamEpisodePicker] = useState<NexStreamTitle | null>(null);
+  const [nexStreamSeasons, setNexStreamSeasons] = useState<Array<{ seasonNumber: number; name: string; episodeCount: number }>>([]);
+  const [nexStreamEpisodes, setNexStreamEpisodes] = useState<Array<{ episodeNumber: number; name: string; overview: string; airDate: string; still: string | null }>>([]);
+  const [nexStreamSelectedSeason, setNexStreamSelectedSeason] = useState(1);
+  const [nexStreamEpisodesLoading, setNexStreamEpisodesLoading] = useState(false);
+  const [nexStreamEpisodesError, setNexStreamEpisodesError] = useState('');
+
+  const loadNexStreamEpisodes = async (item: NexStreamTitle, season: number) => {
+    const cached = nexStreamEpisodeCache.get(nexStreamEpisodeCacheKey(item.id, season));
+    if (cached) {
+      setNexStreamSeasons(cached.seasons);
+      setNexStreamEpisodes(cached.episodes);
+      setNexStreamSelectedSeason(cached.selectedSeason);
+      setNexStreamEpisodesError('');
+      setNexStreamEpisodesLoading(false);
+      return;
+    }
+
+    setNexStreamEpisodesLoading(true);
+    setNexStreamEpisodesError('');
+    try {
+      const data = await fetchNexStreamEpisodeMetadata(item.id, season);
+      setNexStreamSeasons(data.seasons);
+      setNexStreamEpisodes(data.episodes);
+      setNexStreamSelectedSeason(data.selectedSeason);
+    } catch (error: any) {
+      setNexStreamEpisodesError(String(error?.message || 'Could not load episode list.'));
+      setNexStreamEpisodes([]);
+    } finally {
+      setNexStreamEpisodesLoading(false);
+    }
+  };
+
+  const playWithNexStream = async (item: NexStreamTitle, chosenSeason?: number, chosenEpisode?: number) => {
+    if (item.type === 'tv' && (chosenSeason === undefined || chosenEpisode === undefined)) {
+      setNexStreamEpisodePicker(item);
+      setNexStreamEpisodes([]);
+      setNexStreamSeasons([]);
+      setNexStreamEpisodesError('');
+      await loadNexStreamEpisodes(item, 1);
+      return;
+    }
+    const season = chosenSeason;
+    const episode = chosenEpisode;
+
+    const resolvingId = item.type + ':' + item.id;
+    setNexStreamResolvingId(resolvingId);
+    setNexStreamError('');
+    try {
+      const params = new URLSearchParams({ type: item.type, tmdb_id: String(item.id) });
+      if (item.type === 'tv') {
+        params.set('season', String(season));
+        params.set('episode', String(episode));
+      }
+      const response = await fetch('/api/nexstream/resolve?' + params.toString(), {
+        headers: { Accept: 'application/json' },
+        credentials: 'same-origin',
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.success || !Array.isArray(data.sources) || !data.sources.length) {
+        throw new Error(data.detail || 'NexStream could not resolve this title.');
+      }
+      const source = data.sources.find((candidate: any) => {
+        try {
+          const url = new URL(String(candidate?.url || ''));
+          return url.protocol === 'https:' && ['embedmaster.link', 'www.embedmaster.link'].includes(url.hostname);
+        } catch {
+          return false;
+        }
+      });
+      if (!source) throw new Error('NexStream returned no supported player source.');
+      setNexStreamPlayer({
+        title: item.title,
+        sourceName: String(source.name || 'NexStream'),
+        url: String(source.url),
+        type: item.type,
+        season,
+        episode,
+      });
+      setNexStreamError('');
+    } catch (error: any) {
+      setNexStreamError(String(error?.message || 'Could not start NexStream playback.'));
+    } finally {
+      setNexStreamResolvingId(null);
+    }
   };
 
   const runSearch = async (event?: React.FormEvent, searchOverride?: string, searchMode?: 'marvel' | 'marvel-hindi' | 'dc-live-action' | 'dc-live-action-hindi' | 'dc-animated' | 'latest-hollywood' | 'latest-bollywood') => {
@@ -1213,6 +1478,15 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         saveRecentSearch(trimmed);
       }
       setCatalogueBuildProgress('');
+
+      // Normal search also searches NexStream movies in parallel; neither source blocks cached torrent cards.
+      if (!searchMode && trimmed.length >= 2) void searchNexStreamTitles(trimmed, 'movie');
+      else {
+        setNexStreamSearchMode(null);
+        setNexStreamResults([]);
+        setNexStreamError('');
+        setNexStreamPlayer(null);
+      }
 
       // Start TMDB metadata immediately and let it load alongside cached/live torrent
       // search. The first cards and Seedr preparation do not wait for this request.
@@ -2165,6 +2439,12 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 if (error) setError('');
                 if (recentSearches.length > 0) setShowRecentSearches(true);
               }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  setShowRecentSearches(false);
+                }
+              }}
               placeholder="Search movies, TV, music, software..."
               className="w-full pl-9 pr-10 py-2 sm:py-2.5 rounded-lg sm:rounded-xl bg-slate-950 border border-slate-800 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/20"
             />
@@ -2206,13 +2486,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           setQuery(search);
                           setError('');
                           setShowRecentSearches(false);
-                          // A recent search is already a known-good query, so
-                          // run it immediately instead of making the user press
-                          // Search again.
-                          window.setTimeout(() => {
-                            const form = document.querySelector('form[data-torrent-search="true"]') as HTMLFormElement | null;
-                            form?.requestSubmit();
-                          }, 0);
                         }}
                         className="min-w-0 flex-1 px-3 py-2.5 text-left flex items-center gap-2.5 active:bg-slate-700 transition"
                       >
@@ -2248,21 +2521,21 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           </div>
 
           <button
-            type={isSearching ? 'button' : 'submit'}
-            onClick={isSearching ? cancelSearch : undefined}
-            aria-label={isSearching ? 'Cancel search' : 'Search'}
-            title={isSearching ? 'Cancel search' : 'Search'}
+            type={isSearching || nexStreamLoading ? 'button' : 'submit'}
+            onClick={isSearching || nexStreamLoading ? cancelSearch : undefined}
+            aria-label={isSearching || nexStreamLoading ? 'Cancel search' : 'Search'}
+            title={isSearching || nexStreamLoading ? 'Cancel search' : 'Search'
             className={[
               'group relative isolate overflow-hidden w-10 sm:w-auto min-h-10 px-2.5 sm:px-5 py-2 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-2 transition-all duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 active:scale-[0.97]',
-              isSearching
+              isSearching || nexStreamLoading
                 ? 'border border-rose-300/70 bg-rose-500 text-white shadow-[0_0_0_1px_rgba(244,63,94,0.18),0_0_18px_rgba(244,63,94,0.20)] hover:bg-rose-400 hover:shadow-[0_0_24px_rgba(244,63,94,0.34)] focus-visible:ring-rose-300'
                 : 'border border-cyan-300/60 bg-cyan-400 text-slate-950 shadow-[0_0_0_1px_rgba(34,211,238,0.12)] hover:-translate-y-0.5 hover:border-cyan-200 hover:bg-cyan-300 hover:shadow-[0_0_22px_rgba(34,211,238,0.36)] focus-visible:ring-cyan-300'
             ].join(' ')}
           >
             <span className="pointer-events-none absolute inset-0 -z-10 rounded-xl opacity-0 transition-opacity duration-200 group-hover:opacity-100"
-              style={{ background: isSearching ? 'linear-gradient(110deg, rgba(255,255,255,0.10), transparent 55%)' : 'linear-gradient(110deg, rgba(255,255,255,0.24), transparent 55%)' }}
+              style={{ background: (isSearching || nexStreamLoading) ? 'linear-gradient(110deg, rgba(255,255,255,0.10), transparent 55%)' : 'linear-gradient(110deg, rgba(255,255,255,0.24), transparent 55%)' }}
             />
-            {isSearching ? (
+            {isSearching || nexStreamLoading ? (
               <>
                 <X className="h-4 w-4 shrink-0 transition-transform duration-200 group-hover:rotate-90" />
                 <span className="hidden sm:inline">Cancel</span>
@@ -2274,6 +2547,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               </>
             )}
           </button>
+          <button type="button" onClick={() => { const trimmed = query.trim(); if (trimmed.length < 2) { setNexStreamError('Enter at least 2 characters to search.'); return; } void searchNexStreamTitles(trimmed, 'tv'); }} className="shrink-0 rounded-xl border border-violet-400/60 bg-violet-500/15 px-3 py-2 text-xs font-bold text-violet-200 hover:bg-violet-500/25">NexStream TV</button>
         </form>
 
         <div className="mt-2 flex flex-wrap gap-2" aria-label="Movie catalogues">
@@ -2476,6 +2750,181 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               </div>
             ) : null}
           </div>
+        </div>
+      )}
+
+      {!movieCatalogue && (nexStreamPlayer || nexStreamSearchMode === 'tv' || (nexStreamSearchMode === 'movie' && nexStreamLoading)) && (
+        <section className="space-y-3 rounded-2xl border border-violet-500/30 bg-slate-900/70 p-3 sm:p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-bold text-violet-200">{nexStreamSearchMode === 'tv' ? 'NexStream TV Search' : 'NexStream movie matches'}</h3>
+              <p className="mt-1 text-[11px] text-slate-400">{nexStreamSearchMode === 'tv' ? 'TV-show results are independent of torrent results. Choose a show to play an episode.' : 'Movie playback options are separate from your existing torrent and Seedr results.'}</p>
+            </div>
+            {nexStreamLoading && <span className="inline-flex items-center gap-1.5 text-xs text-violet-200"><Loader2 className="h-3.5 w-3.5 animate-spin" />Searching titles…</span>}
+          </div>
+
+          {nexStreamError && (
+            <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">{nexStreamError}</div>
+          )}
+
+          {!nexStreamLoading && nexStreamResults.length > 0 && nexStreamSearchMode === 'movie' && (
+            <p className="text-xs text-slate-400">NexStream movie playback options are attached to matching torrent title cards below.</p>
+          )}
+
+          {nexStreamSearchMode === 'tv' && nexStreamResults.length > 0 && (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+              {nexStreamResults.filter(item => item.type === 'tv').map(item => (
+                <article key={'nexstream-tv-' + item.id} className="min-w-0 overflow-hidden rounded-xl border border-violet-500/25 bg-slate-950">
+                  <div className="aspect-[2/3] bg-slate-900">
+                    {item.poster ? <img src={item.poster} alt={item.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="flex h-full items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
+                  </div>
+                  <div className="flex flex-col gap-2 p-2.5">
+                    <h4 className="line-clamp-2 text-sm font-bold text-slate-100">{item.title}</h4>
+                    <p className="text-[11px] text-slate-500">{item.date ? item.date.slice(0, 4) : 'Release year unknown'} · TV series</p>
+                    {item.overview && <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{item.overview}</p>}
+                    <button
+                      type="button"
+                      disabled={nexStreamResolvingId === 'tv:' + item.id || nexStreamEpisodePrefetchStatus[String(item.id)] === 'loading'}
+                      onClick={() => void playWithNexStream(item)}
+                      className="mt-auto w-full rounded-lg bg-violet-500 px-3 py-2 text-xs font-bold text-white hover:bg-violet-400 disabled:cursor-wait disabled:opacity-60"
+                    >
+                      {nexStreamResolvingId === 'tv:' + item.id ? <><Loader2 className="mr-1.5 inline h-3.5 w-3.5 animate-spin" />Resolving…</>
+                        : nexStreamEpisodePrefetchStatus[String(item.id)] === 'loading' ? <><Loader2 className="mr-1.5 inline h-3.5 w-3.5 animate-spin" />Preparing episodes…</>
+                        : nexStreamEpisodePrefetchStatus[String(item.id)] === 'ready' ? <><Play className="mr-1.5 inline h-3.5 w-3.5" />Choose episode</>
+                        : <><Play className="mr-1.5 inline h-3.5 w-3.5" />{nexStreamEpisodePrefetchStatus[String(item.id)] === 'error' ? 'Retry episode data' : 'Choose episode'}</>}
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+
+          {nexStreamSearchMode === 'tv' && !nexStreamLoading && !nexStreamError && nexStreamResults.length === 0 && (
+            <p className="text-xs text-slate-400">No TV shows found. Try a different title.</p>
+          )}
+
+          {nexStreamEpisodePicker && (
+            <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/80 p-3 sm:p-6" role="dialog" aria-modal="true" aria-labelledby="nexstream-episode-picker-title">
+              <div className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-violet-400/30 bg-slate-950 shadow-2xl">
+                <div className="flex items-start justify-between gap-3 border-b border-slate-800 p-4">
+                  <div className="min-w-0">
+                    <h3 id="nexstream-episode-picker-title" className="text-lg font-bold text-white">Choose an episode</h3>
+                    <p className="mt-1 truncate text-sm text-slate-400">{nexStreamEpisodePicker.title}</p>
+                  </div>
+                  <button type="button" onClick={() => setNexStreamEpisodePicker(null)} className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800">Close</button>
+                </div>
+                <div className="flex items-center gap-3 border-b border-slate-800 p-4">
+                  <label htmlFor="nexstream-season-select" className="shrink-0 text-sm font-semibold text-slate-300">Season</label>
+                  <select id="nexstream-season-select" value={nexStreamSelectedSeason} onChange={event => { const season = Number(event.target.value); void loadNexStreamEpisodes(nexStreamEpisodePicker, season); }} className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white">
+                    {nexStreamSeasons.map(season => <option key={season.seasonNumber} value={season.seasonNumber}>{season.name || 'Season ' + season.seasonNumber}{season.episodeCount ? ' (' + season.episodeCount + ' episodes)' : ''}</option>)}
+                  </select>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-4">
+                  {nexStreamEpisodesLoading ? (
+                    <div className="flex items-center justify-center gap-2 py-12 text-sm text-slate-300"><Loader2 className="h-4 w-4 animate-spin" />Loading episodes…</div>
+                  ) : nexStreamEpisodesError ? (
+                    <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">
+                      <p>{nexStreamEpisodesError}</p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <button type="button" onClick={() => { if (nexStreamEpisodePicker) void loadNexStreamEpisodes(nexStreamEpisodePicker, nexStreamSelectedSeason); }} className="rounded-lg border border-amber-300/40 px-3 py-1.5 font-semibold hover:bg-amber-400/10">Retry episode list</button>
+                        <span className="text-xs text-amber-100/70">You can also enter an episode number below.</span>
+                      </div>
+                    </div>
+                  ) : nexStreamEpisodes.length > 0 ? (
+                    <div className="space-y-2">
+                      {nexStreamEpisodes.map(episode => (
+                        <button key={episode.episodeNumber} type="button" onClick={() => { const selected = nexStreamEpisodePicker; setNexStreamEpisodePicker(null); if (selected) void playWithNexStream(selected, nexStreamSelectedSeason, episode.episodeNumber); }} className="flex w-full items-start gap-3 rounded-xl border border-slate-800 bg-slate-900/70 p-3 text-left transition hover:border-violet-400/60 hover:bg-violet-500/10">
+                          {episode.still ? <img src={episode.still} alt="" loading="lazy" className="hidden h-20 w-32 shrink-0 rounded-lg bg-slate-800 object-cover sm:block" onError={event => { event.currentTarget.style.display = 'none'; }} /> : null}
+                          <div className="min-w-0 flex-1">
+                            <div className="text-sm font-bold text-slate-100">E{String(episode.episodeNumber).padStart(2, '0')} · {episode.name || 'Episode ' + episode.episodeNumber}</div>
+                            {episode.airDate && <div className="mt-1 text-[11px] text-slate-500">{episode.airDate}</div>}
+                            {episode.overview && <p className="mt-1 line-clamp-3 text-xs leading-relaxed text-slate-400">{episode.overview}</p>}
+                          </div>
+                          <Play className="mt-1 h-4 w-4 shrink-0 text-violet-300" />
+                        </button>
+                      ))}
+                    </div>
+                  ) : !nexStreamEpisodesLoading && !nexStreamEpisodesError ? (
+                    <div className="py-8 text-center text-sm text-slate-400">No episode metadata was returned for this season.</div>
+                  ) : null}
+                  {(nexStreamEpisodesError || (!nexStreamEpisodesLoading && nexStreamEpisodes.length === 0)) && (
+                    <form className="mt-4 flex flex-wrap items-end gap-3" onSubmit={event => { event.preventDefault(); const form = event.currentTarget; const input = form.elements.namedItem('episodeNumber') as HTMLInputElement; const number = Number(input.value); if (Number.isInteger(number) && number > 0 && nexStreamEpisodePicker) { const selected = nexStreamEpisodePicker; setNexStreamEpisodePicker(null); void playWithNexStream(selected, nexStreamSelectedSeason, number); } }}>
+                      <label className="flex-1 text-xs text-slate-400">Episode number<input name="episodeNumber" type="number" min="1" defaultValue="1" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white" /></label>
+                      <button type="submit" className="rounded-lg bg-violet-500 px-4 py-2 text-sm font-bold text-white">Play episode</button>
+                    </form>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {nexStreamPlayer && (
+            <div className="space-y-2 rounded-xl border border-violet-500/30 bg-black p-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="truncate text-xs font-bold text-slate-100">Playing with NexStream: {nexStreamPlayer.title}</div>
+                  <div className="text-[10px] text-slate-400">
+                    {nexStreamPlayer.type === 'tv' ? 'Season ' + nexStreamPlayer.season + ', Episode ' + nexStreamPlayer.episode + ' · ' : ''}{nexStreamPlayer.sourceName}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const playerContainer = document.getElementById('nexstream-player-container') as HTMLDivElement | null;
+                      if (!playerContainer) return;
+                      try {
+                        if (document.fullscreenElement) {
+                          await document.exitFullscreen();
+                        } else if (playerContainer.requestFullscreen) {
+                          await playerContainer.requestFullscreen();
+                        } else {
+                          setNexStreamError('Fullscreen is not supported by this browser.');
+                        }
+                      } catch {
+                        setNexStreamError('Fullscreen was blocked by the browser. Use the player’s own fullscreen control or open the player directly in a new tab.');
+                      }
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-violet-400/40 px-2.5 py-1.5 text-[11px] font-semibold text-violet-200 hover:bg-violet-500/15"
+                    title="Make the NexStream player fullscreen"
+                  >
+                    <Maximize2 className="h-3.5 w-3.5" /> Full screen
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => window.open(nexStreamPlayer.url, '_blank', 'noopener,noreferrer')}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 px-2.5 py-1.5 text-[11px] font-semibold text-slate-300 hover:bg-slate-800"
+                    title="Open the provider player directly in a new tab"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" /> Open separately
+                  </button>
+                  <button type="button" onClick={() => setNexStreamPlayer(null)} className="rounded-lg border border-slate-700 px-2.5 py-1.5 text-[11px] font-semibold text-slate-300 hover:bg-slate-800">Close player</button>
+                </div>
+              </div>
+              <div
+                id="nexstream-player-container"
+                className="aspect-video overflow-hidden rounded-lg bg-black max-sm:aspect-[9/16] max-sm:max-h-[70vh] [&:fullscreen]:!fixed [&:fullscreen]:!inset-0 [&:fullscreen]:!z-[9999] [&:fullscreen]:!h-screen [&:fullscreen]:!w-screen [&:fullscreen]:!max-h-none [&:fullscreen]:!aspect-auto [&:fullscreen]:!rounded-none [&:fullscreen]:!p-0"
+              >
+                <iframe
+                  id="nexstream-player-frame"
+                  key={nexStreamPlayer.url}
+                  src={nexStreamPlayer.url}
+                  title={'NexStream player for ' + nexStreamPlayer.title}
+                  allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+                  allowFullScreen
+                  referrerPolicy="strict-origin-when-cross-origin"
+                  className="h-full w-full border-0"
+                />
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
+      {!movieCatalogue && !nexStreamPlayer && nexStreamSearchMode !== 'tv' && (nexStreamLoading || nexStreamError) && (
+        <div className="rounded-xl border border-violet-500/20 bg-slate-900/60 px-3 py-2 text-xs text-slate-300">
+          {nexStreamLoading && <span className="inline-flex items-center gap-2"><Loader2 className="h-3.5 w-3.5 animate-spin" />Looking for NexStream playback options…</span>}
+          {nexStreamError && <span className="ml-2 text-amber-200">{nexStreamError}</span>}
         </div>
       )}
 
