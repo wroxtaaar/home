@@ -26,6 +26,15 @@ app.routes[:] = [
 FRONTEND_DIR = Path("/app/frontend-dist").resolve()
 INDEX_FILE = FRONTEND_DIR / "index.html"
 
+# The HTML entrypoint references fingerprinted Vite assets. Never let a browser
+# or intermediary keep an old index.html after a deployment, or it can keep
+# loading an old JavaScript bundle even when the container has been updated.
+HTML_NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
 
 def _frontend_file(path: str) -> Path | None:
     candidate = (FRONTEND_DIR / path).resolve()
@@ -42,7 +51,7 @@ def _frontend_file(path: str) -> Path | None:
 async def frontend_index():
     if not INDEX_FILE.is_file():
         raise HTTPException(503, "Frontend build is not available")
-    return FileResponse(INDEX_FILE)
+    return FileResponse(INDEX_FILE, headers=HTML_NO_CACHE_HEADERS)
 
 
 @app.get("/{path:path}", include_in_schema=False)
@@ -59,4 +68,4 @@ async def frontend_spa_fallback(path: str):
         raise HTTPException(503, "Frontend build is not available")
 
     # React Router/client-side routes are served by the Vite index.
-    return FileResponse(INDEX_FILE)
+    return FileResponse(INDEX_FILE, headers=HTML_NO_CACHE_HEADERS)
