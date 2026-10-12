@@ -124,25 +124,25 @@ def _scraper_query_is_useful(query: str) -> bool:
 
 def _scraper_queries_for(query: str) -> list[str]:
     """Expand broad category/year searches into a few more targeted indexer queries."""
-    text = re.sub(r"\\s+", " ", str(query or "").casefold()).strip()
-    year_match = re.search(r"\\b(19|20|21)\\d{2}\\b", text)
+    text = re.sub(r"\s+", " ", str(query or "").casefold()).strip()
+    year_match = re.search(r"\b(19|20|21)\d{2}\b", text)
     year = int(year_match.group(0)) if year_match else None
     current_year = date.today().year
 
-    if re.search(r"\\b(?:bollywood|hindi|indian)\\b", text):
+    if re.search(r"\b(?:bollywood|hindi|indian)\b", text):
         years = [year] if year else [current_year, current_year - 1]
         variants = []
         for target_year in years:
             variants.extend([f"Bollywood {target_year}", f"Hindi movies {target_year}"])
         return list(dict.fromkeys(variants))[:4]
 
-    if re.search(r"\\b(?:hollywood|english movies|western movies)\\b", text):
+    if re.search(r"\b(?:hollywood|english movies|western movies)\b", text):
         years = [year] if year else [current_year, current_year - 1]
         return list(dict.fromkeys(f"Hollywood movies {target_year}" for target_year in years))[:2]
 
     # A year-only catalogue query is too broad for torrent indexers. Split it
     # into language/industry searches instead of asking for "2025 movies".
-    if year and re.search(r"\\b(?:movies?|films?)\\b", text):
+    if year and re.search(r"\b(?:movies?|films?)\b", text):
         return [
             f"Bollywood {year}",
             f"Hindi movies {year}",
@@ -365,7 +365,7 @@ async def build_catalogue(queries: list[str], max_titles: int, per_query: int) -
         if len(discovered) >= cap:
             break
         for scraper_query in _scraper_queries_for(query):
-            normalized_scraper_query = re.sub(r"\\s+", " ", scraper_query.casefold()).strip()
+            normalized_scraper_query = re.sub(r"\s+", " ", scraper_query.casefold()).strip()
             if normalized_scraper_query in seen_scraper_queries:
                 continue
             seen_scraper_queries.add(normalized_scraper_query)
