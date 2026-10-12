@@ -1860,9 +1860,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             ].join(' ')}
           >
             <span className="pointer-events-none absolute inset-0 -z-10 rounded-xl opacity-0 transition-opacity duration-200 group-hover:opacity-100"
-              style={{ background: isSearching ? 'linear-gradient(110deg, rgba(255,255,255,0.10), transparent 55%)' : 'linear-gradient(110deg, rgba(255,255,255,0.24), transparent 55%)' }}
+              style={{ background: (isSearching || nexStreamLoading) ? 'linear-gradient(110deg, rgba(255,255,255,0.10), transparent 55%)' : 'linear-gradient(110deg, rgba(255,255,255,0.24), transparent 55%)' }}
             />
-            {isSearching ? (
+            {isSearching || nexStreamLoading ? (
               <>
                 <X className="h-4 w-4 shrink-0 transition-transform duration-200 group-hover:rotate-90" />
                 <span className="hidden sm:inline">Cancel</span>
