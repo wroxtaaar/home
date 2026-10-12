@@ -2529,7 +2529,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             type={isSearching || nexStreamLoading ? 'button' : 'submit'}
             onClick={isSearching || nexStreamLoading ? cancelSearch : undefined}
             aria-label={isSearching || nexStreamLoading ? 'Cancel search' : 'Search'}
-            title={isSearching || nexStreamLoading ? 'Cancel search' : 'Search'
+            title={isSearching || nexStreamLoading ? 'Cancel search' : 'Search'}
             className={[
               'group relative isolate overflow-hidden w-10 sm:w-auto min-h-10 px-2.5 sm:px-5 py-2 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-2 transition-all duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 active:scale-[0.97]',
               isSearching || nexStreamLoading
