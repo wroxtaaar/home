@@ -1,13 +1,6 @@
 name: Deploy Frontend to Oracle VPS
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'frontend/**'
-      - 'search_limits.json'
-      - '.github/workflows/deploy-frontend.yml'
   workflow_dispatch:
 
 permissions:
