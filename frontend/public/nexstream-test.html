@@ -15,7 +15,7 @@
     .muted { color:#93a4bd; line-height:1.55; }
     .panel { margin-top:22px; padding:clamp(16px,3vw,24px); border:1px solid #26354b; border-radius:20px; background:rgba(12,20,34,.92); box-shadow:0 20px 70px #0004; }
     .fields { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; align-items:end; }
-    .search-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; margin-bottom:16px; }
+    .search-row { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:10px; margin-bottom:16px; }
     .results { display:grid; gap:9px; margin-top:12px; }
     .result { display:grid; grid-template-columns:54px minmax(0,1fr) auto; gap:12px; align-items:center; padding:10px; border:1px solid #26354b; border-radius:12px; background:#0a1220; }
     .result img { width:54px; height:78px; object-fit:cover; border-radius:6px; background:#172338; }
@@ -51,7 +51,8 @@
       <label>Search by title
         <input id="searchQuery" type="search" placeholder="e.g. Titanic or Game of Thrones" autocomplete="off">
       </label>
-      <button id="searchButton" type="button">Search titles</button>
+      <button id="searchButton" type="button">Search movies</button>
+      <button id="tvSearchButton" type="button">Search TV shows</button>
     </div>
     <div id="searchStatus" class="muted" role="status" aria-live="polite">Search for a movie or show by name, then select a result.</div>
     <div id="searchResults" class="results"></div>
@@ -93,6 +94,7 @@
   const player = $('player');
   const button = $('playButton');
   const searchButton = $('searchButton');
+  const tvSearchButton = $('tvSearchButton');
   const details = $('details');
   const safeText = (element, value) => { element.textContent = String(value || ''); };
   const showError = message => {
@@ -107,18 +109,20 @@
     $('tmdbId').value = isTv ? '1399' : '597';
   });
 
-  async function searchTitles() {
+  async function searchTitles(forcedType = '') {
     const query = $('searchQuery').value.trim();
+    const mediaType = forcedType || kind.value;
     if (query.length < 2) {
       $('searchStatus').textContent = 'Enter at least two characters to search.';
       $('searchResults').replaceChildren();
       return;
     }
     searchButton.disabled = true;
-    $('searchStatus').textContent = 'Searching TMDB…';
+    tvSearchButton.disabled = true;
+    $('searchStatus').textContent = 'Searching TMDB for ' + (mediaType === 'tv' ? 'TV shows' : 'movies') + '…';
     $('searchResults').replaceChildren();
     try {
-      const params = new URLSearchParams({ query, type: kind.value });
+      const params = new URLSearchParams({ query, type: mediaType });
       const response = await fetch('/api/nexstream/search?' + params.toString(), {
         headers: { Accept: 'application/json' }, credentials: 'same-origin'
       });
@@ -165,12 +169,18 @@
       $('searchStatus').textContent = String(error?.message || error || 'Title search failed.');
     } finally {
       searchButton.disabled = false;
+      tvSearchButton.disabled = false;
     }
   }
 
-  searchButton.addEventListener('click', searchTitles);
+  searchButton.addEventListener('click', () => searchTitles('movie'));
+  tvSearchButton.addEventListener('click', () => {
+    kind.value = 'tv';
+    kind.dispatchEvent(new Event('change'));
+    searchTitles('tv');
+  });
   $('searchQuery').addEventListener('keydown', event => {
-    if (event.key === 'Enter') searchTitles();
+    if (event.key === 'Enter') searchTitles(kind.value);
   });
 
   button.addEventListener('click', async () => {
