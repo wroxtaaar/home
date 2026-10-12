@@ -41,7 +41,8 @@ export type MovieCatalogueKey =
   | 'popular-hollywood'
   | 'popular-bollywood'
   | 'trending-hollywood'
-  | 'trending-bollywood';
+  | 'trending-bollywood'
+  | 'bollywood-library';
 
 export interface MovieCatalogueItem {
   id: number | string;
@@ -55,6 +56,13 @@ export interface MovieCatalogueItem {
   genres?: number[];
   source?: string;
   tmdbId?: number | string;
+  verified?: boolean;
+  imdbId?: string | null;
+  tmdbUrl?: string;
+  imdbUrl?: string;
+  torrentMatch?: { title?: string; indexer?: string; infoUrl?: string; magnetUrl?: string | null; infoHash?: string; size?: number | null; seeders?: number | null; leechers?: number | null; matchScore?: number };
+  torrentMatches?: Array<{ title?: string; indexer?: string; infoUrl?: string; magnetUrl?: string | null; infoHash?: string; size?: number | null; seeders?: number | null; leechers?: number | null; matchScore?: number }>;
+  torrentCheckedAt?: string;
   ottAvailability?: {
     region?: string;
     status?: string;
@@ -331,11 +339,13 @@ export const api = {
     page = 1,
     releasedOnly = true,
     signal?: AbortSignal,
+    maxSizeGb = 5,
   ): Promise<MovieCataloguePage> {
     const params = new URLSearchParams({
       page: String(Math.min(Math.max(page, 1), 500)),
       released_only: String(releasedOnly),
     });
+    if (key === 'bollywood-library') params.set('max_size_gb', String(Math.min(5, Math.max(1, maxSizeGb))));
     const res = await fetch(API_BASE + '/api/movies/catalogue/' + encodeURIComponent(key) + '?' + params.toString(), {
       signal,
       credentials: 'include',
