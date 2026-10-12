@@ -125,15 +125,21 @@ def main() -> int:
         return 2
 
     base_dir = Path(__file__).resolve().parent
-    seed_path = Path(os.getenv("BOLLYWOOD_HISTORICAL_SEED", str(base_dir / "cache-seed" / "bollywood_imdb_historical_metadata.json")))
-    output_path = Path(os.getenv("BOLLYWOOD_METADATA_OUTPUT", str(base_dir / "cache-seed" / "bollywood_tmdb_updated_metadata.json")))
+    data_dir = Path(os.getenv("APP_DATA_DIR", "/app/data"))
+    seed_path = Path(os.getenv("BOLLYWOOD_HISTORICAL_SEED", str(data_dir / "bollywood_imdb_historical_metadata.json")))
+    output_path = Path(os.getenv("BOLLYWOOD_METADATA_OUTPUT", str(data_dir / "bollywood_tmdb_updated_metadata.json")))
     today = date.today().isoformat()
 
+    # The historical seed is optional in production. If it is absent, TMDB's
+    # paginated Hindi/India feature-film discovery still builds a fresh metadata
+    # export directly into the persistent /app/data volume.
     try:
-        historical = load_seed(seed_path)
+        historical = load_seed(seed_path) if seed_path.exists() else []
     except (OSError, json.JSONDecodeError, ValueError) as exc:
-        print(f"ERROR: Could not load historical metadata seed: {exc}", file=sys.stderr)
-        return 2
+        print(f"WARNING: Could not load optional historical metadata seed: {exc}", file=sys.stderr)
+        historical = []
+    if not historical:
+        print(f"No historical seed available at {seed_path}; proceeding with TMDB discovery only.")
 
     merged: dict[tuple[str, int | None], dict[str, Any]] = {}
     for row in historical:
