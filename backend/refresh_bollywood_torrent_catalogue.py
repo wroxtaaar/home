@@ -182,7 +182,8 @@ async def run() -> int:
             continue
 
         checked += 1
-        best: tuple[float, dict[str, Any]] | None = None
+        qualifying: list[tuple[float, dict[str, Any]]] = []
+        seen_releases: set[str] = set()
         for result in results:
             if not isinstance(result, dict):
                 continue
@@ -196,17 +197,22 @@ async def run() -> int:
             result_year = year_from_title(result_title)
             if year and result_year and abs(int(year) - result_year) > 1:
                 continue
-            # Do not admit a weak title match merely because the search query returned it.
             if score < MIN_TITLE_SIMILARITY:
                 continue
-            if best is None or score > best[0]:
-                best = (score, result)
+            info_hash = str(result.get("infoHash") or "").strip().casefold()
+            magnet_url = str(result.get("magnetUrl") or "").strip()
+            release_key = info_hash or magnet_url or (normalize(result_title) + ":" + str(result_size))
+            if release_key in seen_releases:
+                continue
+            seen_releases.add(release_key)
+            qualifying.append((score, result))
 
-        key = str(movie.get("tmdbId") or ("historical:" + normalize(title) + ":" + str(year or "")))
-        if best:
-            result = best[1]
-            record = dict(movie)
-            record["torrentMatch"] = {
+        qualifying.sort(key=lambda pair: (
+            pair[0], int(pair[1].get("seeders") or 0), -size_bytes(pair[1].get("size")),
+        ), reverse=True)
+        releases = []
+        for score, result in qualifying:
+            releases.append({
                 "title": str(result.get("title") or ""),
                 "indexer": str(result.get("indexer") or result.get("provider") or ""),
                 "infoUrl": str(result.get("infoUrl") or result.get("sourceUrl") or ""),
@@ -215,15 +221,20 @@ async def run() -> int:
                 "size": size_bytes(result.get("size")),
                 "seeders": result.get("seeders"),
                 "leechers": result.get("leechers"),
-                "matchScore": round(best[0], 3),
-            }
+                "matchScore": round(score, 3),
+            })
+
+        key = str(movie.get("tmdbId") or ("historical:" + normalize(title) + ":" + str(year or "")))
+        if releases:
+            record = dict(movie)
+            record["torrentMatches"] = releases
+            record["torrentMatch"] = releases[0]
             record["torrentCheckedAt"] = datetime.now(timezone.utc).isoformat()
             record["torrentCheckedAtEpoch"] = time.time()
             if key not in matched:
                 newly_matched += 1
             matched[key] = record
         else:
-            # A fresh negative result removes an old match; failed provider searches do not.
             matched.pop(key, None)
         if SEARCH_DELAY:
             await asyncio.sleep(SEARCH_DELAY)
