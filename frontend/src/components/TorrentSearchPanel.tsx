@@ -599,6 +599,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [nexStreamResults, setNexStreamResults] = useState<NexStreamTitle[]>([]);
   const [nexStreamSearchMode, setNexStreamSearchMode] = useState<'movie' | 'tv' | null>(null);
   const [nexStreamLoading, setNexStreamLoading] = useState(false);
+  const [nexStreamLoadingTitle, setNexStreamLoadingTitle] = useState('');
   const [nexStreamEpisodePrefetchStatus, setNexStreamEpisodePrefetchStatus] = useState<Record<string, 'loading' | 'ready' | 'error'>>({});
   const nexStreamSearchControllerRef = useRef<AbortController | null>(null);
   const nexStreamSearchGenerationRef = useRef(0);
@@ -1289,6 +1290,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     nexStreamSearchControllerRef.current = controller;
     const generation = ++nexStreamSearchGenerationRef.current;
     setNexStreamSearchMode(mediaType);
+    setNexStreamLoadingTitle(String(titleQuery || '').trim());
     setNexStreamLoading(true);
     setNexStreamError('');
     setNexStreamResults([]);
@@ -1341,6 +1343,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     } finally {
       if (generation === nexStreamSearchGenerationRef.current) {
         setNexStreamLoading(false);
+        setNexStreamLoadingTitle('');
         if (nexStreamSearchControllerRef.current === controller) nexStreamSearchControllerRef.current = null;
       }
     }
@@ -2765,7 +2768,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         </div>
       )}
 
-      {!movieCatalogue && (nexStreamPlayer || nexStreamSearchMode === 'tv' || (nexStreamSearchMode === 'movie' && nexStreamLoading)) && (
+      {(nexStreamPlayer || nexStreamSearchMode === 'tv' || nexStreamSearchMode === 'movie') && (
         <section className="space-y-3 rounded-2xl border border-violet-500/30 bg-slate-900/70 p-3 sm:p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
@@ -3641,22 +3644,33 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       {!seriesTitle && (
                         <button
                           type="button"
-                          disabled={nexStreamLoading || nexStreamResolvingId !== null}
+                          disabled={(nexStreamLoading && normalizeGroupTitle(nexStreamLoadingTitle) === normalizeGroupTitle(mediaDisplayTitle || group.title)) || nexStreamResolvingId !== null}
                           onClick={() => {
                             if (titleMatches.length > 0) {
                               void playWithNexStream(titleMatches[0]);
                             } else {
-                              // Cached torrent cards don't trigger a NexStream search on their
-                              // own, so always offer a way to look up playback without requiring
-                              // the user to run a fresh manual search first.
-                              void searchNexStreamTitles(mediaDisplayTitle || group.title, 'movie');
+                              // Prefer the catalogue's canonical TMDB ID so playback starts
+                              // directly instead of making the user wait for a second click.
+                              const tmdbId = Number(mediaMetadata?.tmdbId || mediaMetadata?.id);
+                              if (Number.isInteger(tmdbId) && tmdbId > 0) {
+                                void playWithNexStream({
+                                  id: tmdbId,
+                                  title: mediaDisplayTitle || group.title,
+                                  date: mediaMetadata?.year || group.year,
+                                  overview: mediaMetadata?.overview || '',
+                                  poster: mediaMetadata?.posterUrl || null,
+                                  type: 'movie',
+                                });
+                              } else {
+                                void searchNexStreamTitles(mediaDisplayTitle || group.title, 'movie');
+                              }
                             }
                           }}
                           className="w-full rounded-lg border border-violet-400/40 bg-violet-500/15 px-2.5 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-60"
                         >
                           {nexStreamResolvingId && titleMatches.length > 0
-                            ? 'Resolving NexStream…'
-                            : nexStreamLoading
+                            ? 'Opening NexStream…'
+                            : nexStreamLoading && normalizeGroupTitle(nexStreamLoadingTitle) === normalizeGroupTitle(mediaDisplayTitle || group.title)
                               ? 'Searching NexStream…'
                               : titleMatches.length > 0
                                 ? 'Play with NexStream'
