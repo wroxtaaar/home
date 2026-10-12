@@ -115,7 +115,7 @@ def _candidate_from_tmdb(row: dict[str, Any], media_type: str, source: str) -> d
 
 def _tmdb_candidate(title: str, year: int, payload: dict[str, Any]) -> dict[str, Any] | None:
     target = _normalize(title)
-    choices: list[tuple[tuple[int, int, float], dict[str, Any], str]] = []
+    choices: list[tuple[tuple[int, int, int, float], dict[str, Any], str]] = []
     for row in payload.get("results") or []:
         if not isinstance(row, dict) or row.get("media_type") not in {"movie", "tv"} or not row.get("id"):
             continue
