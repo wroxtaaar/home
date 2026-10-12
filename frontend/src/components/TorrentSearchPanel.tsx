@@ -2978,8 +2978,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           )}
 
           {nexStreamPlayer && (
-            <div className="space-y-2 rounded-xl border border-violet-500/30 bg-black p-2.5">
-              <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/85 p-2 sm:p-5">
+              <div className="relative flex max-h-[96vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-violet-400/40 bg-slate-950 shadow-2xl">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-4 py-3">
                 <div className="min-w-0">
                   <div className="truncate text-xs font-bold text-slate-100">Playing with NexStream: {nexStreamPlayer.title}</div>
                   <div className="text-[10px] text-slate-400">
@@ -2989,40 +2990,18 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={async () => {
-                      const playerContainer = document.getElementById('nexstream-player-container') as HTMLDivElement | null;
-                      if (!playerContainer) return;
-                      try {
-                        if (document.fullscreenElement) {
-                          await document.exitFullscreen();
-                        } else if (playerContainer.requestFullscreen) {
-                          await playerContainer.requestFullscreen();
-                        } else {
-                          setNexStreamError('Fullscreen is not supported by this browser.');
-                        }
-                      } catch {
-                        setNexStreamError('Fullscreen was blocked by the browser. Use the player’s own fullscreen control or open the player directly in a new tab.');
-                      }
-                    }}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-violet-400/40 px-2.5 py-1.5 text-[11px] font-semibold text-violet-200 hover:bg-violet-500/15"
-                    title="Make the NexStream player fullscreen"
-                  >
-                    <Maximize2 className="h-3.5 w-3.5" /> Full screen
-                  </button>
-                  <button
-                    type="button"
                     onClick={() => window.open(nexStreamPlayer.url, '_blank', 'noopener,noreferrer')}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 px-2.5 py-1.5 text-[11px] font-semibold text-slate-300 hover:bg-slate-800"
-                    title="Open the provider player directly in a new tab"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-violet-400/40 px-3 py-2 text-xs font-semibold text-violet-200 hover:bg-violet-500/15"
+                    title="Open fullscreen playback in a new tab"
                   >
-                    <ExternalLink className="h-3.5 w-3.5" /> Open separately
+                    <Maximize2 className="h-4 w-4" /> Full screen / New tab
                   </button>
-                  <button type="button" onClick={() => setNexStreamPlayer(null)} className="rounded-lg border border-slate-700 px-2.5 py-1.5 text-[11px] font-semibold text-slate-300 hover:bg-slate-800">Close player</button>
+                  <button type="button" onClick={() => setNexStreamPlayer(null)} className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-800">Close</button>
                 </div>
               </div>
               <div
                 id="nexstream-player-container"
-                className="aspect-video overflow-hidden rounded-lg bg-black max-sm:aspect-[9/16] max-sm:max-h-[70vh] [&:fullscreen]:!fixed [&:fullscreen]:!inset-0 [&:fullscreen]:!z-[9999] [&:fullscreen]:!h-screen [&:fullscreen]:!w-screen [&:fullscreen]:!max-h-none [&:fullscreen]:!aspect-auto [&:fullscreen]:!rounded-none [&:fullscreen]:!p-0"
+                className="min-h-0 flex-1 aspect-video overflow-hidden bg-black max-sm:aspect-video max-sm:max-h-[calc(96vh-90px)]"
               >
                 <iframe
                   id="nexstream-player-frame"
@@ -3034,6 +3013,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   referrerPolicy="strict-origin-when-cross-origin"
                   className="h-full w-full border-0"
                 />
+              </div>
               </div>
             </div>
           )}
@@ -3288,7 +3268,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             overview: movie.overview || '',
                             poster: movie.posterUrl || null,
                             type: 'movie',
-                          }, undefined, undefined, true);
+                          });
                         }}
                         className="w-full rounded-lg border border-violet-400/50 bg-violet-500/15 px-2 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-50"
                       >
