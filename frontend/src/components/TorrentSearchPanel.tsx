@@ -2105,6 +2105,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     searchText: string,
     page = 1,
     onlyReleased = releasedOnly,
+    maxSizeGb = bollywoodLibraryMaxSizeGb,
   ) => {
     movieTorrentSearchControllerRef.current?.abort();
     movieTorrentSearchGenerationRef.current += 1;
@@ -2140,7 +2141,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       const data = await api.getMovieCatalogue(key, page, onlyReleased, controller.signal);
       if (generation !== searchGenerationRef.current) return;
       setMovieCatalogue(data);
-      queueOttLookups(data.results);
+      if (key !== 'bollywood-library') queueOttLookups(data.results);
       setCatalogueBuildProgress('');
     } catch (err: any) {
       if (generation !== searchGenerationRef.current) return;
