@@ -44,39 +44,52 @@ async def search_titles(
     params = {"query": query.strip(), "include_adult": "false", "page": "1"}
     payload = None
     last_status = None
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(12.0), follow_redirects=True) as client:
-            for key in api_keys:
+    connection_errors = 0
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(12.0), follow_redirects=True) as client:
+        # A broken connection for one credential must not prevent trying the others.
+        for key in api_keys:
+            try:
                 response = await client.get(
                     f"{TMDB_API_BASE}/search/{endpoint}",
                     params={**params, "api_key": key},
                     headers={"Accept": "application/json"},
                 )
+            except httpx.RequestError:
+                connection_errors += 1
+                continue
+
+            last_status = response.status_code
+            if response.status_code == 200:
+                payload = response.json()
+                break
+            if response.status_code == 429:
+                raise HTTPException(status_code=429, detail="TMDB search rate limit reached. Try again shortly.")
+
+        if payload is None:
+            for token in bearer_tokens:
+                try:
+                    response = await client.get(
+                        f"{TMDB_API_BASE}/search/{endpoint}",
+                        params=params,
+                        headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
+                    )
+                except httpx.RequestError:
+                    connection_errors += 1
+                    continue
+
                 last_status = response.status_code
                 if response.status_code == 200:
                     payload = response.json()
                     break
                 if response.status_code == 429:
                     raise HTTPException(status_code=429, detail="TMDB search rate limit reached. Try again shortly.")
-            if payload is None:
-                for token in bearer_tokens:
-                    response = await client.get(
-                        f"{TMDB_API_BASE}/search/{endpoint}",
-                        params=params,
-                        headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
-                    )
-                    last_status = response.status_code
-                    if response.status_code == 200:
-                        payload = response.json()
-                        break
-                    if response.status_code == 429:
-                        raise HTTPException(status_code=429, detail="TMDB search rate limit reached. Try again shortly.")
-    except httpx.RequestError as exc:
-        raise HTTPException(status_code=502, detail="Could not connect to TMDB title search.") from exc
 
     if payload is None:
         if last_status in (401, 403):
             raise HTTPException(status_code=502, detail="TMDB rejected the configured credentials.")
+        if connection_errors and last_status is None:
+            raise HTTPException(status_code=502, detail="Could not connect to TMDB title search.")
         raise HTTPException(status_code=502, detail="TMDB title search failed.")
 
     results = []
@@ -87,7 +100,7 @@ async def search_titles(
         results.append({
             "id": int(item["id"]),
             "title": str(title or "Untitled"),
-            "date": str(item.get("release_date") if media_type == "movie" else item.get("first_air_date") or ""),
+            "date": str((item.get("release_date") if media_type == "movie" else item.get("first_air_date")) or ""),
             "overview": str(item.get("overview") or "")[:400],
             "poster": f"https://image.tmdb.org/t/p/w185{item['poster_path']}" if item.get("poster_path") else None,
             "type": media_type,
