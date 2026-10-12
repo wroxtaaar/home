@@ -2958,7 +2958,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   className="h-4 w-4 accent-cyan-400"
                 />
                 Streaming now in India
-              </label>}
+              </label>
             </div>
             <div className="text-[11px] leading-relaxed text-slate-500">
               {releasedOnly ? 'Hides future and unconfirmed release dates.' : 'Includes upcoming releases.'}
