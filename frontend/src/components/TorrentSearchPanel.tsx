@@ -307,6 +307,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [results, setResults] = useState<TorrentSearchResult[]>([]);
   type NexStreamTitle = { id: number; title: string; date: string; overview: string; poster: string | null; type: 'movie' | 'tv' };
   const [nexStreamResults, setNexStreamResults] = useState<NexStreamTitle[]>([]);
+  const [nexStreamSearchMode, setNexStreamSearchMode] = useState<'movie' | 'tv' | null>(null);
   const [nexStreamLoading, setNexStreamLoading] = useState(false);
   const [nexStreamError, setNexStreamError] = useState('');
   const [nexStreamPlayer, setNexStreamPlayer] = useState<{ title: string; sourceName: string; url: string; type: 'movie' | 'tv'; season?: number; episode?: number } | null>(null);
@@ -915,15 +916,14 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     setSearched(false);
   };
 
-  const searchNexStreamTitles = async (titleQuery: string) => {
+  const searchNexStreamTitles = async (titleQuery: string, mediaType: 'movie' | 'tv' = 'movie') => {
+    setNexStreamSearchMode(mediaType);
     setNexStreamLoading(true);
     setNexStreamError('');
     setNexStreamResults([]);
     setNexStreamPlayer(null);
     try {
-      const types: Array<'movie' | 'tv'> = ['movie', 'tv'];
-      // Treat movie and TV lookups independently: a transient TMDB failure for
-      // one endpoint should not hide successful results from the other.
+      const types: Array<'movie' | 'tv'> = [mediaType];
       const responses = await Promise.allSettled(types.map(async type => {
         const params = new URLSearchParams({ query: titleQuery, type });
         const response = await fetch('/api/nexstream/search?' + params.toString(), {
@@ -1065,9 +1065,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       }
       setCatalogueBuildProgress('');
       if (!searchMode) {
-        // Search NexStream independently so it never delays or replaces torrent results.
-        void searchNexStreamTitles(trimmed);
+        // Normal search keeps torrent movie + TV results and adds NexStream movie search only.
+        void searchNexStreamTitles(trimmed, 'movie');
       } else {
+        setNexStreamSearchMode(null);
         setNexStreamResults([]);
         setNexStreamError('');
         setNexStreamPlayer(null);
@@ -1693,6 +1694,27 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           </div>
 
           <button
+            type="button"
+            disabled={isSearching || nexStreamLoading}
+            onClick={() => {
+              const tvQuery = query.trim();
+              if (tvQuery.length < 2) {
+                setNexStreamSearchMode('tv');
+                setNexStreamResults([]);
+                setNexStreamError('Enter at least 2 characters to search NexStream TV shows.');
+                return;
+              }
+              setShowRecentSearches(false);
+              setNexStreamPlayer(null);
+              void searchNexStreamTitles(tvQuery, 'tv');
+            }}
+            aria-label="Search NexStream TV shows"
+            title="Search NexStream TV shows only"
+            className="shrink-0 rounded-xl border border-violet-400/50 bg-violet-500/15 px-2.5 sm:px-4 py-2 text-xs font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-50"
+          >
+            <span className="hidden sm:inline">NexStream TV</span><span className="sm:hidden">TV</span>
+          </button>
+          <button
             type={isSearching ? 'button' : 'submit'}
             onClick={isSearching ? cancelSearch : undefined}
             aria-label={isSearching ? 'Cancel search' : 'Search'}
@@ -1924,12 +1946,12 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         </div>
       )}
 
-      {!movieCatalogue && nexStreamPlayer && (
+      {!movieCatalogue && (nexStreamPlayer || nexStreamSearchMode === 'tv' || (nexStreamSearchMode === 'movie' && nexStreamLoading)) && (
         <section className="space-y-3 rounded-2xl border border-violet-500/30 bg-slate-900/70 p-3 sm:p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <h3 className="text-sm font-bold text-violet-200">NexStream matches</h3>
-              <p className="mt-1 text-[11px] text-slate-400">Alternative playback option · Your existing torrent and Seedr results remain below.</p>
+              <h3 className="text-sm font-bold text-violet-200">{nexStreamSearchMode === 'tv' ? 'NexStream TV Search' : 'NexStream movie matches'}</h3>
+              <p className="mt-1 text-[11px] text-slate-400">{nexStreamSearchMode === 'tv' ? 'TV-show results are independent of torrent results. Choose a show to play an episode.' : 'Movie playback options are separate from your existing torrent and Seedr results.'}</p>
             </div>
             {nexStreamLoading && <span className="inline-flex items-center gap-1.5 text-xs text-violet-200"><Loader2 className="h-3.5 w-3.5 animate-spin" />Searching titles…</span>}
           </div>
@@ -1938,8 +1960,32 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">{nexStreamError}</div>
           )}
 
-          {!nexStreamLoading && nexStreamResults.length > 0 && (
-            <p className="text-xs text-slate-400">NexStream playback options are attached to matching torrent title cards below.</p>
+          {!nexStreamLoading && nexStreamResults.length > 0 && nexStreamSearchMode === 'movie' && (
+            <p className="text-xs text-slate-400">NexStream movie playback options are attached to matching torrent title cards below.</p>
+          )}
+
+          {nexStreamSearchMode === 'tv' && nexStreamResults.length > 0 && (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+              {nexStreamResults.filter(item => item.type === 'tv').map(item => (
+                <article key={'nexstream-tv-' + item.id} className="min-w-0 overflow-hidden rounded-xl border border-violet-500/25 bg-slate-950">
+                  <div className="aspect-[2/3] bg-slate-900">
+                    {item.poster ? <img src={item.poster} alt={item.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="flex h-full items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
+                  </div>
+                  <div className="flex flex-col gap-2 p-2.5">
+                    <h4 className="line-clamp-2 text-sm font-bold text-slate-100">{item.title}</h4>
+                    <p className="text-[11px] text-slate-500">{item.date ? item.date.slice(0, 4) : 'Release year unknown'} · TV series</p>
+                    {item.overview && <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{item.overview}</p>}
+                    <button type="button" disabled={nexStreamResolvingId === 'tv:' + item.id} onClick={() => void playWithNexStream(item)} className="mt-auto w-full rounded-lg bg-violet-500 px-3 py-2 text-xs font-bold text-white hover:bg-violet-400 disabled:opacity-50">
+                      {nexStreamResolvingId === 'tv:' + item.id ? <><Loader2 className="mr-1.5 inline h-3.5 w-3.5 animate-spin" />Resolving…</> : <><Play className="mr-1.5 inline h-3.5 w-3.5" />Choose episode</>}
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+
+          {nexStreamSearchMode === 'tv' && !nexStreamLoading && !nexStreamError && nexStreamResults.length === 0 && (
+            <p className="text-xs text-slate-400">No TV shows found. Try a different title.</p>
           )}
 
           {nexStreamPlayer && (
@@ -2005,7 +2051,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         </section>
       )}
 
-      {!movieCatalogue && !nexStreamPlayer && (nexStreamLoading || nexStreamError) && (
+      {!movieCatalogue && !nexStreamPlayer && nexStreamSearchMode !== 'tv' && (nexStreamLoading || nexStreamError) && (
         <div className="rounded-xl border border-violet-500/20 bg-slate-900/60 px-3 py-2 text-xs text-slate-300">
           {nexStreamLoading && <span className="inline-flex items-center gap-2"><Loader2 className="h-3.5 w-3.5 animate-spin" />Looking for NexStream playback options…</span>}
           {nexStreamError && <span className="ml-2 text-amber-200">{nexStreamError}</span>}
