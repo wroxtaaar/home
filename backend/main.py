@@ -7453,6 +7453,8 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_on
                     seen_ids.add(item_id)
                 raw_results.append(item)
 
+        # Keep a consistent 50-result cache window for the Trending section.
+        raw_results = raw_results[:50]
         results: list[dict[str, Any]] = []
         for item in raw_results:
             title = str(item.get("title") or item.get("original_title") or "").strip()
