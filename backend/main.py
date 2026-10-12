@@ -12933,3 +12933,51 @@ async def search_torrent_add(body: dict[str, Any]):
         )
     )
     return {"added": True, **result}
+
+# Dedicated episode lookup for the standalone Marvel scanner. Reuse Home's
+# existing multi-provider search pipeline rather than scraping 1337x directly.
+@app.get("/api/search/episode")
+async def search_episode_release(
+    title: str = Query(..., min_length=1, max_length=180),
+    season: int = Query(..., ge=1, le=99),
+    episode: int = Query(..., ge=1, le=999),
+):
+    query = f"{title.strip()} S{season:02d}E{episode:02d}"
+    try:
+        candidates = await _search_1337x_uncached(query, allow_series_fallback=False)
+    except Exception as exc:
+        logger.warning("Episode release search failed for %r: %s", query, exc)
+        raise HTTPException(status_code=502, detail="Episode release search temporarily failed")
+
+    token = re.compile(rf"(?i)(?<![A-Z0-9])S{season:02d}E{episode:02d}(?![0-9])")
+    rejected_pack = re.compile(r"(?i)\\b(complete series|season pack|all seasons|complete season)\\b")
+    results = []
+    seen = set()
+    for item in candidates if isinstance(candidates, list) else []:
+        name = str(item.get("title") or "").strip()
+        if not name or not token.search(name) or rejected_pack.search(name):
+            continue
+        link = str(item.get("url") or item.get("detailUrl") or item.get("magnet") or "").strip()
+        identity = link or name.casefold()
+        if identity in seen:
+            continue
+        seen.add(identity)
+        results.append({
+            "title": name,
+            "url": link,
+            "episode": f"S{season:02d}E{episode:02d}",
+            "provider": str(item.get("indexer") or item.get("provider") or ""),
+            "seeders": item.get("seeders"),
+            "size": item.get("size"),
+            "infoHash": item.get("infoHash") or item.get("info_hash"),
+            "magnet": item.get("magnet") or item.get("magnetUrl"),
+        })
+        if len(results) >= 8:
+            break
+    return {
+        "status": "found" if results else "not_found",
+        "query": query,
+        "results": results,
+        "providers": sorted({item["provider"] for item in results if item["provider"]}),
+    }
+
