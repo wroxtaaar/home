@@ -42,6 +42,13 @@ def year_from_date(value: Any) -> int | None:
     return int(text[:4]) if re.match(r"^\d{4}", text) else None
 
 
+def _safe_int(value: Any) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def record_key(row: dict[str, Any]) -> tuple[str, int | None]:
     title = row.get("title") or row.get("name") or ""
     year = row.get("year") or year_from_date(row.get("release_date"))
@@ -135,6 +142,7 @@ def main() -> int:
             merged[key] = dict(row)
 
     fetched = 0
+    accepted_tmdb_ids: set[int] = set()
     total_pages = 1
     print(f"Starting TMDB refresh as of {today}; seed records={len(historical)}; page cap={PAGE_LIMIT}.")
     print("Using configured TMDB credentials (values are not logged).")
@@ -173,6 +181,7 @@ def main() -> int:
                         "voteCount": item.get("vote_count"),
                         "source": "tmdb_discover_hindi_india_feature_films",
                     }
+                    accepted_tmdb_ids.add(int(item["id"]))
                     key = record_key(record)
                     if not key[0]:
                         continue
@@ -191,8 +200,14 @@ def main() -> int:
         print(f"ERROR: Refresh stopped before export was written: {exc}", file=sys.stderr)
         return 1
 
+    # Drop stale TMDB-backed seed rows that no longer satisfy the feature-film
+    # query. Keep unmatched historical IMDb-only rows for backward compatibility.
+    filtered_merged = {
+        key: row for key, row in merged.items()
+        if not row.get("tmdbId") or _safe_int(row.get("tmdbId")) in accepted_tmdb_ids
+    }
     records = sorted(
-        merged.values(),
+        filtered_merged.values(),
         key=lambda row: (int(row.get("year") or 0), str(row.get("title") or "").casefold()),
         reverse=True,
     )
