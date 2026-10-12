@@ -42,6 +42,15 @@ export interface TvCatalogueItem {
   backdropUrl?: string;
   rating?: number;
   tmdbUrl?: string;
+  streamingProviders?: Array<{
+    providerId?: number | null;
+    name: string;
+    type: 'subscription' | 'free' | 'ads' | 'rent' | 'buy' | string;
+    region?: string;
+    logoUrl?: string;
+    webUrl?: string;
+  }>;
+  providerLink?: string;
   source?: string;
 }
 
