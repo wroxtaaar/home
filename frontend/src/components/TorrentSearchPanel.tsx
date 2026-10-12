@@ -2433,7 +2433,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               const selectedKey = selectedQualityByGroup[group.key];
               const result = group.variants.find(variant => torrentResultKey(variant) === selectedKey) || group.variants[0];
               const posterResult = group.posterResult;
-              const normalizedCardTitle = normalizeGroupTitle(group.title.replace(/\\s*\\((?:19|20)\\d{2}\\)\\s*$/, ''));
+              const normalizedCardTitle = normalizeGroupTitle(group.title.replace(/\s*\((?:19|20)\d{2}\)\s*$/, ''));
               const nexStreamMatches = nexStreamResults.filter(item =>
                 normalizeGroupTitle(item.title) === normalizedCardTitle
               );
