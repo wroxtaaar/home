@@ -3102,7 +3102,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           )}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
             {visibleMovieCatalogueItems.map(movie => {
-              const showNexStreamButton = true;
               const previewGroup = movieTorrentPreviewCatalogueId === String(movie.id)
                 ? movieTorrentPreviewGroup
                 : null;
@@ -3152,12 +3151,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       >
                         <Film className="h-8 w-8" />
                       </div>
-                      {Number(result.seeders) > 0 && (
-                        <div className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-md bg-black/80 px-2 py-1 text-[10px] font-bold text-emerald-400">
-                          <Users className="h-3 w-3" />
-                          {Number(result.seeders) || 0}
-                        </div>
-                      )}
                       {result.indexer && (
                         <div
                           className="absolute right-2 top-2 max-w-[70%] truncate rounded-md bg-black/75 px-2 py-1 text-[10px] font-medium text-slate-300"
@@ -3198,11 +3191,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                         >
                           ✕
                         </button>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] sm:text-xs">
-                        <span className="font-semibold text-emerald-400">▲ {Number(result.seeders) || 0} seeders</span>
-                        <span className="font-semibold text-amber-400">▼ {Number(result.leechers) || 0} peers</span>
-                        <span className="text-slate-500">{previewGroup.year || movie.year || ''}</span>
                       </div>
                       {previewGroup.variants.length > 1 && (
                         <select
@@ -3280,6 +3268,28 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           </button>
                         )}
                       </div>
+                      <button
+                        type="button"
+                        disabled={!Number(movie.tmdbId || movie.id) || nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id)}
+                        onClick={() => {
+                          const tmdbId = Number(movie.tmdbId || movie.id);
+                          if (!Number.isInteger(tmdbId) || tmdbId <= 0) {
+                            setNexStreamError('This catalogue card has no valid TMDB ID for NexStream.');
+                            return;
+                          }
+                          void playWithNexStream({
+                            id: tmdbId,
+                            title: movie.title,
+                            date: movie.releaseDate || (movie.year ? String(movie.year) : ''),
+                            overview: movie.overview || '',
+                            poster: movie.posterUrl || null,
+                            type: 'movie',
+                          });
+                        }}
+                        className="w-full rounded-lg border border-violet-400/50 bg-violet-500/15 px-2 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-50"
+                      >
+                        {nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id) ? 'Resolving stream…' : 'Direct Stream'}
+                      </button>
                     </div>
                   </article>
                 );
@@ -3517,30 +3527,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   })()}
                   <div className="mt-auto space-y-2">
                     <div className="grid grid-cols-2 gap-2">
-                      {showNexStreamButton && (
-                        <button
-                          type="button"
-                          disabled={!Number(movie.tmdbId || movie.id) || nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id)}
-                          onClick={() => {
-                            const tmdbId = Number(movie.tmdbId || movie.id);
-                            if (!Number.isInteger(tmdbId) || tmdbId <= 0) {
-                              setNexStreamError('This catalogue card has no valid TMDB ID for NexStream.');
-                              return;
-                            }
-                            void playWithNexStream({
-                              id: tmdbId,
-                              title: movie.title,
-                              date: movie.releaseDate || (movie.year ? String(movie.year) : ''),
-                              overview: movie.overview || '',
-                              poster: movie.posterUrl || null,
-                              type: 'movie',
-                            });
-                          }}
-                          className="w-full rounded-lg border border-violet-400/50 bg-violet-500/15 px-2 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-50"
-                        >
-                          {nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id) ? 'Opening…' : 'Find on NexStream'}
-                        </button>
-                      )}
                       <a
                         href={'https://www.themoviedb.org/movie/' + String(movie.tmdbId || movie.id)}
                         target="_blank"
