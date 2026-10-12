@@ -47,6 +47,17 @@ def year_from_title(value: Any) -> int | None:
     return int(match.group(0)) if match else None
 
 
+ADULT_RESULT_TERMS = {
+    "xxx", "porn", "porno", "pornographic", "erotic", "hentai",
+    "blowjob", "handjob", "milf", "deepthroat", "sexvideo",
+}
+
+
+def is_adult_result(result_title: str) -> bool:
+    tokens = set(normalize(result_title).split())
+    return bool(tokens & ADULT_RESULT_TERMS)
+
+
 def title_similarity(movie_title: str, result_title: str) -> float:
     movie = normalize(movie_title)
     result = normalize(result_title)
@@ -54,12 +65,22 @@ def title_similarity(movie_title: str, result_title: str) -> float:
         return 0.0
     movie_tokens = set(movie.split())
     result_tokens = set(result.split())
-    # Torrent names often append year, resolution, codecs, release groups and language.
-    # Token coverage handles those suffixes better than whole-string similarity alone.
     coverage = len(movie_tokens & result_tokens) / max(1, len(movie_tokens))
     sequence = SequenceMatcher(None, movie, result).ratio()
-    if coverage == 1.0:
+
+    # A single-word title is highly ambiguous: only accept it when it starts
+    # the release name (not when it appears incidentally in unrelated media).
+    if len(movie_tokens) == 1:
+        if result != movie and not result.startswith(movie + " "):
+            return 0.0
         return max(0.90, sequence)
+
+    # Require the movie's words in the same order. Token coverage alone made
+    # reordered titles such as "Hari Ka Om" match "Om Ka Hari".
+    if movie in result:
+        return max(0.90, sequence)
+    if coverage == 1.0:
+        return sequence
     if coverage >= 0.8:
         return max(0.76, sequence)
     return max(coverage * 0.8, sequence)
@@ -149,6 +170,8 @@ async def run() -> int:
             if not isinstance(result, dict):
                 continue
             result_title = str(result.get("title") or "").strip()
+            if is_adult_result(result_title):
+                continue
             score = title_similarity(title, result_title)
             result_year = year_from_title(result_title)
             if year and result_year and abs(int(year) - result_year) > 1:
