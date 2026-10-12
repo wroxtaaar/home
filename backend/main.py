@@ -205,6 +205,8 @@ TMDB_SYNOPSIS_LOOKUP_VERSION = 5
 SYNOPSIS_CACHE_RETRY_INTERVAL_SECONDS = max(300, int(os.getenv("SYNOPSIS_CACHE_RETRY_INTERVAL_SECONDS", "900")))
 TMDB_OTT_CACHE_SECONDS = max(3600, int(os.getenv("TMDB_OTT_CACHE_SECONDS", str(24 * 60 * 60))))
 TMDB_OTT_CACHE_FILE = Path(os.getenv("TMDB_OTT_CACHE_FILE", "/app/data/tmdb_ott_availability_cache.json"))
+MARVEL_TV_CATALOGUE_CACHE_FILE = Path(os.getenv("MARVEL_TV_CATALOGUE_CACHE_FILE", "/app/data/marvel_tv_catalogue_cache.json"))
+DC_TV_CATALOGUE_CACHE_FILE = Path(os.getenv("DC_TV_CATALOGUE_CACHE_FILE", "/app/data/dc_tv_catalogue_cache.json"))
 _tmdb_ott_cache: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
 _tmdb_ott_inflight: dict[tuple[int, str], asyncio.Task[dict[str, Any]]] = {}
 _tmdb_movie_catalogue_cache: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
@@ -5282,8 +5284,8 @@ _RUNTIME_CACHE_SEED_FILES = {
     "tmdb_search_metadata_cache.json": TMDB_SEARCH_METADATA_CACHE_FILE,
     "imdb_rating_cache.json": IMDB_RATING_CACHE_FILE,
     "tmdb_ott_availability_cache.json": TMDB_OTT_CACHE_FILE,
-    "marvel_tv_catalogue_cache.json": _MARVEL_TV_CATALOGUE_CACHE_FILE,
-    "dc_tv_catalogue_cache.json": _DC_TV_CATALOGUE_CACHE_FILE,
+    "marvel_tv_catalogue_cache.json": MARVEL_TV_CATALOGUE_CACHE_FILE,
+    "dc_tv_catalogue_cache.json": DC_TV_CATALOGUE_CACHE_FILE,
 }
 
 
@@ -7553,10 +7555,6 @@ DC_WEB_SERIES: tuple[tuple[str, int], ...] = (
 
 _MARVEL_TV_CATALOGUE_CACHE: dict[str, Any] = {"expiresAt": 0.0, "payload": None}
 _DC_TV_CATALOGUE_CACHE: dict[str, Any] = {"expiresAt": 0.0, "payload": None}
-_MARVEL_TV_CATALOGUE_CACHE_FILE = Path(os.getenv("MARVEL_TV_CATALOGUE_CACHE_FILE", "/app/data/marvel_tv_catalogue_cache.json"))
-_DC_TV_CATALOGUE_CACHE_FILE = Path(os.getenv("DC_TV_CATALOGUE_CACHE_FILE", "/app/data/dc_tv_catalogue_cache.json"))
-
-
 def _load_persistent_tv_catalogue(cache: dict[str, Any], path: Path) -> dict[str, Any] | None:
     """Load a completed TV catalogue from persistent storage; it has no time-based expiry."""
     if cache.get("payload"):
@@ -7591,7 +7589,7 @@ def _save_persistent_tv_catalogue(path: Path, payload: dict[str, Any]) -> None:
 @app.get("/api/tv/catalogue/marvel")
 async def api_tmdb_marvel_tv_catalogue(page: int = Query(1, ge=1, le=500)):
     """Return cards for the curated Marvel TV/web-series list, enriched from TMDB."""
-    cached_payload = _load_persistent_tv_catalogue(_MARVEL_TV_CATALOGUE_CACHE, _MARVEL_TV_CATALOGUE_CACHE_FILE)
+    cached_payload = _load_persistent_tv_catalogue(_MARVEL_TV_CATALOGUE_CACHE, MARVEL_TV_CATALOGUE_CACHE_FILE)
     if cached_payload:
         return cached_payload
     if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
@@ -7662,14 +7660,14 @@ async def api_tmdb_marvel_tv_catalogue(page: int = Query(1, ge=1, le=500)):
         "results": results,
     }
     _MARVEL_TV_CATALOGUE_CACHE.update({"expiresAt": float("inf"), "payload": result})
-    _save_persistent_tv_catalogue(_MARVEL_TV_CATALOGUE_CACHE_FILE, result)
+    _save_persistent_tv_catalogue(MARVEL_TV_CATALOGUE_CACHE_FILE, result)
     return result
 
 
 @app.get("/api/tv/catalogue/dc-live-action")
 async def api_tmdb_dc_live_action_tv_catalogue(page: int = Query(1, ge=1, le=500)):
     """Return curated live-action DC TV series cards enriched from TMDB."""
-    cached_payload = _load_persistent_tv_catalogue(_DC_TV_CATALOGUE_CACHE, _DC_TV_CATALOGUE_CACHE_FILE)
+    cached_payload = _load_persistent_tv_catalogue(_DC_TV_CATALOGUE_CACHE, DC_TV_CATALOGUE_CACHE_FILE)
     if cached_payload:
         return cached_payload
     if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
@@ -7697,7 +7695,7 @@ async def api_tmdb_dc_live_action_tv_catalogue(page: int = Query(1, ge=1, le=500
     results = await asyncio.gather(*(resolve_series(title, year) for title, year in DC_WEB_SERIES))
     result = {"catalogue": "dc-live-action-web-series", "page": 1, "totalPages": 1, "totalResults": len(results), "provider": "TMDB + curated DC live-action series list", "results": results}
     _DC_TV_CATALOGUE_CACHE.update({"expiresAt": float("inf"), "payload": result})
-    _save_persistent_tv_catalogue(_DC_TV_CATALOGUE_CACHE_FILE, result)
+    _save_persistent_tv_catalogue(DC_TV_CATALOGUE_CACHE_FILE, result)
     return result
 
 
