@@ -46,13 +46,13 @@ PACK_OR_NOISE = re.compile(
 # Keep these phrase-level checks specific so legitimate titles containing words like "best"
 # or "latest" are not rejected on those words alone.
 EDITORIAL_NOISE = re.compile(
-    r"(?i)(?:\\b(?:top|best)\\s+\\d{1,2}\\b|"
-    r"\\b(?:latest|newest)\\s+(?:bollywood|hollywood|hindi|movies|films)\\b|"
-    r"\\b(?:bollywood|hollywood|hindi)\\s+movies?\\s+(?:in\\s+hindi|of\\s+\\d{4}|"
-    r"in\\s+best\\s+quality|available|download)\\b|"
-    r"\\b(?:hand[ -]?picked|best quality available|prints available|full movie collection|"
-    r"movie review|movie trailer|list of movies|movies list|actress|wet compilation)\\b|"
-    r"\\b(?:from|of)\\s+(?:the\\s+)?(?:bollywood|hollywood)\\s+movies?\\b)"
+    r"(?i)(?:\b(?:top|best)\s+\d{1,2}\b|"
+    r"\b(?:latest|newest)\s+(?:bollywood|hollywood|hindi|movies|films)\b|"
+    r"\b(?:bollywood|hollywood|hindi)\s+movies?\s+(?:in\s+hindi|of\s+\d{4}|"
+    r"in\s+best\s+quality|available|download)\b|"
+    r"\b(?:hand[ -]?picked|best quality available|prints available|full movie collection|"
+    r"movie review|movie trailer|list of movies|movies list|actress|wet compilation)\b|"
+    r"\b(?:from|of)\s+(?:the\s+)?(?:bollywood|hollywood)\s+movies?\b)"
 )
 GENERIC_SCRAPER_QUERIES = {"movie", "movies", "film", "films", "tv", "series", "show", "shows", "anime"}
 RELEASE_TAIL = re.compile(r"(?i)(?:\s*[-|]\s*)?(?:yify|yts|rarbg|tgx|ettv|etrg|psa|mkvhub|world4ufree|mkvcinemas|katmoviehd|torrentgalaxy).*$")
