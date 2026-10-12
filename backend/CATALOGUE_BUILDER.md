@@ -39,7 +39,9 @@ Then run the defaults if the small run reports successful TMDB records and cache
 5. Torrent titles are cleaned of common release tags and uploader tails. Collections, season packs,
    music/audio compilations, common adult-content markers, and editorial/listicle results (for example
    "Top 10", "3 Best Bollywood Movies Of", "latest Bollywood movies", "hand-picked prints", or
-   actress compilations) are rejected before TMDB lookup. Rejections are available in debug logs.
+   actress compilations) are rejected before TMDB lookup. The `--verbose` flag enables DEBUG logs
+   with the rejection reason, indexer, raw release title, and any separate canonical `mediaTitle`
+   field, so filters can be tuned using actual examples rather than guesses.
 6. If scraper candidates do not contribute enough new, confident TMDB matches, the builder performs
    a fallback TMDB discovery pass to fill unused capacity rather than returning an unnecessarily small
    catalogue.
