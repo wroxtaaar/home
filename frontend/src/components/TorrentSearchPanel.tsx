@@ -296,6 +296,12 @@ function groupTorrentResults(results: TorrentSearchResult[]): TorrentQualityGrou
 export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepare, onCancelPrepare, onOpenProgress, seedrFiles = [], seedrDeletedFolderIds = [], onPlaySeedrFile }) => {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<TorrentSearchResult[]>([]);
+  type NexStreamTitle = { id: number; title: string; date: string; overview: string; poster: string | null; type: 'movie' | 'tv' };
+  const [nexStreamResults, setNexStreamResults] = useState<NexStreamTitle[]>([]);
+  const [nexStreamLoading, setNexStreamLoading] = useState(false);
+  const [nexStreamError, setNexStreamError] = useState('');
+  const [nexStreamPlayer, setNexStreamPlayer] = useState<{ title: string; sourceName: string; url: string; type: 'movie' | 'tv'; season?: number; episode?: number } | null>(null);
+  const [nexStreamResolvingId, setNexStreamResolvingId] = useState<string | null>(null);
   const [searchAvailabilityByGroup, setSearchAvailabilityByGroup] = useState<Record<string, {
     status: 'ready' | 'not_found' | 'not_confirmed' | 'unavailable' | 'loading';
     query: string;
@@ -900,6 +906,95 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     setSearched(false);
   };
 
+  const searchNexStreamTitles = async (titleQuery: string) => {
+    setNexStreamLoading(true);
+    setNexStreamError('');
+    setNexStreamResults([]);
+    setNexStreamPlayer(null);
+    try {
+      const types: Array<'movie' | 'tv'> = ['movie', 'tv'];
+      const responses = await Promise.all(types.map(async type => {
+        const params = new URLSearchParams({ query: titleQuery, type });
+        const response = await fetch('/api/nexstream/search?' + params.toString(), {
+          headers: { Accept: 'application/json' },
+          credentials: 'same-origin',
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.success) {
+          throw new Error(data.detail || 'NexStream title search failed.');
+        }
+        return (Array.isArray(data.results) ? data.results : []) as NexStreamTitle[];
+      }));
+      const unique = new Map<string, NexStreamTitle>();
+      for (const item of responses.flat()) {
+        unique.set(item.type + ':' + item.id, item);
+      }
+      setNexStreamResults(Array.from(unique.values()));
+    } catch (error: any) {
+      setNexStreamError(String(error?.message || 'NexStream search is temporarily unavailable.'));
+    } finally {
+      setNexStreamLoading(false);
+    }
+  };
+
+  const playWithNexStream = async (item: NexStreamTitle) => {
+    let season: number | undefined;
+    let episode: number | undefined;
+    if (item.type === 'tv') {
+      const seasonInput = window.prompt('Season number:', '1');
+      if (seasonInput === null) return;
+      const episodeInput = window.prompt('Episode number:', '1');
+      if (episodeInput === null) return;
+      season = Number(seasonInput);
+      episode = Number(episodeInput);
+      if (!Number.isInteger(season) || season < 1 || !Number.isInteger(episode) || episode < 1) {
+        setNexStreamError('Season and episode must be positive whole numbers.');
+        return;
+      }
+    }
+
+    const resolvingId = item.type + ':' + item.id;
+    setNexStreamResolvingId(resolvingId);
+    setNexStreamError('');
+    try {
+      const params = new URLSearchParams({ type: item.type, tmdb_id: String(item.id) });
+      if (item.type === 'tv') {
+        params.set('season', String(season));
+        params.set('episode', String(episode));
+      }
+      const response = await fetch('/api/nexstream/resolve?' + params.toString(), {
+        headers: { Accept: 'application/json' },
+        credentials: 'same-origin',
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.success || !Array.isArray(data.sources) || !data.sources.length) {
+        throw new Error(data.detail || 'NexStream could not resolve this title.');
+      }
+      const source = data.sources.find((candidate: any) => {
+        try {
+          const url = new URL(String(candidate?.url || ''));
+          return url.protocol === 'https:' && ['embedmaster.link', 'www.embedmaster.link'].includes(url.hostname);
+        } catch {
+          return false;
+        }
+      });
+      if (!source) throw new Error('NexStream returned no supported player source.');
+      setNexStreamPlayer({
+        title: item.title,
+        sourceName: String(source.name || 'NexStream'),
+        url: String(source.url),
+        type: item.type,
+        season,
+        episode,
+      });
+      setNexStreamError('');
+    } catch (error: any) {
+      setNexStreamError(String(error?.message || 'Could not start NexStream playback.'));
+    } finally {
+      setNexStreamResolvingId(null);
+    }
+  };
+
   const runSearch = async (event?: React.FormEvent, searchOverride?: string, searchMode?: 'marvel' | 'marvel-hindi' | 'dc-live-action' | 'dc-live-action-hindi' | 'dc-animated' | 'latest-hollywood' | 'latest-bollywood') => {
     event?.preventDefault();
     setMovieTorrentSearchError('');
@@ -947,6 +1042,14 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         saveRecentSearch(trimmed);
       }
       setCatalogueBuildProgress('');
+      if (!searchMode) {
+        // Search NexStream independently so it never delays or replaces torrent results.
+        void searchNexStreamTitles(trimmed);
+      } else {
+        setNexStreamResults([]);
+        setNexStreamError('');
+        setNexStreamPlayer(null);
+      }
 
       let data: TorrentSearchResult[];
       if (searchMode) {
@@ -1797,6 +1900,83 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             ) : null}
           </div>
         </div>
+      )}
+
+      {!movieCatalogue && (nexStreamLoading || nexStreamResults.length > 0 || nexStreamError || nexStreamPlayer) && (
+        <section className="space-y-3 rounded-2xl border border-violet-500/30 bg-slate-900/70 p-3 sm:p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-bold text-violet-200">NexStream matches</h3>
+              <p className="mt-1 text-[11px] text-slate-400">Alternative playback option · Your existing torrent and Seedr results remain below.</p>
+            </div>
+            {nexStreamLoading && <span className="inline-flex items-center gap-1.5 text-xs text-violet-200"><Loader2 className="h-3.5 w-3.5 animate-spin" />Searching titles…</span>}
+          </div>
+
+          {nexStreamError && (
+            <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">{nexStreamError}</div>
+          )}
+
+          {nexStreamResults.length > 0 && (
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {nexStreamResults.map(item => {
+                const resolving = nexStreamResolvingId === item.type + ':' + item.id;
+                const year = String(item.date || '').slice(0, 4);
+                return (
+                  <article key={item.type + ':' + item.id} className="flex min-w-0 gap-3 rounded-xl border border-slate-800 bg-slate-950/70 p-2.5">
+                    {item.poster ? (
+                      <img src={item.poster} alt="" loading="lazy" className="h-[92px] w-[62px] shrink-0 rounded-md bg-slate-800 object-cover" />
+                    ) : (
+                      <div className="flex h-[92px] w-[62px] shrink-0 items-center justify-center rounded-md bg-slate-800"><Film className="h-5 w-5 text-slate-500" /></div>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="line-clamp-2 text-xs font-bold text-slate-100">{item.title}</div>
+                      <div className="mt-1 text-[10px] text-slate-400">{year ? year + ' · ' : ''}{item.type === 'tv' ? 'TV series' : 'Movie'}</div>
+                      {item.overview && <p className="mt-1 line-clamp-3 text-[10px] leading-4 text-slate-500">{item.overview}</p>}
+                      <button
+                        type="button"
+                        disabled={nexStreamResolvingId !== null}
+                        onClick={() => void playWithNexStream(item)}
+                        className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-violet-400 px-2.5 py-1.5 text-[11px] font-bold text-slate-950 hover:bg-violet-300 disabled:cursor-wait disabled:opacity-60"
+                      >
+                        {resolving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                        {resolving ? 'Resolving…' : 'Play with NexStream'}
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+
+          {!nexStreamLoading && !nexStreamError && nexStreamResults.length === 0 && (
+            <p className="text-xs text-slate-500">No NexStream matches found for this search.</p>
+          )}
+
+          {nexStreamPlayer && (
+            <div className="space-y-2 rounded-xl border border-violet-500/30 bg-black p-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="truncate text-xs font-bold text-slate-100">Playing with NexStream: {nexStreamPlayer.title}</div>
+                  <div className="text-[10px] text-slate-400">
+                    {nexStreamPlayer.type === 'tv' ? 'Season ' + nexStreamPlayer.season + ', Episode ' + nexStreamPlayer.episode + ' · ' : ''}{nexStreamPlayer.sourceName}
+                  </div>
+                </div>
+                <button type="button" onClick={() => setNexStreamPlayer(null)} className="rounded-lg border border-slate-700 px-2.5 py-1.5 text-[11px] font-semibold text-slate-300 hover:bg-slate-800">Close player</button>
+              </div>
+              <div className="aspect-video overflow-hidden rounded-lg bg-black max-sm:aspect-[9/16] max-sm:max-h-[70vh]">
+                <iframe
+                  key={nexStreamPlayer.url}
+                  src={nexStreamPlayer.url}
+                  title={'NexStream player for ' + nexStreamPlayer.title}
+                  allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+                  allowFullScreen
+                  referrerPolicy="strict-origin-when-cross-origin"
+                  className="h-full w-full border-0"
+                />
+              </div>
+            </div>
+          )}
+        </section>
       )}
 
       {movieCatalogue && (
