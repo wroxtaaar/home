@@ -1852,7 +1852,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       const data = await api.getMovieCatalogue(key, page, onlyReleased, controller.signal);
       if (generation !== searchGenerationRef.current) return;
       setMovieCatalogue(data);
-      queueOttLookups(data.results);
+      // The full Bollywood library is a metadata snapshot, not an OTT catalogue.
+      // Avoid launching dozens of per-title provider lookups just by opening it.
+      if (key !== 'bollywood-library') queueOttLookups(data.results);
       setCatalogueBuildProgress('');
     } catch (err: any) {
       if (generation !== searchGenerationRef.current) return;
@@ -2763,6 +2765,11 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     <p className="mt-0.5 text-xs text-slate-500">{movie.year || 'Release year unknown'}</p>
                     {(() => {
                       const ott = ottAvailability[String(movie.id)];
+                      if (movieCatalogue?.catalogue === 'bollywood-library') {
+                        return movie.verified === false
+                          ? <p className="mt-2 text-[10px] text-amber-300">Historical seed · unverified</p>
+                          : <p className="mt-2 text-[10px] text-slate-500">OTT availability not loaded</p>;
+                      }
                       if (!ott || ott.status === 'loading') {
                         return <p className="mt-2 text-[10px] text-slate-500">Checking OTT availability in India…</p>;
                       }
