@@ -7491,51 +7491,103 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_on
     }
 
 
+MARVEL_WEB_SERIES: tuple[tuple[str, int], ...] = (
+    ("WandaVision", 2021), ("The Falcon and the Winter Soldier", 2021), ("Loki", 2021),
+    ("What If...?", 2021), ("Hawkeye", 2021), ("Moon Knight", 2022), ("Ms. Marvel", 2022),
+    ("She-Hulk: Attorney at Law", 2022), ("Secret Invasion", 2023), ("Echo", 2024),
+    ("Agatha All Along", 2024), ("Daredevil: Born Again", 2025), ("Ironheart", 2025),
+    ("Marvel Zombies", 2025), ("Your Friendly Neighborhood Spider-Man", 2025), ("X-Men '97", 2024),
+    ("Legion", 2017), ("The Gifted", 2017), ("Agents of S.H.I.E.L.D.", 2013),
+    ("Agent Carter", 2015), ("Inhumans", 2017), ("Runaways", 2017), ("Cloak & Dagger", 2018),
+    ("Daredevil", 2015), ("Jessica Jones", 2015), ("Luke Cage", 2016), ("Iron Fist", 2017),
+    ("The Defenders", 2017), ("The Punisher", 2017), ("Helstrom", 2020), ("Blade: The Series", 2006),
+    ("Mutant X", 2001), ("Avengers Assemble", 2013), ("Guardians of the Galaxy", 2015),
+    ("Ultimate Spider-Man", 2012), ("Hulk and the Agents of S.M.A.S.H.", 2013),
+    ("The Spectacular Spider-Man", 2008), ("Wolverine and the X-Men", 2009),
+    ("X-Men: The Animated Series", 1992), ("Spider-Man: The Animated Series", 1994),
+    ("Fantastic Four", 1994), ("Iron Man", 1994), ("The Incredible Hulk", 1996),
+    ("Silver Surfer", 1998), ("Spider-Man Unlimited", 1999),
+    ("The Avengers: Earth's Mightiest Heroes", 2010), ("Wolverine", 2011),
+)
+_MARVEL_TV_CATALOGUE_CACHE: dict[str, Any] = {"expiresAt": 0.0, "payload": None}
+
+
 @app.get("/api/tv/catalogue/marvel")
 async def api_tmdb_marvel_tv_catalogue(page: int = Query(1, ge=1, le=500)):
-    """Browse Marvel-associated TV series via TMDB discovery."""
+    """Return cards for the curated Marvel TV/web-series list, enriched from TMDB."""
+    now = time.monotonic()
+    cached_payload = _MARVEL_TV_CATALOGUE_CACHE.get("payload")
+    if cached_payload and now < float(_MARVEL_TV_CATALOGUE_CACHE.get("expiresAt") or 0.0):
+        return cached_payload
     if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
         raise HTTPException(status_code=503, detail="TMDB credentials are not configured.")
-    params = {
-        "include_adult": "false",
-        "language": "en-US",
-        "page": page,
-        "sort_by": "first_air_date.desc",
-        "with_companies": "420|19551|38679|2301|13252",
-    }
-    payload = await _tmdb_get_json("discover/tv", params)
-    results = []
-    for item in payload.get("results") or []:
-        if not isinstance(item, dict) or not item.get("id"):
-            continue
-        title = str(item.get("name") or item.get("original_name") or "").strip()
-        if not title:
-            continue
-        air_date = str(item.get("first_air_date") or "").strip()
-        year_match = re.match(r"^(\\d{4})", air_date)
-        poster_path = str(item.get("poster_path") or "").strip()
-        backdrop_path = str(item.get("backdrop_path") or "").strip()
-        tmdb_id = int(item["id"])
-        results.append({
-            "id": tmdb_id,
+
+    semaphore = asyncio.Semaphore(3)
+
+    async def resolve_series(title: str, year: int) -> dict[str, Any]:
+        fallback = {
+            "id": f"marvel-tv:{re.sub(r'[^a-z0-9]+', '-', title.casefold()).strip('-')}:{year}",
             "title": title,
-            "year": int(year_match.group(1)) if year_match else None,
-            "releaseDate": air_date,
-            "overview": str(item.get("overview") or "").strip(),
-            "posterUrl": TMDB_IMAGE_BASE + poster_path if poster_path else "",
-            "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop_path if backdrop_path else "",
-            "rating": float(item.get("vote_average") or 0),
-            "tmdbUrl": f"https://www.themoviedb.org/tv/{tmdb_id}",
-            "source": "TMDB",
-        })
-    return {
+            "year": year,
+            "releaseDate": str(year),
+            "overview": "",
+            "posterUrl": "",
+            "backdropUrl": "",
+            "rating": 0.0,
+            "tmdbUrl": "",
+            "source": "Curated Marvel series list",
+        }
+        async with semaphore:
+            try:
+                payload = await _tmdb_get_json("search/tv", {
+                    "query": title,
+                    "first_air_date_year": year,
+                    "include_adult": "false",
+                    "language": "en-US",
+                    "page": 1,
+                })
+            except HTTPException as exc:
+                logger.info("TMDB Marvel TV lookup failed for %s (%s): %s", title, year, exc.detail)
+                return fallback
+            target = _normalize_title(title)
+            candidates = [row for row in (payload.get("results") or []) if isinstance(row, dict) and row.get("id")]
+            candidates.sort(key=lambda row: (
+                _normalize_title(str(row.get("name") or "")) == target,
+                str(row.get("first_air_date") or "").startswith(str(year)),
+                float(row.get("popularity") or 0),
+            ), reverse=True)
+            if not candidates:
+                return fallback
+            item = candidates[0]
+            air_date = str(item.get("first_air_date") or "").strip()
+            year_match = re.match(r"^(\\d{4})", air_date)
+            poster_path = str(item.get("poster_path") or "").strip()
+            backdrop_path = str(item.get("backdrop_path") or "").strip()
+            tmdb_id = int(item["id"])
+            return {
+                "id": tmdb_id,
+                "title": title,
+                "year": int(year_match.group(1)) if year_match else year,
+                "releaseDate": air_date,
+                "overview": str(item.get("overview") or "").strip(),
+                "posterUrl": TMDB_IMAGE_BASE + poster_path if poster_path else "",
+                "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop_path if backdrop_path else "",
+                "rating": float(item.get("vote_average") or 0),
+                "tmdbUrl": f"https://www.themoviedb.org/tv/{tmdb_id}",
+                "source": "TMDB",
+            }
+
+    results = await asyncio.gather(*(resolve_series(title, year) for title, year in MARVEL_WEB_SERIES))
+    result = {
         "catalogue": "marvel-web-series",
-        "page": int(payload.get("page") or page),
-        "totalPages": max(1, min(500, int(payload.get("total_pages") or 1))),
-        "totalResults": int(payload.get("total_results") or len(results)),
-        "provider": "TMDB",
+        "page": 1,
+        "totalPages": 1,
+        "totalResults": len(results),
+        "provider": "TMDB + curated Marvel series list",
         "results": results,
     }
+    _MARVEL_TV_CATALOGUE_CACHE.update({"expiresAt": time.monotonic() + 6 * 60 * 60, "payload": result})
+    return result
 
 
 @app.post("/api/movies/catalogue/cache/clear")
