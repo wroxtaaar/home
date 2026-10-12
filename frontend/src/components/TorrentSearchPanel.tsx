@@ -2984,9 +2984,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 ? (posterOverrides[groupPosterKey] || rawPosterUrlFor(posterResult) || '')
                 : (canonicalPosterUrl || posterOverrides[groupPosterKey] || rawPosterUrlFor(posterResult) || '');
 
-              // Normal searches use the same poster-first, compact card flow as
-              // the Popular/Trending catalogues. The full torrent/OTT details and
-              // quality picker are rendered only after the user presses Get.
+              // Normal searches use a poster-first two-state card. Clicking the poster
+              // opens the Prepare/details card; clicking it again returns here.
               if (expandedSearchGroupKey !== group.key) {
                 const availability = searchAvailabilityByGroup[group.key];
                 const providerMatchTitle = episodeSeriesTitle(group.title) || group.title;
@@ -3019,7 +3018,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             src={compactPosterUrl}
                             alt={mediaDisplayTitle}
                             loading="lazy"
-                            className="h-full w-full object-cover"
+                            className="h-full w-full object-cover cursor-pointer"
+                            onClick={() => setExpandedSearchGroupKey(group.key)}
                             onLoad={event => {
                               const key = posterKeyFor(posterResult);
                               posterLoadedRef.current.add(key);
@@ -3149,19 +3149,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                         </div>
                       )}
 
-                      <div className="mt-auto flex items-end justify-between gap-2 pt-1">
-
-                        <button
-                          type="button"
-                          onClick={() => setExpandedSearchGroupKey(group.key)}
-                          className="shrink-0 inline-flex items-center justify-center gap-1 rounded-lg bg-cyan-500 px-3 py-2 text-xs font-bold text-slate-950 transition hover:bg-cyan-400"
-                          aria-label={'Get ' + group.title}
-                          title="Open torrent details and choose quality"
-                        >
-                          <Download className="h-3.5 w-3.5" />
-                          Get
-                        </button>
-                      </div>
                     </div>
                   </article>
                 );
@@ -3185,7 +3172,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               src={resolvedPosterUrl}
                               alt={group.title}
                               loading="lazy"
-                              className="w-full h-full object-cover"
+                              className="w-full h-full object-cover cursor-pointer"
+                              onClick={() => setExpandedSearchGroupKey(null)}
                               onLoad={(event) => {
                                 const key = posterKeyFor(posterResult);
                                 posterLoadedRef.current.add(key);
