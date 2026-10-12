@@ -88,6 +88,7 @@ async def run() -> int:
         metadata = load_json(bundled_path, {})
         if isinstance(metadata, dict) and isinstance(metadata.get("records"), list):
             atomic_write(METADATA_PATH, metadata)
+    source_rows = metadata.get("records", []) if isinstance(metadata, dict) else []
     if not isinstance(source_rows, list) or not source_rows:
         print(f"ERROR: metadata catalogue missing or empty: {METADATA_PATH}", file=sys.stderr)
         return 2
