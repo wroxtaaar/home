@@ -3825,62 +3825,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
                             
 
-                            {(() => {
-                              const availability = searchAvailabilityByGroup[group.key];
-                              if (!availability) return null;
-                              const groupIdentity = torrentMediaIdentity({
-                                title: group.title,
-                                mediaTitle: group.title,
-                                year: group.year
-                              } as TorrentSearchResult);
-                              const matchingTitles = (availability.matches || []).filter(match => {
-                                if (!match.providers?.length) return false;
-                                const matchIdentity = normalizeGroupTitle(match.title);
-                                const groupTitle = groupIdentity.normalized;
-                                // Do not show providers for a different movie returned by a loose title match.
-                                return matchIdentity === groupTitle ||
-                                  matchIdentity.replace(/\\s+\\d{4}$/, '') === groupTitle ||
-                                  groupTitle.replace(/\\s+\\d{4}$/, '') === matchIdentity;
-                              });
-                              const matchedProviders = uniqueOttProviders(matchingTitles.flatMap(match => match.providers));
-                              const allProviders = uniqueOttProviders(availability.providers || []);
-                              const providersToShow = matchedProviders.length ? matchedProviders : allProviders;
-                              if (providersToShow.length > 0 && (matchingTitles.length > 0 || availability.status === 'ready')) {
-                                return (
-                                  <div className="mt-2 flex flex-wrap gap-1" aria-label={`Streaming services for ${group.title}`}>
-                                    {providersToShow.map((provider, providerIndex) => {
-                                      const name = displayOttProviderName(provider.name);
-                                      return (
-                                        <a
-                                          key={String(provider.providerId ?? name ?? providerIndex).toLowerCase()}
-                                          href={provider.webUrl || undefined}
-                                          target={provider.webUrl ? '_blank' : undefined}
-                                          rel={provider.webUrl ? 'noreferrer' : undefined}
-                                          title={name}
-                                          className="rounded-full border border-cyan-900/70 bg-cyan-950/40 px-1.5 py-0.5 text-[10px] leading-4 text-cyan-200 hover:border-cyan-600"
-                                        >
-                                          {name}
-                                        </a>
-                                      );
-                                    })}
-                                  </div>
-                                );
-                              }
-                              if (availability.status === 'loading') {
-                                return <div className="mt-2 text-[10px] text-slate-500">Checking streaming services…</div>;
-                              }
-                              if (availability.status === 'unavailable') {
-                                return <div className="mt-2 text-[10px] text-slate-500">Streaming info unavailable</div>;
-                              }
-                              if (availability.status === 'not_confirmed') {
-                                return <div className="mt-2 text-[10px] text-slate-500">{availability.message || 'No saved streaming details'}</div>;
-                              }
-                              if (availability.status === 'ready') {
-                                return <div className="mt-2 text-[10px] text-slate-500">No streaming providers reported</div>;
-                              }
-                              return null;
-                            })()}
-
+                            
                             {group.variants.length > 1 && (
                               <select
                                 aria-label={`Choose quality for ${group.title}`}
