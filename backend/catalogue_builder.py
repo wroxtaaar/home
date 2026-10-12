@@ -13,6 +13,7 @@ import logging
 import math
 import re
 import sys
+from datetime import date
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -119,6 +120,36 @@ def _scraper_query_is_useful(query: str) -> bool:
     ):
         return False
     return True
+
+
+def _scraper_queries_for(query: str) -> list[str]:
+    """Expand broad category/year searches into a few more targeted indexer queries."""
+    text = re.sub(r"\\s+", " ", str(query or "").casefold()).strip()
+    year_match = re.search(r"\\b(19|20|21)\\d{2}\\b", text)
+    year = int(year_match.group(0)) if year_match else None
+    current_year = date.today().year
+
+    if re.search(r"\\b(?:bollywood|hindi|indian)\\b", text):
+        years = [year] if year else [current_year, current_year - 1]
+        variants = []
+        for target_year in years:
+            variants.extend([f"Bollywood {target_year}", f"Hindi movies {target_year}"])
+        return list(dict.fromkeys(variants))[:4]
+
+    if re.search(r"\\b(?:hollywood|english movies|western movies)\\b", text):
+        years = [year] if year else [current_year, current_year - 1]
+        return list(dict.fromkeys(f"Hollywood movies {target_year}" for target_year in years))[:2]
+
+    # A year-only catalogue query is too broad for torrent indexers. Split it
+    # into language/industry searches instead of asking for "2025 movies".
+    if year and re.search(r"\\b(?:movies?|films?)\\b", text):
+        return [
+            f"Bollywood {year}",
+            f"Hindi movies {year}",
+            f"Hollywood movies {year}",
+        ]
+
+    return [query]
 
 
 def _release_year(row: dict[str, Any], media_type: str) -> int:
@@ -328,14 +359,23 @@ async def build_catalogue(queries: list[str], max_titles: int, per_query: int) -
 
     # Scrapers remain useful for less-popular and newly indexed titles. Only resolve
     # plausible individual-title candidates, and never let these displace TMDB rows.
+    scraper_queries_attempted = 0
+    seen_scraper_queries: set[str] = set()
     for query in queries:
         if len(discovered) >= cap:
             break
-        for title, year, source_query in await _scrape_query(query, per_query):
-            key = (_normalize(title), year)
-            if key[0]:
-                discovered.setdefault(key, (title, year, source_query))
-        await asyncio.sleep(0.2)
+        for scraper_query in _scraper_queries_for(query):
+            normalized_scraper_query = re.sub(r"\\s+", " ", scraper_query.casefold()).strip()
+            if normalized_scraper_query in seen_scraper_queries:
+                continue
+            seen_scraper_queries.add(normalized_scraper_query)
+            scraper_queries_attempted += 1
+            log.info("Scraper query plan: input=%r targeted_query=%r", query, scraper_query)
+            for title, year, source_query in await _scrape_query(scraper_query, per_query):
+                key = (_normalize(title), year)
+                if key[0]:
+                    discovered.setdefault(key, (title, year, source_query))
+            await asyncio.sleep(0.2)
 
     remaining = max(0, cap - len(output_by_id))
     selected = list(discovered.values())[:remaining]
@@ -412,6 +452,7 @@ async def build_catalogue(queries: list[str], max_titles: int, per_query: int) -
     persisted = home_backend._persist_search_metadata_cache_rows(output)
     return {
         "queries": len(queries),
+        "scraper_queries_attempted": scraper_queries_attempted,
         "tmdb_discovery_records": len(output_by_id) - matched,
         "scraped_unique_titles": len(discovered),
         "scraper_titles_attempted": len(selected),
