@@ -3778,7 +3778,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                         {resolvedPosterUrl ? (
                           <>
                             <img
-                              src={lowQualityPosterUrl(resolvedPosterUrl, (isDcLiveActionEnglishResults || isMarvelEnglishResults) ? 'w780' : 'w500')}
+                              src={lowQualityPosterUrl(resolvedPosterUrl)}
                               alt={group.title}
                               loading="lazy"
                               className="w-full h-full object-cover cursor-pointer"
