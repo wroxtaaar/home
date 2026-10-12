@@ -70,6 +70,7 @@ jobs:
           DATA_DIR="/home/$VPS_USER/home-data"
           for name in \
             marvel_catalogue.json \
+            marvel_web_series_catalogue.json \
             marvel_hindi_catalogue.json \
             dc_live_action_catalogue.json \
             dc_live_action_hindi_catalogue.json \
