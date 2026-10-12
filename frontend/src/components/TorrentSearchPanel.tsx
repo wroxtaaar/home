@@ -12,7 +12,8 @@ import {
   Database,
   AlertCircle,
   SlidersHorizontal,
-  Film
+  Film,
+  Maximize2
 } from 'lucide-react';
 import { api, API_BASE, ImdbRatingResult, MovieCatalogueItem, MovieCatalogueKey, MovieCataloguePage, MovieOttAvailability, MovieOttProvider, SearchMediaMetadata, TorrentSearchResult } from '../api/client.ts';
 import { formatBytes } from '../utils/formatters.ts';
@@ -3410,6 +3411,17 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               const selectedKey = selectedQualityByGroup[group.key];
               const result = group.variants.find(variant => torrentResultKey(variant) === selectedKey) || group.variants[0];
               const posterResult = group.posterResult;
+              const normalizedCardTitle = normalizeTorrentTitleForNexStream(group.title);
+              const cardYear = Number((group.title.match(/\\b((?:19|20)\\d{2})\\b/) || [])[1] || group.year || 0);
+              const titleMatches = nexStreamResults.filter(item => {
+                if (item.type !== 'movie') return false;
+                const candidateTitle = normalizeTorrentTitleForNexStream(item.title);
+                const exactTitle = candidateTitle === normalizedCardTitle;
+                const titleContains = candidateTitle.length >= 4 && normalizedCardTitle.length >= 4 &&
+                  (normalizedCardTitle.startsWith(candidateTitle + ' ') || candidateTitle.startsWith(normalizedCardTitle + ' '));
+                const yearMatches = !cardYear || !item.date || Number(String(item.date).slice(0, 4)) === cardYear;
+                return (exactTitle || titleContains) && yearMatches;
+              }).slice(0, 1);
               const seriesTitle = episodeSeriesTitle(group.title);
               const mediaMetadata = searchMetadataForGroup(group, searchMetadata);
               const mediaDisplayTitle = !seriesTitle && mediaMetadata?.title
@@ -3563,6 +3575,17 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               ? 'TMDB synopsis is temporarily unavailable.'
                               : 'No synopsis available from TMDB for this title.')}
                       </p>
+
+                      {titleMatches.length > 0 && (
+                        <button
+                          type="button"
+                          disabled={nexStreamResolvingId !== null}
+                          onClick={() => void playWithNexStream(titleMatches[0])}
+                          className="w-full rounded-lg border border-violet-400/40 bg-violet-500/15 px-2.5 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-60"
+                        >
+                          {nexStreamResolvingId === 'movie:' + titleMatches[0].id ? 'Resolving NexStream…' : 'Play with NexStream'}
+                        </button>
+                      )}
 
                       {compactProviders.length > 0 ? (
                         <div className="flex flex-wrap gap-1" aria-label={'Streaming services for ' + group.title}>
