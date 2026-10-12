@@ -708,6 +708,13 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   type CachedFranchiseKey = 'marvel' | 'dc-live-action';
   const [tmdbFranchiseKey, setTmdbFranchiseKey] = useState<FranchiseTmdbKey>('marvel');
   const [openCachedLanguageMenu, setOpenCachedLanguageMenu] = useState<CachedFranchiseKey | null>(null);
+  type RegionalCatalogueGroup = 'bollywood' | 'hollywood';
+  type RegionalCatalogueMode = 'popular' | 'trending' | 'latest';
+  const [openRegionalCatalogueMenu, setOpenRegionalCatalogueMenu] = useState<RegionalCatalogueGroup | null>(null);
+  const [regionalCatalogueModes, setRegionalCatalogueModes] = useState<Record<RegionalCatalogueGroup, RegionalCatalogueMode>>({
+    bollywood: 'popular',
+    hollywood: 'popular',
+  });
 
   useEffect(() => {
     if (!openCachedLanguageMenu) return;
@@ -729,6 +736,38 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       document.removeEventListener('keydown', handleEscape);
     };
   }, [openCachedLanguageMenu]);
+
+  useEffect(() => {
+    if (!openRegionalCatalogueMenu) return;
+    const handleOutsidePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Element && !target.closest('[data-regional-catalogue-menu="true"]')) {
+        setOpenRegionalCatalogueMenu(null);
+      }
+    };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpenRegionalCatalogueMenu(null);
+    };
+    document.addEventListener('pointerdown', handleOutsidePointerDown);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('pointerdown', handleOutsidePointerDown);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [openRegionalCatalogueMenu]);
+
+  const openRegionalCatalogue = (group: RegionalCatalogueGroup, mode: RegionalCatalogueMode) => {
+    const key = (mode + '-' + group) as MovieCatalogueKey;
+    const label = (mode.charAt(0).toUpperCase() + mode.slice(1)) + ' ' + (group === 'bollywood' ? 'Bollywood' : 'Hollywood');
+    setRegionalCatalogueModes(previous => ({ ...previous, [group]: mode }));
+    setOpenRegionalCatalogueMenu(null);
+    setResolutionFilter(null);
+    setSizeSort(null);
+    setTimeSort(null);
+    setReleaseYearSort(null);
+    void openMovieCatalogue(key, label, 1);
+  };
+
   const [isClearingTmdbCache, setIsClearingTmdbCache] = useState(false);
   const [tmdbCacheMessage, setTmdbCacheMessage] = useState('');
 
@@ -2744,6 +2783,36 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             🎞️ DC Animated
           </button>
 
+          {([
+            ['bollywood', '🎬 Bollywood'],
+            ['hollywood', '🎥 Hollywood'],
+          ] as const).map(([group, label]) => (
+            <div key={group} data-regional-catalogue-menu="true" className="relative">
+              <button
+                type="button"
+                aria-expanded={openRegionalCatalogueMenu === group}
+                onClick={() => setOpenRegionalCatalogueMenu(current => current === group ? null : group)}
+                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
+              >
+                {label} <span className="ml-1 text-[10px]">▾</span>
+              </button>
+              {openRegionalCatalogueMenu === group && (
+                <div className="absolute left-0 top-full z-40 mt-1 min-w-[170px] overflow-hidden rounded-lg border border-slate-700 bg-slate-950 shadow-xl">
+                  {(['popular', 'trending', 'latest'] as const).map(mode => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => openRegionalCatalogue(group, mode)}
+                      className={'block w-full px-3 py-2.5 text-left text-xs font-semibold hover:bg-slate-800 hover:text-cyan-300 ' + (regionalCatalogueModes[group] === mode ? 'text-cyan-300' : 'text-slate-200')}
+                    >
+                      {mode.charAt(0).toUpperCase() + mode.slice(1)}
+                      {regionalCatalogueModes[group] === mode ? ' ✓' : ''}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
 
         </div>
         <div className="mt-2 flex flex-col gap-2 rounded-lg border border-slate-800 bg-slate-950/70 p-2.5 sm:flex-row sm:items-center sm:justify-between">
