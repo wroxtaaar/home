@@ -913,7 +913,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     setNexStreamPlayer(null);
     try {
       const types: Array<'movie' | 'tv'> = ['movie', 'tv'];
-      const responses = await Promise.all(types.map(async type => {
+      // Treat movie and TV lookups independently: a transient TMDB failure for
+      // one endpoint should not hide successful results from the other.
+      const responses = await Promise.allSettled(types.map(async type => {
         const params = new URLSearchParams({ query: titleQuery, type });
         const response = await fetch('/api/nexstream/search?' + params.toString(), {
           headers: { Accept: 'application/json' },
@@ -925,11 +927,22 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         }
         return (Array.isArray(data.results) ? data.results : []) as NexStreamTitle[];
       }));
+      const successfulResults = responses
+        .filter((response): response is PromiseFulfilledResult<NexStreamTitle[]> => response.status === 'fulfilled')
+        .flatMap(response => response.value);
+      const failedSearches = responses.filter(response => response.status === 'rejected');
       const unique = new Map<string, NexStreamTitle>();
-      for (const item of responses.flat()) {
+      for (const item of successfulResults) {
         unique.set(item.type + ':' + item.id, item);
       }
       setNexStreamResults(Array.from(unique.values()));
+      if (failedSearches.length === types.length) {
+        const firstFailure = failedSearches[0] as PromiseRejectedResult;
+        throw firstFailure.reason instanceof Error ? firstFailure.reason : new Error('TMDB title search failed.');
+      }
+      if (failedSearches.length > 0) {
+        setNexStreamError('Some NexStream results could not be loaded. Try searching again to refresh them.');
+      }
     } catch (error: any) {
       setNexStreamError(String(error?.message || 'NexStream search is temporarily unavailable.'));
     } finally {
