@@ -2636,20 +2636,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
 
 
-          <button
-            type="button"
-            onClick={() => {
-              setResolutionFilter(null);
-              setSizeSort(null);
-              setTimeSort(null);
-              setReleaseYearSort(null);
-              setStreamingOnly(false);
-              void openMovieCatalogue('bollywood-library', 'Full Bollywood Library', 1, true, bollywoodLibraryMaxSizeGb);
-            }}
-            className="rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-semibold text-cyan-200 hover:border-cyan-400"
-          >
-            📚 Full Bollywood Library
-          </button>
 
           {([
             ['marvel', '🦸 Marvel Movies'],
