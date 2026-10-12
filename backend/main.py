@@ -7412,8 +7412,8 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_on
             if mode == "latest":
                 # Limit "latest" to recent release dates, avoiding an endless
                 # catalogue of old titles with incomplete dates.
-                recent_cutoff = datetime.now(timezone.utc).date()
-                params["primary_release_date.gte"] = date.fromordinal(max(1, recent_cutoff.toordinal() - 730)).isoformat()
+                recent_cutoff = datetime.fromtimestamp(time.time() - 730 * 86400, timezone.utc).date()
+                params["primary_release_date.gte"] = recent_cutoff.isoformat()
             payload = await _tmdb_get_json("discover/movie", params)
     else:
         raise HTTPException(status_code=404, detail="Unknown movie catalogue.")
