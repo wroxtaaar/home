@@ -7663,6 +7663,7 @@ async def api_tmdb_movie_catalogue(
     catalogue_key: str,
     page: int = Query(1, ge=1, le=500),
     released_only: bool = Query(True),
+    max_size_gb: int = Query(5, ge=1, le=5),
 ):
     allowed = {
         "latest-hollywood", "latest-bollywood",
@@ -7695,12 +7696,21 @@ async def api_tmdb_movie_catalogue(
             ) from exc
 
         today = datetime.now(timezone.utc).date().isoformat()
+        max_catalogue_size_bytes = min(max_size_gb, 5) * 1024 * 1024 * 1024
         rows = []
         for source_row in source_rows:
             if not isinstance(source_row, dict):
                 continue
             title = str(source_row.get("title") or "").strip()
             if not title:
+                continue
+            torrent_match = source_row.get("torrentMatch") if isinstance(source_row.get("torrentMatch"), dict) else {}
+            try:
+                torrent_size = int(float(torrent_match.get("size") or 0))
+            except (TypeError, ValueError):
+                torrent_size = 0
+            # Never expose uncapped cache entries, even if an old cache predates size validation.
+            if torrent_size <= 0 or torrent_size > max_catalogue_size_bytes or torrent_size > 5 * 1024 * 1024 * 1024:
                 continue
             release_date = str(source_row.get("releaseDate") or "").strip()
             if released_only and release_date and release_date > today:
@@ -7732,7 +7742,7 @@ async def api_tmdb_movie_catalogue(
                 "verified": tmdb_id is not None,
                 "tmdbUrl": f"https://www.themoviedb.org/movie/{tmdb_id}" if tmdb_id is not None else "",
                 "imdbUrl": f"https://www.imdb.com/title/{source_row.get('imdbId')}/" if source_row.get("imdbId") else "",
-                "torrentMatch": source_row.get("torrentMatch") if isinstance(source_row.get("torrentMatch"), dict) else {},
+                "torrentMatch": torrent_match,
                 "torrentCheckedAt": source_row.get("torrentCheckedAt") or "",
             })
 
@@ -7754,6 +7764,7 @@ async def api_tmdb_movie_catalogue(
             "totalPages": total_pages,
             "totalResults": total_results,
             "releasedOnly": released_only,
+            "maxSizeGb": max_size_gb,
             "results": rows[start:start + page_size],
             "attribution": "TMDB metadata filtered to titles with cached torrent-provider matches.",
         }
