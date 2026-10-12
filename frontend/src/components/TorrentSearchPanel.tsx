@@ -3320,6 +3320,74 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   </MovieCatalogueCard>
                 );
               }
+              const isRegionalCatalogue = /^(popular|trending|latest)-(bollywood|hollywood)$/.test(String(movieCatalogue.catalogue));
+              if (isRegionalCatalogue) {
+                const imdb = imdbRatingsByKey[imdbRatingKey(movie.title, movie.year)];
+                const ott = ottAvailability[String(movie.id)];
+                const providers = ott && ott.status !== 'loading' && ott.status !== 'error'
+                  ? uniqueOttProviders([
+                      ...(ott.streamingProviders || []),
+                      ...(ott.rentProviders || []),
+                      ...(ott.buyProviders || []),
+                    ].map(provider => ({ ...provider, name: displayOttProviderName(provider.name) })))
+                  : [];
+                return (
+                  <MovieCatalogueCard
+                    key={String(movie.id)}
+                    className="cursor-pointer border-slate-800 transition hover:border-slate-700 hover:bg-slate-900/95"
+                    onClick={() => { if (!isSearching && !movieTorrentSearchLoading) void searchMovieTorrents(movie); }}
+                  >
+                    <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
+                      {movie.posterUrl ? (
+                        <img src={lowQualityPosterUrl(movie.posterUrl)} alt={movie.title} loading="lazy" className="h-full w-full object-cover"
+                          onError={event => {
+                            event.currentTarget.style.display = 'none';
+                            event.currentTarget.parentElement?.querySelector('[data-regional-poster-placeholder="true"]')?.classList.remove('hidden');
+                          }}
+                        />
+                      ) : null}
+                      <div data-regional-poster-placeholder="true" className={(movie.posterUrl ? 'hidden ' : '') + 'absolute inset-0 flex items-center justify-center bg-slate-950 text-slate-600'}>
+                        <Film className="h-8 w-8" />
+                      </div>
+                      {imdb?.imdbRating != null && imdb.imdbRating > 0 ? (
+                        <a href={imdb.imdbUrl || (imdb.imdbId ? 'https://www.imdb.com/title/' + imdb.imdbId + '/' : '#')} target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()}
+                          title={'IMDb rating' + (imdb.imdbVotes ? ' · ' + imdb.imdbVotes + ' votes' : '')}
+                          className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow">
+                          ⭐ {imdb.imdbRating.toFixed(1)}/10
+                        </a>
+                      ) : movie.rating != null && movie.rating > 0 ? (
+                        <span className="absolute left-2 top-2 rounded-md bg-slate-950/90 px-2 py-1 text-[10px] font-bold text-emerald-300">TMDB {movie.rating.toFixed(1)}</span>
+                      ) : null}
+                    </div>
+                    <div className="flex flex-1 flex-col gap-2 p-2.5">
+                      <div>
+                        <h3 className="line-clamp-2 text-sm font-bold leading-snug text-slate-100">{movie.title}</h3>
+                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] sm:text-xs">
+                          {movie.year && <span className="text-slate-400">{movie.year}</span>}
+                          {imdb?.imdbRating != null && imdb.imdbRating > 0 ? (
+                            <a href={imdb.imdbUrl || (imdb.imdbId ? 'https://www.imdb.com/title/' + imdb.imdbId + '/' : '#')} target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()} className="font-semibold text-amber-300 hover:text-amber-200">IMDb {imdb.imdbRating.toFixed(1)}</a>
+                          ) : movie.rating != null && movie.rating > 0 ? (
+                            <span className="font-semibold text-amber-300">TMDB {movie.rating.toFixed(1)}</span>
+                          ) : null}
+                        </div>
+                      </div>
+                      {movie.overview ? <p className="line-clamp-3 text-[10px] leading-relaxed text-slate-400 sm:text-[11px]">{movie.overview}</p> : <p className="line-clamp-3 text-[10px] leading-relaxed text-slate-500">Synopsis unavailable.</p>}
+                      {providers.length > 0 ? (
+                        <div className="mt-auto flex flex-wrap gap-1" aria-label={'Streaming services for ' + movie.title}>
+                          {providers.slice(0, 5).map((provider, providerIndex) => (
+                            <a key={String(provider.providerId ?? provider.name ?? providerIndex).toLowerCase()} href={provider.webUrl || undefined}
+                              target={provider.webUrl ? '_blank' : undefined} rel={provider.webUrl ? 'noreferrer' : undefined}
+                              onClick={event => event.stopPropagation()} title={provider.name}
+                              className="rounded-full border border-cyan-900/70 bg-cyan-950/40 px-2 py-0.5 text-[10px] leading-4 text-cyan-200 hover:border-cyan-600">
+                              {provider.name}
+                            </a>
+                          ))}
+                        </div>
+                      ) : ott?.status === 'loading' ? <p className="mt-auto text-[10px] text-slate-500">Checking streaming services…</p> : null}
+                    </div>
+                  </MovieCatalogueCard>
+                );
+              }
               return (
                 <MovieCatalogueCard key={String(movie.id)} className="border-slate-800 transition hover:border-cyan-500/40 hover:bg-slate-900/95">
                 <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
