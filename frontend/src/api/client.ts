@@ -60,6 +60,18 @@ export interface MovieCatalogueItem {
   imdbId?: string | null;
   tmdbUrl?: string;
   imdbUrl?: string;
+  torrentMatch?: {
+    title?: string;
+    indexer?: string;
+    infoUrl?: string;
+    magnetUrl?: string | null;
+    infoHash?: string;
+    size?: number | null;
+    seeders?: number | null;
+    leechers?: number | null;
+    matchScore?: number;
+  };
+  torrentCheckedAt?: string;
   ottAvailability?: {
     region?: string;
     status?: string;
