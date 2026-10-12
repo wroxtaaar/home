@@ -85,6 +85,9 @@ def request_page(client: httpx.Client, token_list: list[str], page: int, today: 
                     "with_original_language": "hi",
                     "with_origin_country": "IN",
                     "primary_release_date.lte": today,
+                    # Keep the library focused on feature films, not short films or TV specials.
+                    "with_runtime.gte": 70,
+                    "without_genres": "99,10770",
                 },
             )
             if response.status_code in (401, 403):
@@ -166,7 +169,9 @@ def main() -> int:
                         "genres": item.get("genre_ids") or [],
                         "originalLanguage": item.get("original_language"),
                         "originCountry": countries or ["IN"],
-                        "source": "tmdb_discover_hindi_india",
+                        "voteAverage": item.get("vote_average"),
+                        "voteCount": item.get("vote_count"),
+                        "source": "tmdb_discover_hindi_india_feature_films",
                     }
                     key = record_key(record)
                     if not key[0]:
@@ -201,6 +206,8 @@ def main() -> int:
             "with_origin_country": "IN",
             "primary_release_date_lte": today,
             "include_adult": False,
+            "with_runtime.gte": 70,
+            "without_genres": [99, 10770],
         },
         "stats": {
             "historicalSeedRecords": len(historical),
