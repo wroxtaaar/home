@@ -7689,6 +7689,121 @@ async def api_tmdb_dc_live_action_tv_catalogue(page: int = Query(1, ge=1, le=500
     return result
 
 
+
+_REGIONAL_TV_PAGE_CACHE: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
+_REGIONAL_TV_PAGE_CACHE_TTL = 6 * 60 * 60
+_INDIAN_LINEAR_TV_NETWORKS = {
+    "starplus", "colors", "zee tv", "zeetv", "sony entertainment television",
+    "sony sab", "sab tv", "dd national", "andtv", "&tv", "star bharat",
+    "sony pal", "dangal tv", "sun tv", "star utsav",
+}
+
+
+@app.get("/api/tv/catalogue/{catalogue_key}")
+async def api_tmdb_regional_web_series_catalogue(
+    catalogue_key: str,
+    page: int = Query(1, ge=1, le=500),
+):
+    """Discover OTT web series; Indian entries are Hindi-language and OTT-only."""
+    allowed = {
+        "indian-popular", "indian-trending", "indian-latest",
+        "hollywood-popular", "hollywood-trending", "hollywood-latest",
+    }
+    if catalogue_key not in allowed:
+        raise HTTPException(status_code=404, detail="Unknown TV catalogue.")
+    cache_key = (catalogue_key, page)
+    cached = _REGIONAL_TV_PAGE_CACHE.get(cache_key)
+    now = time.monotonic()
+    if cached and now - cached[0] < _REGIONAL_TV_PAGE_CACHE_TTL:
+        return cached[1]
+    indian = catalogue_key.startswith("indian-")
+    mode = catalogue_key.rsplit("-", 1)[-1]
+    language = "hi" if indian else "en"
+    sort_by = "first_air_date.desc" if mode == "latest" else "popularity.desc"
+    params: dict[str, Any] = {
+        "include_adult": "false",
+        "language": "en-US",
+        "page": page,
+        "sort_by": sort_by,
+        "with_original_language": language,
+        "watch_region": "IN",
+        "with_watch_monetization_types": "flatrate|free|ads",
+    }
+    # Limit Indian listings to series with confirmed streaming providers, then
+    # exclude conventional linear-TV networks so the section stays web-series focused.
+    if indian:
+        params["with_origin_country"] = "IN"
+    try:
+        payload = await _tmdb_get_json("discover/tv", params)
+    except Exception as exc:
+        logger.exception("TMDB regional web-series discovery failed for %s page %s", catalogue_key, page)
+        raise HTTPException(status_code=502, detail="Could not load the OTT web-series catalogue.") from exc
+
+    source_rows = [row for row in (payload.get("results") or []) if isinstance(row, dict) and row.get("id")]
+    semaphore = asyncio.Semaphore(5)
+
+    async def enrich(row: dict[str, Any]) -> dict[str, Any] | None:
+        try:
+            tmdb_id = int(row["id"])
+            providers = await _tv_streaming_providers(tmdb_id)
+            # Subscription, free and ad-supported services count; rent/buy alone do not.
+            stream_providers = [p for p in providers if p.get("type") in {"subscription", "free", "ads"}]
+            if not stream_providers:
+                return None
+            if indian:
+                async with semaphore:
+                    details = await _tmdb_get_json(f"tv/{tmdb_id}", {"language": "en-US"})
+                original_language = str(details.get("original_language") or row.get("original_language") or "").lower()
+                origin_countries = {str(c.get("iso_3166_1") or "").upper() for c in details.get("origin_country") or [] if isinstance(c, dict)}
+                if original_language != "hi" or (origin_countries and "IN" not in origin_countries):
+                    return None
+                networks = {re.sub(r"[^a-z0-9& ]+", "", str(n.get("name") or "").casefold()).strip() for n in details.get("networks") or [] if isinstance(n, dict)}
+                if any(network.replace(" ", "") in re.sub(r"[^a-z0-9& ]+", "", name).replace(" ", "") for network in networks for name in _INDIAN_LINEAR_TV_NETWORKS):
+                    return None
+            air_date = str(row.get("first_air_date") or "").strip()
+            try:
+                air_day = datetime.strptime(air_date[:10], "%Y-%m-%d").date()
+                if air_day > datetime.now(timezone.utc).date():
+                    return None
+            except ValueError:
+                return None
+            poster = str(row.get("poster_path") or "").strip()
+            backdrop = str(row.get("backdrop_path") or "").strip()
+            return {
+                "id": tmdb_id,
+                "title": str(row.get("name") or "").strip(),
+                "year": int(air_date[:4]) if len(air_date) >= 4 and air_date[:4].isdigit() else None,
+                "releaseDate": air_date,
+                "overview": str(row.get("overview") or "").strip(),
+                "posterUrl": TMDB_IMAGE_BASE + poster if poster else "",
+                "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop if backdrop else "",
+                "rating": float(row.get("vote_average") or 0),
+                "tmdbUrl": f"https://www.themoviedb.org/tv/{tmdb_id}",
+                "streamingProviders": stream_providers,
+                "providerLink": "",
+                "source": "TMDB + India OTT availability",
+                "originalLanguage": language,
+                "webSeriesOnly": True,
+            }
+        except Exception as exc:
+            logger.debug("Skipping OTT series row %s: %s", row.get("id"), type(exc).__name__)
+            return None
+
+    enriched = await asyncio.gather(*(enrich(row) for row in source_rows))
+    results = [row for row in enriched if row]
+    # Keep the page result stable and don't advertise unreleased series.
+    result = {
+        "catalogue": catalogue_key,
+        "page": page,
+        "totalPages": max(1, int(payload.get("total_pages") or 1)),
+        "totalResults": int(payload.get("total_results") or len(results)),
+        "provider": "TMDB + confirmed India OTT availability",
+        "results": results,
+    }
+    _REGIONAL_TV_PAGE_CACHE[cache_key] = (time.monotonic(), result)
+    return result
+
+
 @app.post("/api/movies/catalogue/cache/clear")
 async def api_clear_tmdb_movie_caches():
     """Clear all TMDB catalogue, OTT and company-discovery caches for a fresh lookup."""
