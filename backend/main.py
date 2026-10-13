@@ -7823,6 +7823,9 @@ _REGIONAL_TV_DISCOVERY_CACHE: dict[tuple[str, int], tuple[float, dict[str, Any]]
 def _read_regional_tv_prebuilt_page(catalogue_key: str, page: int) -> dict[str, Any] | None:
     try:
         saved = json.loads(REGIONAL_TV_PREBUILT_CACHE_FILE.read_text(encoding="utf-8"))
+        # Ignore old snapshots that may contain non-Hindi Indian series or TV-only titles.
+        if int(saved.get("version") or 0) < 2:
+            return None
         catalogue = (saved.get("catalogues") or {}).get(catalogue_key) or {}
         for item in catalogue.get("pages", []):
             if int(item.get("page") or 0) == page:
@@ -7842,23 +7845,22 @@ def _read_regional_tv_prebuilt_page(catalogue_key: str, page: int) -> dict[str, 
 
 @app.get("/api/tv/catalogue/{catalogue_key}")
 async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1, ge=1, le=500)):
-    prebuilt = _read_regional_tv_prebuilt_page(catalogue_key, page)
-    if prebuilt is not None:
-        return prebuilt
-    """Discover released Indian or Hollywood TV series by popularity, trend, or premiere date."""
+    """Return released OTT series, restricted to Hindi Indian originals for Indian catalogues."""
     configs = {
-        "indian-popular": ("IN", "popularity.desc"),
-        "indian-trending": ("IN", "popularity.desc"),
-        "indian-latest": ("IN", "first_air_date.desc"),
-        "hollywood-popular": ("US", "popularity.desc"),
-        "hollywood-trending": ("US", "popularity.desc"),
-        "hollywood-latest": ("US", "first_air_date.desc"),
+        "indian-popular": ("IN", "hi", "popularity.desc"),
+        "indian-trending": ("IN", "hi", "popularity.desc"),
+        "indian-latest": ("IN", "hi", "first_air_date.desc"),
+        "hollywood-popular": ("US", "en", "popularity.desc"),
+        "hollywood-trending": ("US", "en", "popularity.desc"),
+        "hollywood-latest": ("US", "en", "first_air_date.desc"),
     }
     if catalogue_key not in configs:
         raise HTTPException(status_code=404, detail="Unknown TV catalogue.")
-    country, sort_by = configs[catalogue_key]
-    if catalogue_key.endswith("-trending"):
-        sort_by = "popularity.desc"
+    prebuilt = _read_regional_tv_prebuilt_page(catalogue_key, page)
+    if prebuilt is not None:
+        return prebuilt
+
+    country, language, sort_by = configs[catalogue_key]
     cache_key = (catalogue_key, page)
     cached = _REGIONAL_TV_DISCOVERY_CACHE.get(cache_key)
     if cached and time.monotonic() - cached[0] < (900 if catalogue_key.endswith("-trending") else 21600):
@@ -7868,27 +7870,30 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
     today = datetime.now(timezone.utc).date().isoformat()
     try:
         if catalogue_key.endswith("-trending"):
-            payload = await _tmdb_get_json("trending/tv/week", {
-                "language": "en-US",
-                "page": page,
-            })
+            payload = await _tmdb_get_json("trending/tv/week", {"language": "en-US", "page": page})
         else:
             payload = await _tmdb_get_json("discover/tv", {
                 "include_adult": "false",
                 "language": "en-US",
                 "sort_by": sort_by,
                 "with_origin_country": country,
+                "with_original_language": language,
+                "with_type": "2|4",
+                "watch_region": "IN",
+                "with_watch_monetization_types": "flatrate|free|ads",
                 "first_air_date.lte": today,
                 "page": page,
             })
     except HTTPException:
         raise
+
     results = []
     for item in payload.get("results", []):
         if not isinstance(item, dict) or not item.get("id"):
             continue
         origins = item.get("origin_country") or []
-        if catalogue_key.endswith("-trending") and country not in origins:
+        original_language = str(item.get("original_language") or "").casefold()
+        if country not in origins or original_language != language:
             continue
         air_date = str(item.get("first_air_date") or "").strip()
         try:
@@ -7896,10 +7901,16 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
                 continue
         except ValueError:
             continue
+
         tmdb_id = int(item["id"])
+        providers = await _tv_streaming_providers(tmdb_id)
+        # A series only qualifies if it is actually listed for streaming in India.
+        providers = [p for p in providers if str(p.get("type") or "").casefold() in {"subscription", "free", "ads"}]
+        if not providers:
+            continue
         poster = str(item.get("poster_path") or "").strip()
         backdrop = str(item.get("backdrop_path") or "").strip()
-        year_match = re.match(r"^(\d{4})", air_date)
+        year_match = re.match(r"^(\\d{4})", air_date)
         results.append({
             "id": tmdb_id,
             "title": str(item.get("name") or "").strip(),
@@ -7910,15 +7921,18 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
             "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop if backdrop else "",
             "rating": float(item.get("vote_average") or 0),
             "tmdbUrl": f"https://www.themoviedb.org/tv/{tmdb_id}",
-            "streamingProviders": await _tv_streaming_providers(tmdb_id),
+            "streamingProviders": providers,
             "providerLink": "",
             "source": "TMDB",
+            "originalLanguage": original_language,
+            "originCountry": origins,
+            "seriesType": item.get("type"),
         })
     result = {
         "catalogue": catalogue_key, "page": page,
         "totalPages": int(payload.get("total_pages") or 1),
         "totalResults": int(payload.get("total_results") or len(results)),
-        "provider": "TMDB",
+        "provider": "TMDB + India OTT availability",
         "results": results,
     }
     _REGIONAL_TV_DISCOVERY_CACHE[cache_key] = (time.monotonic(), result)
