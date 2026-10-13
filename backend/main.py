@@ -7738,43 +7738,52 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
     }
     if catalogue_key not in configs:
         raise HTTPException(status_code=404, detail="Unknown TV catalogue.")
-    # Indian Popular and Trending should contain only series that premiered
-    # after 2017 (2018 onward). Apply this to prebuilt and in-memory cached
-    # pages too, so older cached entries cannot bypass the rule.
-    recent_indian_only = catalogue_key in {"indian-popular", "indian-trending"}
+    # Indian Popular and Trending exclude scripted series whose TMDB network
+    # metadata identifies Zee TV, Star Plus, Colors, or Sony TV as a broadcaster.
+    exclude_indian_broadcast_networks = catalogue_key in {"indian-popular", "indian-trending"}
+    excluded_network_names = {
+        "zee tv", "zeetv", "star plus", "starplus", "colors", "colorstv",
+        "sony tv", "sony entertainment television", "sony entertainment tv",
+        "set india", "sony sab",
+    }
 
-    def filter_recent_indian_series(result: dict[str, Any]) -> dict[str, Any]:
-        if not recent_indian_only or not isinstance(result, dict):
+    def has_excluded_broadcast_network(networks: Any) -> bool:
+        if not isinstance(networks, list):
+            return False
+        for network in networks:
+            if not isinstance(network, dict):
+                continue
+            name = re.sub(r"[^a-z0-9]+", " ", str(network.get("name") or "").casefold()).strip()
+            compact = name.replace(" ", "")
+            if name in excluded_network_names or compact in {n.replace(" ", "") for n in excluded_network_names}:
+                return True
+        return False
+
+    def filter_cached_networks(result: dict[str, Any]) -> dict[str, Any]:
+        if not exclude_indian_broadcast_networks or not isinstance(result, dict):
             return result
         rows = result.get("results")
         if not isinstance(rows, list):
             return result
-        filtered = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            raw_date = str(row.get("releaseDate") or row.get("first_air_date") or "").strip()
-            try:
-                if datetime.strptime(raw_date[:10], "%Y-%m-%d").date() < datetime(2018, 1, 1).date():
-                    continue
-            except ValueError:
-                continue
-            filtered.append(row)
+        filtered = [row for row in rows if isinstance(row, dict) and not has_excluded_broadcast_network(row.get("networks"))]
         result = dict(result)
         result["results"] = filtered
         result["totalResults"] = len(filtered)
         return result
 
-    prebuilt = _read_regional_tv_prebuilt_page(catalogue_key, page)
+    # Older prebuilt catalogue rows do not consistently contain network metadata,
+    # so bypass that cache for these two catalogues to ensure the broadcaster rule
+    # is actually checked against TMDB series details.
+    prebuilt = None if exclude_indian_broadcast_networks else _read_regional_tv_prebuilt_page(catalogue_key, page)
     if prebuilt is not None:
-        return filter_recent_indian_series(prebuilt)
+        return filter_cached_networks(prebuilt)
 
     country, language, sort_by = configs[catalogue_key]
     cache_key = (catalogue_key, page)
     cached = _REGIONAL_TV_DISCOVERY_CACHE.get(cache_key)
     cache_ttl = 900 if catalogue_key.endswith("-trending") else 21600
     if cached and time.monotonic() - cached[0] < cache_ttl:
-        return filter_recent_indian_series(cached[1])
+        return filter_cached_networks(cached[1])
     if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
         raise HTTPException(status_code=503, detail="TMDB credentials are not configured.")
 
@@ -7793,7 +7802,6 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
             "watch_region": "IN",
             "with_watch_monetization_types": "flatrate|free|ads",
             "first_air_date.lte": today,
-            **({"first_air_date.gte": "2018-01-01"} if recent_indian_only else {}),
             "page": page,
         })
     except HTTPException:
@@ -7832,6 +7840,10 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
         if series_type not in {"scripted", "miniseries"}:
             continue
 
+        networks = details.get("networks") if isinstance(details.get("networks"), list) else []
+        if exclude_indian_broadcast_networks and has_excluded_broadcast_network(networks):
+            continue
+
         # The listing must show actual streaming access in India; rental/buy-only
         # offers do not qualify as an OTT streaming listing.
         providers = await _tv_streaming_providers(tmdb_id)
@@ -7861,6 +7873,7 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
             "originalLanguage": original_language,
             "originCountry": origins,
             "seriesType": series_type,
+            "networks": networks,
         })
         seen_ids.add(tmdb_id)
 
@@ -7872,7 +7885,7 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
         "results": results,
     }
     _REGIONAL_TV_DISCOVERY_CACHE[cache_key] = (time.monotonic(), result)
-    return filter_recent_indian_series(result)
+    return result
 
 
 async def _apply_movie_release_eligibility(payload: dict[str, Any], *, enabled: bool = True) -> dict[str, Any]:
