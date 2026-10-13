@@ -7405,6 +7405,30 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_on
                     if isinstance(row, dict) and str(row.get("original_language") or "").lower() == language_code
                 )
                 next_page += 1
+            # If the global trending feed has too few titles in this language,
+            # keep its ranked matches first, then fill from language-specific
+            # popular discoveries so OTT/release eligibility does not empty the page.
+            if matching_count < 18:
+                fallback = await _tmdb_get_json("discover/movie", {
+                    "language": "en-US",
+                    "with_original_language": language_code,
+                    "sort_by": "popularity.desc",
+                    "release_date.lte": today,
+                    "include_adult": "false",
+                    "include_video": "false",
+                    "page": page,
+                })
+                existing_ids = {
+                    str(row.get("id") or "") for row in trend_rows if isinstance(row, dict)
+                }
+                for row in fallback.get("results") or []:
+                    if not isinstance(row, dict):
+                        continue
+                    row_id = str(row.get("id") or "")
+                    if row_id and row_id not in existing_ids:
+                        trend_rows.append(row)
+                        existing_ids.add(row_id)
+                trend_pages = max(trend_pages, min(500, int(fallback.get("total_pages") or 1)))
             payload = {**payload, "results": trend_rows, "total_pages": trend_pages}
         else:
             params["with_original_language"] = language_code
@@ -7412,7 +7436,7 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_on
             if mode == "latest":
                 # Limit "latest" to recent release dates, avoiding an endless
                 # catalogue of old titles with incomplete dates.
-                recent_cutoff = datetime.fromtimestamp(time.time() - 730 * 86400, timezone.utc).date()
+                recent_cutoff = datetime.fromtimestamp(time.time() - 5 * 365 * 86400, timezone.utc).date()
                 params["primary_release_date.gte"] = recent_cutoff.isoformat()
             payload = await _tmdb_get_json("discover/movie", params)
     else:
