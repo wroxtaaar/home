@@ -7885,7 +7885,7 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
     # Use only pages explicitly marked as verified by this endpoint.
     prebuilt = _read_regional_tv_prebuilt_page(catalogue_key, page)
     if prebuilt is not None:
-        return await filter_cached_networks(prebuilt)
+        return prebuilt
 
     country, language, sort_by = configs[catalogue_key]
     cache_key = (catalogue_key, page)
