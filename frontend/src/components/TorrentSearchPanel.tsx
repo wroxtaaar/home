@@ -3962,7 +3962,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         </div>
       )}
 
-      {results.length > 0 && (
+      {(results.length > 0 || regionalWebSeriesLoading || Boolean(regionalWebSeriesError) || Boolean(regionalWebSeriesCatalogue)) && (
         <div className="space-y-2">
           <div className="rounded-xl border border-slate-800 bg-slate-900 px-2.5 py-2.5">
             <div className="flex items-center gap-2 overflow-x-auto">
