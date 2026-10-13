@@ -3562,11 +3562,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   ''
                 );
                 return (
+                  {/* Remount the selected card so it cannot inherit hidden image styles. */}
                   <MovieCatalogueCard
-                    // Force a fresh image element when a movie switches from its
-                    // catalogue card to the selected Prepare card. Reusing the
-                    // same keyed DOM node can preserve the old hidden/broken-image
-                    // inline styles from a prior poster failure.
                     key={'movie-prepare-' + String(movie.id)}
                     className="relative border-slate-800 transition hover:border-slate-700"
                   >
