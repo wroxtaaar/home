@@ -3744,20 +3744,33 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   cataloguePosterUrl ||
                   (isRegionalMoviePreview ? '' : posterUrlFor(previewGroup.posterResult) || previewGroup.posterResult?.posterUrl || '')
                 );
+                // Same details as the Marvel/DC prepare card: IMDb badge and link,
+                // seeders badge, close button, and Play / Download / Copy once prepared.
+                const prepareImdb = imdbRatingsByKey[imdbRatingKey(movie.title, movie.year)];
+                const prepareHasRating = Boolean(
+                  (prepareImdb?.imdbRating != null && prepareImdb.imdbRating > 0) ||
+                  (movie.rating != null && movie.rating > 0)
+                );
+                const prepareImdbHref = prepareImdb?.imdbUrl ||
+                  (prepareImdb?.imdbId
+                    ? 'https://www.imdb.com/title/' + prepareImdb.imdbId + '/'
+                    : 'https://www.imdb.com/find/?q=' + encodeURIComponent([movie.title, movie.year].filter(Boolean).join(' ')));
+                const isPrepared = preparedFiles.length > 0 && Boolean(primaryFile);
+                const closePrepareCard = () => {
+                  // Returns the selected card to the normal catalogue card.
+                  movieTorrentSearchControllerRef.current?.abort();
+                  movieTorrentSearchGenerationRef.current += 1;
+                  setMovieTorrentSearchLoading(false);
+                  setMovieTorrentPreviewGroup(null);
+                  setMovieTorrentPreviewCatalogueId(null);
+                  setMovieTorrentPreviewPosterUrl('');
+                  setMovieTorrentSearchError('');
+                };
                 return (
                   <MovieCatalogueCard
                     key={'movie-prepare-' + String(movie.id)}
                     className="relative h-full cursor-pointer border-slate-800 transition hover:border-slate-700"
-                    onClick={() => {
-                      // Clicking the selected card again returns it to the normal catalogue card.
-                      movieTorrentSearchControllerRef.current?.abort();
-                      movieTorrentSearchGenerationRef.current += 1;
-                      setMovieTorrentSearchLoading(false);
-                      setMovieTorrentPreviewGroup(null);
-                      setMovieTorrentPreviewCatalogueId(null);
-                      setMovieTorrentPreviewPosterUrl('');
-                      setMovieTorrentSearchError('');
-                    }}
+                    onClick={closePrepareCard}
                   >
                     <div className="relative aspect-[2/3] w-full overflow-hidden rounded-t-xl bg-slate-950">
                       {posterUrl ? (
@@ -3811,6 +3824,25 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       >
                         <Film className="h-8 w-8" />
                       </div>
+                      {isRegionalMoviePreview && (prepareImdb?.imdbRating != null && prepareImdb.imdbRating > 0 ? (
+                        <a
+                          href={prepareImdbHref} target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()}
+                          title={'IMDb rating' + (prepareImdb.imdbVotes ? ' · ' + prepareImdb.imdbVotes + ' votes' : '')}
+                          className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow"
+                        >
+                          ⭐ {prepareImdb.imdbRating.toFixed(1)}/10
+                        </a>
+                      ) : movie.rating != null && movie.rating > 0 ? (
+                        <span title="TMDB rating" className="absolute left-2 top-2 rounded-md border border-amber-300/40 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow">
+                          ⭐ TMDB {movie.rating.toFixed(1)}
+                        </span>
+                      ) : null)}
+                      {isRegionalMoviePreview && Number(result.seeders) > 0 && (
+                        <div className={'absolute left-2 inline-flex items-center gap-1 rounded-md bg-black/80 px-2 py-1 text-[10px] font-bold text-emerald-400 ' + (prepareHasRating ? 'top-10' : 'top-2')}>
+                          <Users className="h-3 w-3" />
+                          {result.seeders}
+                        </div>
+                      )}
                       {result.indexer && (
                         <div
                           className="absolute right-2 top-2 max-w-[70%] truncate rounded-md bg-black/75 px-2 py-1 text-[10px] font-medium text-slate-300"
@@ -3820,7 +3852,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                         </div>
                       )}
                       {extractedQuality(result) && (
-                        <div className="absolute bottom-2 left-2 rounded-md border border-cyan-400/30 bg-slate-950/85 px-2 py-1 text-[10px] font-bold text-cyan-300">
+                        <div title={result.title} className="absolute bottom-2 left-2 rounded-md border border-cyan-400/30 bg-slate-950/85 px-2 py-1 text-[10px] font-bold text-cyan-300">
                           {extractedQuality(result)}
                         </div>
                       )}
@@ -3828,25 +3860,45 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     <div className="flex flex-1 flex-col gap-2 p-2.5">
                       <div className="flex min-h-[3.2rem] items-start gap-1.5">
                         <div className="min-w-0 flex-1">
-                          <button
-                            type="button"
-                            onClick={event => {
-                              event.stopPropagation();
-                              showFullTorrentTitleBubble({
-                                ...result,
-                                title: fullTorrentTitleFor(result) || result.title
-                              });
-                            }}
-                            className="w-full text-left text-sm font-semibold leading-snug text-slate-100 line-clamp-2 hover:text-cyan-300"
-                            title="Click to view full torrent name"
-                          >
-                            {movie.title}
-                          </button>
+                          {isRegionalMoviePreview ? (
+                            <a
+                              href={prepareImdbHref} target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()}
+                              className="block w-full text-left text-sm font-semibold leading-snug text-slate-100 line-clamp-2 hover:text-cyan-300"
+                              title="Open on IMDb"
+                            >
+                              {movie.title}
+                            </a>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={event => {
+                                event.stopPropagation();
+                                showFullTorrentTitleBubble({
+                                  ...result,
+                                  title: fullTorrentTitleFor(result) || result.title
+                                });
+                              }}
+                              className="w-full text-left text-sm font-semibold leading-snug text-slate-100 line-clamp-2 hover:text-cyan-300"
+                              title="Click to view full torrent name"
+                            >
+                              {movie.title}
+                            </button>
+                          )}
                           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
                             <span className="text-slate-500">{movie.year || previewGroup.year || 'Release year unknown'}</span>
                           </div>
                         </div>
-
+                        {isRegionalMoviePreview && (
+                          <button
+                            type="button"
+                            onClick={event => { event.stopPropagation(); closePrepareCard(); }}
+                            className="shrink-0 rounded-md p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-100"
+                            title="Back to movie details"
+                            aria-label="Back to movie details"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                       </div>
                       {previewGroup.variants.length > 1 ? (
                         <select
@@ -3897,11 +3949,12 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               type: 'movie',
                             });
                           }}
-                          className="min-w-0 flex-1 whitespace-nowrap rounded-lg border border-violet-400/50 bg-violet-500/15 px-1.5 py-1.5 text-[10px] leading-4 font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-50"
+                          className={(isRegionalMoviePreview && isPrepared ? 'hidden ' : '') + 'min-w-0 flex-1 whitespace-nowrap rounded-lg border border-violet-400/50 bg-violet-500/15 px-1.5 py-1.5 text-[10px] leading-4 font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-50'}
                         >
                           {nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id) ? 'Resolving…' : 'Direct Stream'}
                         </button>
                         {preparedFiles.length > 0 && primaryFile ? (
+                          <>
                           <button
                             type="button"
                             onClick={async event => {
@@ -3915,6 +3968,44 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           >
                             {playingTorrentKey === torrentKey ? 'Opening…' : 'Play'}
                           </button>
+                          {isRegionalMoviePreview && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={event => { event.stopPropagation(); api.openSeedrFileDownload(primaryFile.id, primaryFile.name); }}
+                                className="shrink-0 rounded-lg bg-slate-800 p-2 text-slate-300 transition hover:bg-slate-700 hover:text-white"
+                                title="Download file"
+                                aria-label="Download file"
+                              >
+                                <Download className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                disabled={copiedTorrentKey === torrentKey}
+                                onClick={async event => {
+                                  event.stopPropagation();
+                                  try {
+                                    const data = await api.getSeedrFileDownload(primaryFile.id);
+                                    await navigator.clipboard.writeText(data.url);
+                                    setCopiedTorrentKey(torrentKey);
+                                    window.setTimeout(() => {
+                                      setCopiedTorrentKey(current => current === torrentKey ? null : current);
+                                    }, 2000);
+                                  } catch {
+                                    setPrepareError('Could not copy the download link.');
+                                  }
+                                }}
+                                className="shrink-0 rounded-lg bg-slate-800 p-2 text-slate-300 transition hover:bg-slate-700 hover:text-cyan-400 disabled:opacity-60"
+                                title="Copy download link"
+                                aria-label="Copy download link"
+                              >
+                                {copiedTorrentKey === torrentKey
+                                  ? <Check className="h-3.5 w-3.5 text-emerald-400" />
+                                  : <Copy className="h-3.5 w-3.5" />}
+                              </button>
+                            </>
+                          )}
+                          </>
                         ) : (
                           <button
                             type="button"
@@ -3978,15 +4069,29 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow">
                           ⭐ {imdb.imdbRating.toFixed(1)}/10
                         </a>
+                      ) : movie.rating != null && movie.rating > 0 ? (
+                        <span title="TMDB rating" className="absolute left-2 top-2 rounded-md border border-amber-300/40 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow">
+                          ⭐ TMDB {movie.rating.toFixed(1)}
+                        </span>
                       ) : null}
                     </div>
                     <div className="flex flex-1 flex-col gap-2 p-2.5">
                       <div>
-                        <h3 className="line-clamp-2 text-sm font-bold leading-snug text-slate-100">{movie.title}</h3>
+                        <h3 className="line-clamp-2 text-sm font-bold leading-snug text-slate-100">
+                          <a
+                            href={imdb?.imdbUrl || (imdb?.imdbId ? 'https://www.imdb.com/title/' + imdb.imdbId + '/' : 'https://www.imdb.com/find/?q=' + encodeURIComponent([movie.title, movie.year].filter(Boolean).join(' ')))}
+                            target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()}
+                            className="hover:text-cyan-300" title="Open on IMDb"
+                          >
+                            {movie.title}
+                          </a>
+                        </h3>
                         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] sm:text-xs">
                           {movie.year && <span className="text-slate-400">{movie.year}</span>}
                           {imdb?.imdbRating != null && imdb.imdbRating > 0 ? (
                             <a href={imdb.imdbUrl || (imdb.imdbId ? 'https://www.imdb.com/title/' + imdb.imdbId + '/' : '#')} target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()} className="font-semibold text-amber-300 hover:text-amber-200">IMDb {imdb.imdbRating.toFixed(1)}</a>
+                          ) : movie.rating != null && movie.rating > 0 ? (
+                            <span className="font-semibold text-amber-300">TMDB {movie.rating.toFixed(1)}</span>
                           ) : null}
                         </div>
                       </div>
@@ -4002,7 +4107,17 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             </a>
                           ))}
                         </div>
-                      ) : ott?.status === 'loading' ? <p className="mt-auto text-[10px] text-slate-500">Checking streaming services…</p> : null}
+                      ) : (
+                        <p className="mt-auto text-[10px] leading-relaxed text-slate-500">
+                          {!ott || ott.status === 'loading'
+                            ? 'Checking streaming services…'
+                            : ott.status === 'error'
+                              ? 'Streaming availability temporarily unavailable'
+                              : ott.status === 'not_confirmed'
+                                ? 'Streaming providers not confirmed'
+                                : 'No streaming providers reported'}
+                        </p>
+                      )}
                     </div>
                   </MovieCatalogueCard>
                 );
@@ -4618,9 +4733,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               // attach a poster for a different title/remake. Retry the strict
                               // title-and-year resolver instead.
                               const key = posterKeyFor(posterResult);
-                              if (canonicalPosterUrl && compactPosterUrl === canonicalPosterUrl) {
-                                posterMetadataFailedRef.current.add(key);
-                              }
                               posterLoadedRef.current.delete(key);
                               image.style.display = 'none';
                               image.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.remove('hidden');
@@ -4762,9 +4874,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               }}
                               onError={(event) => {
                                 const key = posterKeyFor(posterResult);
-                                if (canonicalPosterUrl && resolvedPosterUrl === canonicalPosterUrl) {
-                                  posterMetadataFailedRef.current.add(key);
-                                }
                                 posterLoadedRef.current.delete(key);
                                 event.currentTarget.style.display = 'none';
                                 event.currentTarget.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.remove('hidden');
