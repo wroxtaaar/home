@@ -7952,8 +7952,10 @@ async def _apply_movie_release_eligibility(payload: dict[str, Any], *, enabled: 
             saved = row.get("ottAvailability")
             if isinstance(saved, dict):
                 status = str(saved.get("status") or "").casefold()
+                # Only subscription/free/ad-supported streaming counts as OTT availability.
+                # Rent/buy listings alone do not bypass the seven-day theatrical wait.
                 providers = saved.get("streamingProviders") or []
-                if status == "streaming" or providers:
+                if status == "streaming" and providers:
                     return True
             async with semaphore:
                 try:
@@ -7971,7 +7973,7 @@ async def _apply_movie_release_eligibility(payload: dict[str, Any], *, enabled: 
                         _write_tmdb_ott_persistent_cache(ott_key, availability)
                     status = str(availability.get("status") or "").casefold() if isinstance(availability, dict) else ""
                     providers = availability.get("streamingProviders") or [] if isinstance(availability, dict) else []
-                    if status == "streaming" or providers:
+                    if status == "streaming" and providers:
                         row["ottAvailability"] = availability
                         return True
                 except Exception as exc:
