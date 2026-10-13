@@ -3991,6 +3991,28 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           ) : regionalWebSeriesCatalogue ? (
             <div className="space-y-3">
               <div className="px-1 text-xs text-slate-400">{regionalWebSeriesCatalogue.totalResults.toLocaleString()} web series · Page {regionalWebSeriesCatalogue.page} of {regionalWebSeriesCatalogue.totalPages.toLocaleString()} · Metadata by TMDB</div>
+              {(() => {
+                const goToRegionalPage = async (targetPage: number) => {
+                  if (regionalWebSeriesLoading || targetPage < 1 || targetPage > regionalWebSeriesCatalogue.totalPages || targetPage === regionalWebSeriesCatalogue.page) return;
+                  setRegionalWebSeriesLoading(true);
+                  setRegionalWebSeriesError('');
+                  try {
+                    const nextPage = await api.getTvCatalogue(regionalWebSeriesCatalogue.catalogue, targetPage);
+                    setRegionalWebSeriesCatalogue(nextPage);
+                  } catch (error: any) {
+                    setRegionalWebSeriesError(String(error?.message || 'Could not load this page.'));
+                  } finally {
+                    setRegionalWebSeriesLoading(false);
+                  }
+                };
+                return (
+                  <div className="flex items-center justify-between gap-3">
+                    <button type="button" disabled={regionalWebSeriesLoading || regionalWebSeriesCatalogue.page <= 1} onClick={() => void goToRegionalPage(regionalWebSeriesCatalogue.page - 1)} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-semibold text-slate-200 hover:border-cyan-500 disabled:cursor-not-allowed disabled:opacity-40">← Previous</button>
+                    <span className="text-xs text-slate-500">Page {regionalWebSeriesCatalogue.page} of {regionalWebSeriesCatalogue.totalPages}</span>
+                    <button type="button" disabled={regionalWebSeriesLoading || regionalWebSeriesCatalogue.page >= regionalWebSeriesCatalogue.totalPages} onClick={() => void goToRegionalPage(regionalWebSeriesCatalogue.page + 1)} className="rounded-lg border border-cyan-500/50 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-40">Next →</button>
+                  </div>
+                );
+              })()}
               <div className="grid grid-cols-2 items-stretch gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
                 {regionalWebSeriesCatalogue.results.map(show => (
                   <article key={String(show.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 flex flex-col">
@@ -4010,7 +4032,28 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   </article>
                 ))}
               </div>
-              {regionalWebSeriesCatalogue.page < regionalWebSeriesCatalogue.totalPages && <button type="button" disabled={regionalWebSeriesLoading} onClick={async () => { setRegionalWebSeriesLoading(true); try { const nextPage = await api.getTvCatalogue(regionalWebSeriesCatalogue.catalogue, regionalWebSeriesCatalogue.page + 1); setRegionalWebSeriesCatalogue(current => current ? { ...nextPage, results: [...current.results, ...nextPage.results.filter(item => !current.results.some(existing => String(existing.id) === String(item.id)))] } : nextPage); } catch (error: any) { setRegionalWebSeriesError(String(error?.message || 'Could not load more series.')); } finally { setRegionalWebSeriesLoading(false); } }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-semibold text-slate-200 hover:border-cyan-500 disabled:opacity-50">Load more</button>}
+              {(() => {
+                const goToRegionalPage = async (targetPage: number) => {
+                  if (regionalWebSeriesLoading || targetPage < 1 || targetPage > regionalWebSeriesCatalogue.totalPages || targetPage === regionalWebSeriesCatalogue.page) return;
+                  setRegionalWebSeriesLoading(true);
+                  setRegionalWebSeriesError('');
+                  try {
+                    const nextPage = await api.getTvCatalogue(regionalWebSeriesCatalogue.catalogue, targetPage);
+                    setRegionalWebSeriesCatalogue(nextPage);
+                  } catch (error: any) {
+                    setRegionalWebSeriesError(String(error?.message || 'Could not load this page.'));
+                  } finally {
+                    setRegionalWebSeriesLoading(false);
+                  }
+                };
+                return (
+                  <div className="flex items-center justify-between gap-3">
+                    <button type="button" disabled={regionalWebSeriesLoading || regionalWebSeriesCatalogue.page <= 1} onClick={() => void goToRegionalPage(regionalWebSeriesCatalogue.page - 1)} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-semibold text-slate-200 hover:border-cyan-500 disabled:cursor-not-allowed disabled:opacity-40">← Previous</button>
+                    <span className="text-xs text-slate-500">Page {regionalWebSeriesCatalogue.page} of {regionalWebSeriesCatalogue.totalPages}</span>
+                    <button type="button" disabled={regionalWebSeriesLoading || regionalWebSeriesCatalogue.page >= regionalWebSeriesCatalogue.totalPages} onClick={() => void goToRegionalPage(regionalWebSeriesCatalogue.page + 1)} className="rounded-lg border border-cyan-500/50 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-40">Next →</button>
+                  </div>
+                );
+              })()}
             </div>
           ) : showDcWebSeries ? (
             <div className="space-y-3">
