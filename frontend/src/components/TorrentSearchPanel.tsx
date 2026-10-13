@@ -878,6 +878,11 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   };
 
   const openRegionalCatalogue = (group: RegionalCatalogueGroup, mode: RegionalCatalogueMode) => {
+    setRegionalWebSeriesCatalogue(null);
+    setRegionalWebSeriesError('');
+    setRegionalWebSeriesLoading(false);
+    setShowMarvelWebSeries(false);
+    setShowDcWebSeries(false);
     const key = (mode + '-' + group) as MovieCatalogueKey;
     const label = (mode.charAt(0).toUpperCase() + mode.slice(1)) + ' ' + (group === 'bollywood' ? 'Bollywood' : 'Hollywood');
     setRegionalCatalogueModes(previous => ({ ...previous, [group]: mode }));
