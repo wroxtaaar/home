@@ -139,7 +139,9 @@ def main():
     tv_old = {}
     if TV_CACHE.exists():
         try:
-            tv_old = json.loads(TV_CACHE.read_text(encoding="utf-8"))
+            candidate = json.loads(TV_CACHE.read_text(encoding="utf-8"))
+            if int(candidate.get("version") or 0) >= 2:
+                tv_old = candidate
         except Exception:
             tv_old = {}
     tv_cache = {
