@@ -7934,6 +7934,16 @@ async def _apply_movie_release_eligibility(payload: dict[str, Any], *, enabled: 
     semaphore = asyncio.Semaphore(4)
 
     async def eligible(row: dict[str, Any]) -> bool:
+        # Release confirmation is mandatory in every case: never let a provider
+        # metadata mismatch make an upcoming film visible.
+        raw_date = str(row.get("releaseDate") or row.get("release_date") or "").strip()
+        try:
+            release_date = datetime.strptime(raw_date[:10], "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            return False
+        if release_date > today:
+            return False
+
         try:
             movie_id = int(row.get("tmdbId") or row.get("id") or 0)
         except (TypeError, ValueError):
@@ -7943,7 +7953,7 @@ async def _apply_movie_release_eligibility(payload: dict[str, Any], *, enabled: 
             if isinstance(saved, dict):
                 status = str(saved.get("status") or "").casefold()
                 providers = saved.get("streamingProviders") or []
-                if status in {"streaming", "streaming_info_found"} or providers:
+                if status == "streaming" or providers:
                     return True
             async with semaphore:
                 try:
@@ -7961,19 +7971,13 @@ async def _apply_movie_release_eligibility(payload: dict[str, Any], *, enabled: 
                         _write_tmdb_ott_persistent_cache(ott_key, availability)
                     status = str(availability.get("status") or "").casefold() if isinstance(availability, dict) else ""
                     providers = availability.get("streamingProviders") or [] if isinstance(availability, dict) else []
-                    if status in {"streaming", "streaming_info_found"} or providers:
+                    if status == "streaming" or providers:
                         row["ottAvailability"] = availability
                         return True
                 except Exception as exc:
                     logger.info("OTT eligibility lookup failed for movie %s: %s", movie_id, type(exc).__name__)
 
-        raw_date = str(row.get("releaseDate") or row.get("release_date") or "").strip()
-        try:
-            release_date = datetime.strptime(raw_date[:10], "%Y-%m-%d").date()
-        except (TypeError, ValueError):
-            return False
-        if release_date > today:
-            return False
+        # No subscription/free/ad-supported OTT listing: wait a full seven days.
         return (today - release_date).days >= 7
 
     flags = await asyncio.gather(*(eligible(row) for row in rows))
