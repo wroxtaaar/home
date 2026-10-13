@@ -3999,7 +3999,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     </a>
                     <div className="flex flex-1 flex-col gap-2 p-2.5">
                       <div><a href={show.tmdbUrl || '#'} target="_blank" rel="noreferrer" className="line-clamp-2 text-sm font-bold leading-snug text-slate-100">{show.title}</a>
-                        <div className="mt-0.5 text-xs text-slate-500">{show.year || 'Year unknown'} · TV Series</div></div>
+                        <div className="mt-0.5 text-xs text-slate-500">{show.year || 'Year unknown'} · OTT Web Series</div></div>
                       {show.overview && <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{show.overview}</p>}
                       {show.streamingProviders?.length ? <div className="flex flex-wrap gap-1">{show.streamingProviders.filter(provider => ['subscription','free','ads'].includes(provider.type)).map(provider => <span key={provider.name} className="rounded bg-slate-800 px-1.5 py-1 text-[10px] text-cyan-200">{provider.name}</span>)}</div> : null}
                     </div>
