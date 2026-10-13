@@ -2882,27 +2882,56 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   }, [results, resolutionFilter, sizeSort, timeSort]);
 
   const groupedResults = useMemo(() => {
-    const groups = groupTorrentResults(sortedResults);
-    if (!releaseYearSort) return groups;
+    let groups = groupTorrentResults(sortedResults);
 
-    // Sort whole movie groups, never individual torrent variants. The year is
-    // the movie's release year (catalogue metadata), not the torrent upload date.
+    // The Marvel buttons are shown on torrent-search results as well as
+    // catalogue cards, so apply the selected franchise to the actual groups.
+    if (isMarvelEnglishResults && !showMarvelWebSeries && marvelFilmFilter !== 'all') {
+      const normalize = (value: string) => normalizeGroupTitle(String(value || '').replace(/\s*\(?((?:19|20)\d{2})\)?\s*$/, ''));
+      const mcuTitles = new Set([
+        'ant man', 'ant man and the wasp', 'ant man and the wasp quantumania',
+        'avengers', 'the avengers', 'avengers age of ultron', 'avengers endgame', 'avengers infinity war',
+        'black panther', 'black panther wakanda forever', 'black widow', 'captain america brave new world',
+        'captain america civil war', 'captain america the first avenger', 'captain america the winter soldier',
+        'captain marvel', 'doctor strange', 'doctor strange in the multiverse of madness',
+        'deadpool and wolverine', 'eternals', 'guardians of the galaxy', 'guardians of the galaxy vol 2',
+        'guardians of the galaxy vol 3', 'iron man', 'iron man 2', 'iron man 3',
+        'shang chi and the legend of the ten rings', 'spider man brand new day', 'spider man far from home',
+        'spider man homecoming', 'spider man no way home', 'the fantastic four first steps',
+        'the incredible hulk', 'the marvels', 'thor', 'thor love and thunder', 'thor ragnarok',
+        'thor the dark world', 'thunderbolts'
+      ]);
+      const isSpiderMan = (title: string) => /spider\s*man|spider\s*verse|into the spider|across the spider/i.test(title);
+      const isXMen = (title: string) => /x\s*men|wolverine|deadpool|new mutants|dark phoenix/i.test(title);
+      const isSony = (title: string) => isSpiderMan(title) || /venom|morbius|kraven|madame web/i.test(title);
+      groups = groups.filter(group => {
+        const title = normalize(group.title);
+        switch (marvelFilmFilter) {
+          case 'mcu': return mcuTitles.has(title) || [...mcuTitles].some(item => title.startsWith(item + ' '));
+          case 'spider-man': return isSpiderMan(title);
+          case 'x-men': return isXMen(title);
+          case 'sony': return isSony(title);
+          case 'old-marvel': {
+            const year = torrentGroupReleaseYear(group);
+            return (year > 0 && year < 2000) || /blade|captain america ii|death too soon|dr strange|man thing|incredible hulk returns|trial of the incredible hulk|howard the duck|rise of technovore|fantastic four/i.test(title);
+          }
+          default: return true;
+        }
+      });
+    }
+
+    if (!releaseYearSort) return groups;
+    // Sort whole movie groups, never individual torrent variants.
     return [...groups].sort((a, b) => {
       const yearA = torrentGroupReleaseYear(a);
       const yearB = torrentGroupReleaseYear(b);
-      // Keep entries with unknown release years at the bottom in either mode.
-      if (!yearA && !yearB) {
-        return normalizeGroupTitle(a.title).localeCompare(normalizeGroupTitle(b.title), undefined, { numeric: true });
-      }
+      if (!yearA && !yearB) return normalizeGroupTitle(a.title).localeCompare(normalizeGroupTitle(b.title), undefined, { numeric: true });
       if (!yearA) return 1;
       if (!yearB) return -1;
-      if (yearA !== yearB) {
-        return releaseYearSort === 'newest' ? yearB - yearA : yearA - yearB;
-      }
-      // Stable, predictable order for movies released in the same year.
+      if (yearA !== yearB) return releaseYearSort === 'newest' ? yearB - yearA : yearA - yearB;
       return normalizeGroupTitle(a.title).localeCompare(normalizeGroupTitle(b.title), undefined, { numeric: true });
     });
-  }, [sortedResults, releaseYearSort]);
+  }, [sortedResults, releaseYearSort, isMarvelEnglishResults, showMarvelWebSeries, marvelFilmFilter]);
 
   // Search cards can come from the prebuilt Marvel/DC/Bollywood/Hollywood
   // catalogues and therefore aren't necessarily related to the text the user
