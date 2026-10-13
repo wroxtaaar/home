@@ -7396,12 +7396,18 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_on
             }
         else:
             params["with_original_language"] = language_code
-            params["sort_by"] = "popularity.desc" if mode == "popular" else "primary_release_date.desc"
+            params["sort_by"] = (
+                "popularity.desc" if mode == "popular"
+                else "release_date.desc" if mode == "latest"
+                else "primary_release_date.desc"
+            )
             if mode == "latest":
-                # Limit "latest" to recent release dates, avoiding an endless
-                # catalogue of old titles with incomplete dates.
+                # Use release_date rather than primary_release_date: many English-
+                # language TMDB records have no primary_release_date, so that filter
+                # can return future/undated records which the released-only guard
+                # then rejects, leaving the entire Latest Hollywood page empty.
                 recent_cutoff = datetime.fromtimestamp(time.time() - 5 * 365 * 86400, timezone.utc).date()
-                params["primary_release_date.gte"] = recent_cutoff.isoformat()
+                params["release_date.gte"] = recent_cutoff.isoformat()
             payload = await _tmdb_get_json("discover/movie", params)
             if mode == "latest" and not (payload.get("results") or []):
                 # TMDB's primary_release_date filter can return an empty page
