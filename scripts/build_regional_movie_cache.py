@@ -167,7 +167,7 @@ def main():
             error = None
             for attempt in range(1, 4):
                 try:
-                    data = request("/api/tv/catalogue/" + cat + "?page=" + str(page))
+                    data = request("/api/tv/catalogue/" + cat + "?page=" + str(page) + "&refresh=true")
                     break
                 except Exception as exc:
                     error = str(exc)
