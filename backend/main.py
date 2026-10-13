@@ -7930,7 +7930,18 @@ async def _apply_movie_release_eligibility(payload: dict[str, Any], *, enabled: 
                     return True
             async with semaphore:
                 try:
-                    availability = await asyncio.wait_for(_tmdb_fetch_movie_ott_availability(movie_id, "IN"), timeout=12)
+                    ott_key = (movie_id, "IN")
+                    cached_ott = _tmdb_ott_cache.get(ott_key)
+                    availability = cached_ott[1] if cached_ott else None
+                    if availability is None:
+                        persistent_ott = _read_tmdb_ott_persistent_cache(ott_key)
+                        if persistent_ott:
+                            availability = persistent_ott[1]
+                            _tmdb_ott_cache[ott_key] = (time.monotonic(), availability)
+                    if availability is None:
+                        availability = await asyncio.wait_for(_tmdb_fetch_movie_ott_availability(movie_id, "IN"), timeout=12)
+                        _tmdb_ott_cache[ott_key] = (time.monotonic(), availability)
+                        _write_tmdb_ott_persistent_cache(ott_key, availability)
                     status = str(availability.get("status") or "").casefold() if isinstance(availability, dict) else ""
                     providers = availability.get("streamingProviders") or [] if isinstance(availability, dict) else []
                     if status in {"streaming", "streaming_info_found"} or providers:
