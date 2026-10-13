@@ -3564,7 +3564,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 return (
                   <MovieCatalogueCard
                     key={'movie-prepare-' + String(movie.id)}
-                    className="relative border-slate-800 transition hover:border-slate-700"
+                    className="relative h-full border-slate-800 transition hover:border-slate-700"
                   >
                     <div className="relative aspect-[2/3] w-full overflow-hidden rounded-t-xl bg-slate-950">
                       {posterUrl ? (
@@ -3632,19 +3632,24 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                         </div>
                       )}
                     </div>
-                    <div className="flex flex-col gap-2 p-2.5">
-                      <div className="flex items-start gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => showFullTorrentTitleBubble({
-                            ...result,
-                            title: fullTorrentTitleFor(result) || result.title
-                          })}
-                          className="min-w-0 flex-1 text-left text-sm font-semibold leading-snug text-slate-100 line-clamp-2 hover:text-cyan-300"
-                          title="Click to view full torrent name"
-                        >
-                          {previewGroup.title}
-                        </button>
+                    <div className="flex flex-1 flex-col gap-2 p-2.5">
+                      <div className="flex min-h-[3.2rem] items-start gap-1.5">
+                        <div className="min-w-0 flex-1">
+                          <button
+                            type="button"
+                            onClick={() => showFullTorrentTitleBubble({
+                              ...result,
+                              title: fullTorrentTitleFor(result) || result.title
+                            })}
+                            className="w-full text-left text-sm font-semibold leading-snug text-slate-100 line-clamp-2 hover:text-cyan-300"
+                            title="Click to view full torrent name"
+                          >
+                            {movie.title}
+                          </button>
+                          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                            <span className="text-slate-500">{movie.year || previewGroup.year || 'Release year unknown'}</span>
+                          </div>
+                        </div>
                         <button
                           type="button"
                           onClick={() => {
@@ -3659,7 +3664,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           ✕
                         </button>
                       </div>
-                      {previewGroup.variants.length > 1 && (
+                      {previewGroup.variants.length > 1 ? (
                         <select
                           aria-label={'Choose quality for ' + previewGroup.title}
                           value={torrentResultKey(result)}
@@ -3682,10 +3687,11 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             );
                           })}
                         </select>
+                      ) : (
+                        <div className="w-full rounded-lg border border-slate-800 bg-slate-950 px-2 py-2 text-[10px] sm:text-xs font-medium text-slate-200">
+                          {torrentQualityDetails(result).label} · {formatBytes(Number(result.size) || 0)}
+                        </div>
                       )}
-                      <div className="font-mono text-[10px] sm:text-[11px] text-slate-300">
-                        {formatBytes(Number(result.size) || 0)}
-                      </div>
                       <div className="flex min-w-0 items-center gap-1.5">
                         <button
                           type="button"
