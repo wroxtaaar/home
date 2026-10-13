@@ -7621,7 +7621,7 @@ async def api_tmdb_marvel_tv_catalogue(page: int = Query(1, ge=1, le=500)):
                 return fallback
             item = candidates[0]
             air_date = str(item.get("first_air_date") or "").strip()
-        year_match = re.match(r"^(\d{4})", air_date)
+            year_match = re.match(r"^(\d{4})", air_date)
             poster_path = str(item.get("poster_path") or "").strip()
             backdrop_path = str(item.get("backdrop_path") or "").strip()
             tmdb_id = int(item["id"])
@@ -7677,7 +7677,7 @@ async def api_tmdb_dc_live_action_tv_catalogue(page: int = Query(1, ge=1, le=500
             if not candidates: return fallback
             item = candidates[0]
             air_date = str(item.get("first_air_date") or "").strip()
-        year_match = re.match(r"^(\d{4})", air_date)
+            year_match = re.match(r"^(\d{4})", air_date)
             poster_path = str(item.get("poster_path") or "").strip()
             backdrop_path = str(item.get("backdrop_path") or "").strip()
             tmdb_id = int(item["id"])
