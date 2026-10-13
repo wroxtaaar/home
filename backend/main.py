@@ -7971,7 +7971,7 @@ async def api_tmdb_movie_catalogue(
     cached = _tmdb_movie_catalogue_cache.get(cache_key)
     if cached and now - cached[0] < cache_ttl:
         _schedule_tmdb_catalogue_synopsis_enrichment(cached[1])
-        return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, cached[1]), enabled=released_only)
+        return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, cached[1]), enabled=True)
 
     # A disk cache survives container restarts, unlike the in-memory TTL cache.
     persistent = _read_tmdb_persistent_cache(cache_key)
