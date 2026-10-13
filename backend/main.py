@@ -8102,9 +8102,16 @@ async def api_tmdb_movie_catalogue(
     # Keep released-only and include-upcoming responses in separate cache slots.
     cache_key = (catalogue_key + ("|released-v4" if released_only else "|upcoming-v3"), page)
     now = time.monotonic()
+    is_regional_movie_catalogue = catalogue_key in {
+        "popular-bollywood", "trending-bollywood", "latest-bollywood",
+        "popular-hollywood", "trending-hollywood", "latest-hollywood",
+    }
+    # Regional movie pages 1-3 are durable VPS catalogue snapshots. Keep using
+    # them across restarts/TTL expiry; refresh only when a page has never been saved.
+    durable_regional_page = is_regional_movie_catalogue and page <= 3
     cache_ttl = min(TMDB_CATALOGUE_CACHE_SECONDS, 900) if catalogue_key.startswith("trending-") else TMDB_CATALOGUE_CACHE_SECONDS
     cached = _tmdb_movie_catalogue_cache.get(cache_key)
-    if cached and now - cached[0] < cache_ttl:
+    if cached and (durable_regional_page or now - cached[0] < cache_ttl):
         _schedule_tmdb_catalogue_synopsis_enrichment(cached[1])
         return await _apply_movie_release_eligibility(cached[1], enabled=released_only)
 
@@ -8113,7 +8120,7 @@ async def api_tmdb_movie_catalogue(
     if persistent:
         saved_at, persistent_payload = persistent
         age_seconds = max(0.0, time.time() - saved_at)
-        if age_seconds < cache_ttl:
+        if durable_regional_page or age_seconds < cache_ttl:
             _tmdb_movie_catalogue_cache[cache_key] = (
                 time.monotonic() - age_seconds,
                 persistent_payload,
