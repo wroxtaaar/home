@@ -1579,6 +1579,29 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     }
   };
 
+  // Warm the episode metadata cache while the franchise TV catalogue is
+  // open, so selecting a series usually opens with its season/episodes ready.
+  useEffect(() => {
+    const catalogue = showDcWebSeries ? dcWebSeriesCatalogue
+      : showMarvelWebSeries ? marvelWebSeriesCatalogue
+        : null;
+    if (!catalogue?.results?.length) return;
+
+    const items = catalogue.results
+      .map(show => ({ id: Number(show.id), type: 'tv' as const }))
+      .filter(item => Number.isInteger(item.id) && item.id > 0);
+    if (!items.length) return;
+
+    prefetchNexStreamEpisodeMetadata(items, (id, status) => {
+      setNexStreamEpisodePrefetchStatus(previous => ({ ...previous, [String(id)]: status }));
+    });
+  }, [
+    showDcWebSeries,
+    showMarvelWebSeries,
+    dcWebSeriesCatalogue,
+    marvelWebSeriesCatalogue,
+  ]);
+
   const playWithNexStream = async (item: NexStreamTitle, chosenSeason?: number, chosenEpisode?: number, openInNewWindow = false) => {
     const popup = openInNewWindow ? window.open('about:blank', '_blank') : null;
     if (item.type === 'tv' && (chosenSeason === undefined || chosenEpisode === undefined)) {
