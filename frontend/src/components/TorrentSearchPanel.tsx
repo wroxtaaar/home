@@ -724,6 +724,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [expandedSearchGroupKey, setExpandedSearchGroupKey] = useState<string | null>(null);
   const [movieTorrentPreviewGroup, setMovieTorrentPreviewGroup] = useState<TorrentQualityGroup | null>(null);
   const [movieTorrentPreviewCatalogueId, setMovieTorrentPreviewCatalogueId] = useState<string | null>(null);
+  // Preserve the exact poster URL from the catalogue card the user clicked.
+  // The selected inline card must keep using that same source, even while the
+  // catalogue list re-renders or torrent metadata is substituted.
+  const [movieTorrentPreviewPosterUrl, setMovieTorrentPreviewPosterUrl] = useState('');
   const [movieTorrentPickerGroups, setMovieTorrentPickerGroups] = useState<TorrentQualityGroup[] | null>(null);
   const [movieTorrentSearchLoading, setMovieTorrentSearchLoading] = useState(false);
   const [movieTorrentSearchTitle, setMovieTorrentSearchTitle] = useState('');
@@ -2305,6 +2309,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
     setMovieTorrentSearchTitle(titleQuery);
     setMovieTorrentPreviewCatalogueId(String(movie.id));
+    setMovieTorrentPreviewPosterUrl(String(movie.posterUrl || '').trim());
     setMovieTorrentSearchLoading(true);
     setMovieTorrentSearchError('');
     setMovieTorrentPreviewGroup(null);
@@ -3546,7 +3551,11 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 // inline Prepare card; torrent-result poster metadata is often absent
                 // or delayed and must not replace the movie's known poster.
                 const posterUrl = lowQualityPosterUrl(
-                  movie.posterUrl || posterUrlFor(previewGroup.posterResult) || previewGroup.posterResult?.posterUrl || ''
+                  movieTorrentPreviewPosterUrl ||
+                  movie.posterUrl ||
+                  posterUrlFor(previewGroup.posterResult) ||
+                  previewGroup.posterResult?.posterUrl ||
+                  ''
                 );
                 return (
                   <MovieCatalogueCard
@@ -3556,7 +3565,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     <div className="relative aspect-[2/3] w-full overflow-hidden rounded-t-xl bg-slate-950">
                       {posterUrl ? (
                         <img
-                          src={lowQualityPosterUrl(posterUrl)}
+                          src={posterUrl}
                           alt={previewGroup.title}
                           loading="lazy"
                           className="h-full w-full object-cover"
@@ -3568,7 +3577,12 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           }}
                           onError={(event) => {
                             const image = event.currentTarget;
-                            const originalUrl = String(movie.posterUrl || previewGroup.posterResult?.posterUrl || '').trim();
+                            const originalUrl = String(
+                              movieTorrentPreviewPosterUrl ||
+                              movie.posterUrl ||
+                              previewGroup.posterResult?.posterUrl ||
+                              ''
+                            ).trim();
                             // The normal catalogue card retries the unmodified poster
                             // when the resized URL fails. Do the same for the Prepare card
                             // so it displays the exact same artwork.
