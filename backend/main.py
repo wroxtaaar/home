@@ -7843,19 +7843,28 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
         raise HTTPException(status_code=503, detail="TMDB credentials are not configured.")
     today = datetime.now(timezone.utc).date().isoformat()
     try:
-        payload = await _tmdb_get_json("discover/tv", {
-            "include_adult": "false",
-            "language": "en-US",
-            "sort_by": sort_by,
-            "with_origin_country": country,
-            "first_air_date.lte": today,
-            "page": page,
-        })
+        if catalogue_key.endswith("-trending"):
+            payload = await _tmdb_get_json("trending/tv/week", {
+                "language": "en-US",
+                "page": page,
+            })
+        else:
+            payload = await _tmdb_get_json("discover/tv", {
+                "include_adult": "false",
+                "language": "en-US",
+                "sort_by": sort_by,
+                "with_origin_country": country,
+                "first_air_date.lte": today,
+                "page": page,
+            })
     except HTTPException:
         raise
     results = []
     for item in payload.get("results", []):
         if not isinstance(item, dict) or not item.get("id"):
+            continue
+        origins = item.get("origin_country") or []
+        if catalogue_key.endswith("-trending") and country not in origins:
             continue
         air_date = str(item.get("first_air_date") or "").strip()
         try:
