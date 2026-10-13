@@ -7753,21 +7753,21 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
 
     today = datetime.now(timezone.utc).date().isoformat()
     try:
-        if catalogue_key.endswith("-trending"):
-            payload = await _tmdb_get_json("trending/tv/week", {"language": "en-US", "page": page})
-        else:
-            payload = await _tmdb_get_json("discover/tv", {
-                "include_adult": "false",
-                "language": "en-US",
-                "sort_by": sort_by,
-                "with_origin_country": country,
-                "with_original_language": language,
-                "with_type": "2|4",
-                "watch_region": "IN",
-                "with_watch_monetization_types": "flatrate|free|ads",
-                "first_air_date.lte": today,
-                "page": page,
-            })
+        # Global TMDB trending is not scoped to India/Hindi, so strict regional
+        # filters can discard every result. Discover within the target region
+        # and language, ranked by popularity, then verify OTT providers below.
+        payload = await _tmdb_get_json("discover/tv", {
+            "include_adult": "false",
+            "language": "en-US",
+            "sort_by": sort_by,
+            "with_origin_country": country,
+            "with_original_language": language,
+            "with_type": "2|4",
+            "watch_region": "IN",
+            "with_watch_monetization_types": "flatrate|free|ads",
+            "first_air_date.lte": today,
+            "page": page,
+        })
     except HTTPException:
         raise
 
