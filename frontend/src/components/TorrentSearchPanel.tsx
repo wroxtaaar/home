@@ -3492,10 +3492,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               // differently between the card and torrent-picker state, so use
               // the exact searched title/year as a safe fallback.
               const previewMatchesMovie =
-                !/^(popular|trending|latest)-(bollywood|hollywood)$/.test(String(movieCatalogue.catalogue)) && (
-                  movieTorrentPreviewCatalogueId === String(movie.id) ||
-                  movieTorrentSearchTitle === movie.title + (movie.year ? ' ' + movie.year : '')
-                );
+                movieTorrentPreviewCatalogueId === String(movie.id) ||
+                movieTorrentSearchTitle === movie.title + (movie.year ? ' ' + movie.year : '');
               const previewGroup = previewMatchesMovie ? movieTorrentPreviewGroup : null;
               if (previewGroup) {
                 const selectedKey = selectedMovieTorrentQualityByGroup[previewGroup.key] || torrentResultKey(previewGroup.variants[0]);
