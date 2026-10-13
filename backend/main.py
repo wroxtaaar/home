@@ -7719,10 +7719,27 @@ _REGIONAL_TV_PAGE_CACHE_TTL = 6 * 60 * 60
 _REGIONAL_TV_DISCOVERY_CACHE = _REGIONAL_TV_PAGE_CACHE
 REGIONAL_TV_PREBUILT_CACHE_FILE = Path(os.getenv("REGIONAL_TV_PREBUILT_CACHE_FILE", "/app/data/regional_tv_prebuilt_cache.json"))
 _INDIAN_LINEAR_TV_NETWORKS = {
-    "starplus", "colors", "zee tv", "zeetv", "sony entertainment television",
-    "sony sab", "sab tv", "dd national", "andtv", "&tv", "star bharat",
-    "sony pal", "dangal tv", "sun tv", "star utsav",
+    "starplus", "colors", "colorstv", "zeetv", "sonyentertainmenttelevision",
+    "sonysab", "sabtv", "ddnational", "andtv", "starbharat", "sonypal",
+    "dangal", "dangaltv", "suntv", "starutsav", "starutsavmovies",
 }
+
+
+def _is_indian_linear_tv_network(details: dict[str, Any]) -> bool:
+    """Identify Indian series originally distributed by a known linear TV broadcaster."""
+    networks = details.get("networks") or []
+    for network in networks:
+        if not isinstance(network, dict):
+            continue
+        name = re.sub(r"[^a-z0-9]", "", str(network.get("name") or "").casefold())
+        if not name:
+            continue
+        if name in _INDIAN_LINEAR_TV_NETWORKS:
+            return True
+        # TMDB network names sometimes include a suffix such as "TV" or "HD".
+        if any(name.startswith(alias) for alias in _INDIAN_LINEAR_TV_NETWORKS if len(alias) >= 6):
+            return True
+    return False
 
 
 @app.get("/api/tv/catalogue/{catalogue_key}")
@@ -7738,7 +7755,9 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
     }
     if catalogue_key not in configs:
         raise HTTPException(status_code=404, detail="Unknown TV catalogue.")
-    prebuilt = _read_regional_tv_prebuilt_page(catalogue_key, page)
+    # The existing prebuilt Indian catalogue predates origin-network classification.
+    # Do not serve it for Indian web-series pages until it is rebuilt with this filter.
+    prebuilt = None if catalogue_key.startswith("indian-") else _read_regional_tv_prebuilt_page(catalogue_key, page)
     if prebuilt is not None:
         return prebuilt
 
@@ -7802,6 +7821,11 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
             continue
         series_type = str(details.get("type") or item.get("type") or "").casefold()
         if series_type not in {"scripted", "miniseries"}:
+            continue
+        # OTT availability alone does not make a broadcast programme a web series.
+        # Exclude known Indian linear-TV networks; unknown networks remain eligible
+        # only when all the other Hindi/origin/OTT checks pass.
+        if country == "IN" and _is_indian_linear_tv_network(details):
             continue
         # The listing must show actual streaming access in India; rental/buy-only
         # offers do not qualify as an OTT streaming listing.
