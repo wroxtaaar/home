@@ -7779,7 +7779,7 @@ async def api_tmdb_regional_web_series_catalogue(
                 if original_language != "hi" or (origin_countries and "IN" not in origin_countries):
                     return None
                 networks = {re.sub(r"[^a-z0-9& ]+", "", str(n.get("name") or "").casefold()).strip() for n in details.get("networks") or [] if isinstance(n, dict)}
-                if any(network.replace(" ", "") in re.sub(r"[^a-z0-9& ]+", "", name).replace(" ", "") for network in networks for name in _INDIAN_LINEAR_TV_NETWORKS):
+                if any(network.replace(" ", "") == re.sub(r"[^a-z0-9& ]+", "", linear_name).replace(" ", "") for network in networks for linear_name in _INDIAN_LINEAR_TV_NETWORKS):
                     return None
             air_date = str(row.get("first_air_date") or "").strip()
             try:
