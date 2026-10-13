@@ -110,7 +110,7 @@ def main():
             except (TypeError, ValueError):
                 total_pages = PAGE_LIMIT
             print(json.dumps({"event": "catalogue_page", "catalogue": cat, "page": page, "pageMovies": len(rows), "uniqueMovies": count, "target": TARGET_PER_CATALOGUE}), flush=True)
-            if count >= TARGET_PER_CATALOGUE or page >= total_pages or not rows:
+            if count >= TARGET_PER_CATALOGUE or page >= total_pages:
                 break
             time.sleep(float(os.getenv("REGIONAL_CACHE_DELAY_SECONDS", "0.4")))
 
