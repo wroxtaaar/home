@@ -7738,16 +7738,43 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
     }
     if catalogue_key not in configs:
         raise HTTPException(status_code=404, detail="Unknown TV catalogue.")
+    # Indian Popular and Trending should contain only series that premiered
+    # after 2017 (2018 onward). Apply this to prebuilt and in-memory cached
+    # pages too, so older cached entries cannot bypass the rule.
+    recent_indian_only = catalogue_key in {"indian-popular", "indian-trending"}
+
+    def filter_recent_indian_series(result: dict[str, Any]) -> dict[str, Any]:
+        if not recent_indian_only or not isinstance(result, dict):
+            return result
+        rows = result.get("results")
+        if not isinstance(rows, list):
+            return result
+        filtered = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            raw_date = str(row.get("releaseDate") or row.get("first_air_date") or "").strip()
+            try:
+                if datetime.strptime(raw_date[:10], "%Y-%m-%d").date() < datetime(2018, 1, 1).date():
+                    continue
+            except ValueError:
+                continue
+            filtered.append(row)
+        result = dict(result)
+        result["results"] = filtered
+        result["totalResults"] = len(filtered)
+        return result
+
     prebuilt = _read_regional_tv_prebuilt_page(catalogue_key, page)
     if prebuilt is not None:
-        return prebuilt
+        return filter_recent_indian_series(prebuilt)
 
     country, language, sort_by = configs[catalogue_key]
     cache_key = (catalogue_key, page)
     cached = _REGIONAL_TV_DISCOVERY_CACHE.get(cache_key)
     cache_ttl = 900 if catalogue_key.endswith("-trending") else 21600
     if cached and time.monotonic() - cached[0] < cache_ttl:
-        return cached[1]
+        return filter_recent_indian_series(cached[1])
     if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
         raise HTTPException(status_code=503, detail="TMDB credentials are not configured.")
 
@@ -7766,6 +7793,7 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
             "watch_region": "IN",
             "with_watch_monetization_types": "flatrate|free|ads",
             "first_air_date.lte": today,
+            **({"first_air_date.gte": "2018-01-01"} if recent_indian_only else {}),
             "page": page,
         })
     except HTTPException:
@@ -7844,7 +7872,7 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
         "results": results,
     }
     _REGIONAL_TV_DISCOVERY_CACHE[cache_key] = (time.monotonic(), result)
-    return result
+    return filter_recent_indian_series(result)
 
 
 async def _apply_movie_release_eligibility(payload: dict[str, Any], *, enabled: bool = True) -> dict[str, Any]:
