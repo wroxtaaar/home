@@ -7382,54 +7382,18 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_on
                 "page": page,
                 "include_adult": "false",
             })
-            # The global trending feed can be dominated by other languages.
-            # Fetch a couple of adjacent pages when needed so regional trending
-            # lists don't appear nearly empty, while retaining TMDB's ranking.
-            trend_rows = list(payload.get("results") or [])
-            trend_pages = max(1, min(500, int(payload.get("total_pages") or 1)))
-            matching_count = sum(
-                1 for row in trend_rows
-                if isinstance(row, dict) and str(row.get("original_language") or "").lower() == language_code
-            )
-            next_page = page + 1
-            while matching_count < 8 and next_page <= min(trend_pages, page + 2):
-                extra = await _tmdb_get_json("trending/movie/week", {
-                    "language": "en-US",
-                    "page": next_page,
-                    "include_adult": "false",
-                })
-                extra_rows = list(extra.get("results") or [])
-                trend_rows.extend(extra_rows)
-                matching_count += sum(
-                    1 for row in extra_rows
-                    if isinstance(row, dict) and str(row.get("original_language") or "").lower() == language_code
-                )
-                next_page += 1
-            # If the global trending feed has too few titles in this language,
-            # keep its ranked matches first, then fill from language-specific
-            # popular discoveries so OTT/release eligibility does not empty the page.
-            if matching_count < 18:
-                fallback = await _tmdb_get_json("discover/movie", {
-                    "language": "en-US",
-                    "with_original_language": language_code,
-                    "sort_by": "popularity.desc",
-                    "release_date.lte": today,
-                    "include_adult": "false",
-                    "include_video": "false",
-                    "page": page,
-                })
-                existing_ids = {
-                    str(row.get("id") or "") for row in trend_rows if isinstance(row, dict)
-                }
-                for row in fallback.get("results") or []:
-                    if not isinstance(row, dict):
-                        continue
-                    row_id = str(row.get("id") or "")
-                    if row_id and row_id not in existing_ids:
-                        trend_rows.append(row)
-                        existing_ids.add(row_id)
-                trend_pages = max(trend_pages, min(500, int(fallback.get("total_pages") or 1)))
-            payload = {**payload, "results": trend_rows, "total_pages": trend_pages}
+            # Keep Trending faithful to TMDB's weekly trending ranking. The
+            # endpoint is global, so a language filter can produce short pages;
+            # do not pad them with popularity-ranked Discover results. The
+            # regional page builder scans subsequent trending pages as needed.
+            payload = {
+                **payload,
+                "results": [
+                    row for row in (payload.get("results") or [])
+                    if isinstance(row, dict)
+                    and str(row.get("original_language") or "").lower() == language_code
+                ],
+            }
         else:
             params["with_original_language"] = language_code
             params["sort_by"] = "popularity.desc" if mode == "popular" else "primary_release_date.desc"
@@ -8133,7 +8097,8 @@ async def _fetch_paginated_regional_movie_catalogue(catalogue_key: str, page: in
     page_size = 18
     wanted = page * page_size + 1
     max_source_pages = min(30, max(6, page * 4 + 6))
-    source_cache_prefix = catalogue_key + "|released-v4"
+    is_trending = catalogue_key.startswith("trending-")
+    source_cache_prefix = catalogue_key + ("|trending-v2" if is_trending else "|released-v4")
     seen_ids: set[str] = set()
     eligible_rows: list[dict[str, Any]] = []
     source_total_pages = max_source_pages
@@ -8143,7 +8108,7 @@ async def _fetch_paginated_regional_movie_catalogue(catalogue_key: str, page: in
         cache_key = (source_cache_prefix, source_page)
         cached = _tmdb_movie_catalogue_cache.get(cache_key)
         source_payload = cached[1] if cached else None
-        if source_payload is None:
+        if source_payload is None and not is_trending:
             persistent = _read_tmdb_persistent_cache(cache_key)
             if persistent:
                 source_payload = persistent[1]
@@ -8151,7 +8116,8 @@ async def _fetch_paginated_regional_movie_catalogue(catalogue_key: str, page: in
         if source_payload is None:
             source_payload = await _tmdb_fetch_movie_catalogue(catalogue_key, source_page, True)
             _tmdb_movie_catalogue_cache[cache_key] = (time.monotonic(), source_payload)
-            _write_tmdb_persistent_cache(cache_key, source_payload)
+            if not is_trending:
+                _write_tmdb_persistent_cache(cache_key, source_payload)
         source_total_pages = min(500, max(1, int(source_payload.get("totalPages") or source_page)))
         filtered_payload = await _apply_movie_release_eligibility(source_payload, enabled=True)
         for row in filtered_payload.get("results") or []:
@@ -8213,22 +8179,33 @@ async def api_tmdb_movie_catalogue(
     }:
         # Final eligible display pages have their own durable cache namespace;
         # source-page caches remain separate and are reused while assembling them.
-        eligible_cache_key = (catalogue_key + "|eligible-v1", page)
+        is_trending = catalogue_key.startswith("trending-")
+        eligible_cache_key = (catalogue_key + ("|eligible-trending-v2" if is_trending else "|eligible-v1"), page)
         eligible_cached = _tmdb_movie_catalogue_cache.get(eligible_cache_key)
-        if eligible_cached:
+        if eligible_cached and (
+            not is_trending or time.monotonic() - eligible_cached[0] < 900
+        ):
             return eligible_cached[1]
-        eligible_persistent = _read_tmdb_persistent_cache(eligible_cache_key)
-        if eligible_persistent:
-            payload = eligible_persistent[1]
-            _tmdb_movie_catalogue_cache[eligible_cache_key] = (time.monotonic(), payload)
-            return payload
+        if eligible_cached:
+            _tmdb_movie_catalogue_cache.pop(eligible_cache_key, None)
+        if not is_trending:
+            eligible_persistent = _read_tmdb_persistent_cache(eligible_cache_key)
+            if eligible_persistent:
+                payload = eligible_persistent[1]
+                _tmdb_movie_catalogue_cache[eligible_cache_key] = (time.monotonic(), payload)
+                return payload
         payload = await _fetch_paginated_regional_movie_catalogue(catalogue_key, page)
         _tmdb_movie_catalogue_cache[eligible_cache_key] = (time.monotonic(), payload)
-        _write_tmdb_persistent_cache(eligible_cache_key, payload)
+        if not is_trending:
+            _write_tmdb_persistent_cache(eligible_cache_key, payload)
         return payload
 
     # Keep released-only and include-upcoming responses in separate cache slots.
-    cache_key = (catalogue_key + ("|released-v4" if released_only else "|upcoming-v3"), page)
+    is_trending_catalogue = catalogue_key.startswith("trending-")
+    cache_key = (catalogue_key + (
+        ("|trending-v2" if is_trending_catalogue else "|released-v4")
+        if released_only else "|upcoming-v3"
+    ), page)
     now = time.monotonic()
     is_regional_movie_catalogue = catalogue_key in {
         "popular-bollywood", "trending-bollywood", "latest-bollywood",
@@ -8236,7 +8213,7 @@ async def api_tmdb_movie_catalogue(
     }
     # Regional movie pages 1-3 are durable VPS catalogue snapshots. Keep using
     # them across restarts/TTL expiry; refresh only when a page has never been saved.
-    durable_regional_page = is_regional_movie_catalogue and page <= 3
+    durable_regional_page = is_regional_movie_catalogue and not is_trending_catalogue and page <= 3
     cache_ttl = min(TMDB_CATALOGUE_CACHE_SECONDS, 900) if catalogue_key.startswith("trending-") else TMDB_CATALOGUE_CACHE_SECONDS
     cached = _tmdb_movie_catalogue_cache.get(cache_key)
     if cached and (durable_regional_page or now - cached[0] < cache_ttl):
@@ -8244,7 +8221,7 @@ async def api_tmdb_movie_catalogue(
         return await _apply_movie_release_eligibility(cached[1], enabled=released_only)
 
     # A disk cache survives container restarts, unlike the in-memory TTL cache.
-    persistent = _read_tmdb_persistent_cache(cache_key)
+    persistent = None if is_trending_catalogue else _read_tmdb_persistent_cache(cache_key)
     if persistent:
         saved_at, persistent_payload = persistent
         age_seconds = max(0.0, time.time() - saved_at)
@@ -8263,7 +8240,8 @@ async def api_tmdb_movie_catalogue(
     try:
         payload = await task
         _tmdb_movie_catalogue_cache[cache_key] = (time.monotonic(), payload)
-        _write_tmdb_persistent_cache(cache_key, payload)
+        if not is_trending_catalogue:
+            _write_tmdb_persistent_cache(cache_key, payload)
         _schedule_tmdb_catalogue_synopsis_enrichment(payload)
         return await _apply_movie_release_eligibility(payload, enabled=released_only)
     except HTTPException as exc:
