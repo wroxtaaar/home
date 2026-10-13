@@ -7713,6 +7713,9 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
     }
     if catalogue_key not in configs:
         raise HTTPException(status_code=404, detail="Unknown TV catalogue.")
+    prebuilt = _read_regional_tv_prebuilt_page(catalogue_key, page)
+    if prebuilt is not None:
+        return prebuilt
 
     country, language, sort_by = configs[catalogue_key]
     cache_key = (catalogue_key, page)
