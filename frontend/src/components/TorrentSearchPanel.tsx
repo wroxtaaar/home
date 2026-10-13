@@ -1035,10 +1035,46 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   };
 
   const visibleMovieCatalogueItems = useMemo(() => {
-    const movies = movieCatalogue?.results || [];
-    if (!streamingOnly) return movies;
-    return movies.filter(movie => ottAvailability[String(movie.id)]?.status === 'streaming');
-  }, [movieCatalogue, streamingOnly, ottAvailability]);
+    let movies = movieCatalogue?.results || [];
+    if (isMarvelEnglishResults && !showMarvelWebSeries && marvelFilmFilter !== 'all') {
+      const titleOf = (movie: MovieCatalogueItem) => String(movie.title || '').replace(/\\s*\\(?((?:19|20)\\d{2})\\)?\\s*$/, '').trim().toLowerCase();
+      const yearOf = (movie: MovieCatalogueItem) => Number(movie.year || String(movie.title || '').match(/\\b(?:19|20)\\d{2}\\b/)?.[0] || 0);
+      const mcuTitles = new Set([
+        'ant-man','ant-man and the wasp','ant-man and the wasp: quantumania','avengers: age of ultron','avengers: endgame','avengers: infinity war','the avengers',
+        'black panther','black panther: wakanda forever','black widow','captain america: brave new world','captain america: civil war',
+        'captain america: the first avenger','captain america: the winter soldier','captain marvel','doctor strange',
+        'doctor strange in the multiverse of madness','deadpool & wolverine','eternals','guardians of the galaxy',
+        'guardians of the galaxy vol. 2','guardians of the galaxy vol. 3','iron man','iron man 2','iron man 3',
+        'shang-chi and the legend of the ten rings','spider-man: brand new day','spider-man: far from home','spider-man: homecoming',
+        'spider-man: no way home','the fantastic four: first steps','the incredible hulk','the marvels','thor','thor: love and thunder',
+        'thor: ragnarok','thor: the dark world','thunderbolts'
+      ]);
+      const isSpiderMan = (title: string) => /spider[- ]?man|spider[- ]verse|into the spider|across the spider/i.test(title);
+      const isXMen = (title: string) => /x[- ]?men|wolverine|deadpool|new mutants|dark phoenix/i.test(title);
+      const isSony = (title: string) => isSpiderMan(title) || /venom|morbius|kraven|madame web/i.test(title);
+      const oldMarvelTitles = new Set([
+        'blade','blade ii','blade: trinity','captain america','captain america ii: death too soon',
+        'captain america (1990)','dr. strange','dr. strange (1978)','dr. strange (tv movie)',
+        'man-thing','man-thing (tv movie)','the incredible hulk returns','the trial of the incredible hulk',
+        'hulk','howard the duck','iron man: rise of technovore','fantastic four','fantastic four: rise of the silver surfer'
+      ]);
+      movies = movies.filter(movie => {
+        const title = titleOf(movie);
+        const year = yearOf(movie);
+        switch (marvelFilmFilter) {
+          case 'mcu': return mcuTitles.has(title);
+          case 'spider-man': return isSpiderMan(title);
+          case 'x-men': return isXMen(title);
+          case 'sony': return isSony(title);
+          case 'old-marvel': return year > 0 && year < 2000 || oldMarvelTitles.has(title) ||
+            /death too soon|dr\\.? strange|man-thing|incredible hulk returns|trial of the incredible hulk|rise of technovore/i.test(title);
+          default: return true;
+        }
+      });
+    }
+    if (streamingOnly) movies = movies.filter(movie => ottAvailability[String(movie.id)]?.status === 'streaming');
+    return movies;
+  }, [movieCatalogue, streamingOnly, ottAvailability, isMarvelEnglishResults, showMarvelWebSeries, marvelFilmFilter]);
 
   const ottPendingCount = movieCatalogue?.results.filter(movie => {
     const status = ottAvailability[String(movie.id)]?.status;
@@ -1051,6 +1087,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [sizeSort, setSizeSort] = useState<'asc' | 'desc' | null>(null);
   const [timeSort, setTimeSort] = useState<'desc' | 'asc' | null>(null);
   const [releaseYearSort, setReleaseYearSort] = useState<'newest' | 'oldest' | null>(null);
+  type MarvelFilmFilter = 'all' | 'mcu' | 'spider-man' | 'x-men' | 'sony' | 'old-marvel';
+  const [marvelFilmFilter, setMarvelFilmFilter] = useState<MarvelFilmFilter>('all');
   const [isMarvelEnglishResults, setIsMarvelEnglishResults] = useState(false);
   const [isDcLiveActionEnglishResults, setIsDcLiveActionEnglishResults] = useState(false);
   const [showMarvelWebSeries, setShowMarvelWebSeries] = useState(false);
@@ -4182,8 +4220,20 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               {isDcLiveActionEnglishResults && (
                 <button type="button" onClick={() => { if (showDcWebSeries) setShowDcWebSeries(false); else void loadDcWebSeries(); }} className={showDcWebSeries ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={showDcWebSeries} title="Show DC live-action web series">📺 Web Series</button>
               )}
-              {isMarvelEnglishResults && (
-                <button type="button" onClick={() => { if (showMarvelWebSeries) setShowMarvelWebSeries(false); else void loadMarvelWebSeries(); }} className={showMarvelWebSeries ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={showMarvelWebSeries} title="Show Marvel web series">📺 Web Series</button>
+              {isMarvelEnglishResults && !showMarvelWebSeries && (
+                <>
+                  {([
+                    ['all', 'All'],
+                    ['mcu', 'MCU'],
+                    ['spider-man', 'Spider-Man'],
+                    ['x-men', 'X-Men'],
+                    ['sony', 'Sony'],
+                    ['old-marvel', 'Old Marvel'],
+                  ] as [MarvelFilmFilter, string][]).map(([filter, label]) => (
+                    <button key={filter} type="button" onClick={() => setMarvelFilmFilter(filter)} className={marvelFilmFilter === filter ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950 shadow-[0_0_14px_rgba(34,211,238,0.25)]' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={marvelFilmFilter === filter}>{label}</button>
+                  ))}
+                  <button type="button" onClick={() => { if (showMarvelWebSeries) setShowMarvelWebSeries(false); else void loadMarvelWebSeries(); }} className={showMarvelWebSeries ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={showMarvelWebSeries} title="Show Marvel web series">📺 Web Series</button>
+                </>
               )}
             </div>
           </div>
