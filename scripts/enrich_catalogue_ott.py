@@ -256,6 +256,10 @@ def main():
     # Share work between duplicate releases in the same run.
     resolution_cache = {}
     availability_cache = {}
+    # Cache completed work by normalized title + year across the entire run.
+    # Catalogue files can contain duplicate rows; reuse the first result instead
+    # of emitting duplicate FETCHED logs and sleeping for every repeated row.
+    processed_identity_cache = {}
 
     for filename, path, data in catalogues:
         changed = False
@@ -269,10 +273,23 @@ def main():
             identity = norm(title) + "|" + str(year or "")
             existing = row.get("ottAvailability")
 
+            # Reuse a result already handled earlier in this run. This is important
+            # because the source catalogues may contain repeated copies of a title.
+            cached_identity = processed_identity_cache.get(identity)
+            if cached_identity is not None:
+                cached_tmdb_id, cached_availability = cached_identity
+                if cached_tmdb_id:
+                    row["tmdbId"] = int(cached_tmdb_id)
+                row["ottAvailability"] = cached_availability
+                changed = True
+                counts["DUPLICATE_REUSED"] = counts.get("DUPLICATE_REUSED", 0) + 1
+                continue
+
             # Keep successful enrichment. Retry only entries without a successful result.
             if isinstance(existing, dict) and existing.get("status") in (
                 "streaming", "rent_buy", "no_providers"
             ):
+                processed_identity_cache[identity] = (row.get("tmdbId"), existing)
                 counts["ALREADY_ENRICHED"] = counts.get("ALREADY_ENRICHED", 0) + 1
                 continue
 
@@ -282,6 +299,7 @@ def main():
             ):
                 row["ottAvailability"] = saved["availability"]
                 row["tmdbId"] = saved["tmdbId"]
+                processed_identity_cache[identity] = (saved["tmdbId"], saved["availability"])
                 changed = True
                 counts["RESTORED_FROM_PROGRESS"] = counts.get("RESTORED_FROM_PROGRESS", 0) + 1
                 continue
@@ -347,6 +365,7 @@ def main():
 
                 row["tmdbId"] = int(tmdb_id)
                 row["ottAvailability"] = availability
+                processed_identity_cache[identity] = (int(tmdb_id), availability)
                 changed = True
                 state.setdefault("completed", {})[identity] = {
                     "tmdbId": int(tmdb_id),
