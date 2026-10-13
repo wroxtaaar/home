@@ -7786,7 +7786,24 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
         return False
 
     async def filter_cached_networks(result: dict[str, Any]) -> dict[str, Any]:
-        if not exclude_indian_broadcast_networks or not isinstance(result, dict):
+        if not isinstance(result, dict):
+            return result
+        if not exclude_indian_broadcast_networks:
+            rows = result.get("results")
+            if isinstance(rows, list):
+                filtered_by_year = []
+                for row in rows:
+                    try:
+                        air_date = str(row.get("releaseDate") or row.get("first_air_date") or "").strip()
+                        if air_date and datetime.strptime(air_date[:10], "%Y-%m-%d").date() >= datetime(2015, 1, 1).date():
+                            filtered_by_year.append(row)
+                    except (TypeError, ValueError):
+                        continue
+                updated = dict(result)
+                updated["results"] = filtered_by_year[:10]
+                updated["totalResults"] = len(filtered_by_year)
+                updated["pageSize"] = 10
+                return updated
             return result
         rows = result.get("results")
         if not isinstance(rows, list):
@@ -7807,6 +7824,12 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
                 titles = (details.get("name"), details.get("original_name"), row.get("title"), row.get("name"))
                 series_type = str(details.get("type") or row.get("seriesType") or "").casefold()
                 if series_type not in {"scripted", "miniseries"}:
+                    continue
+                air_date = str(details.get("first_air_date") or row.get("releaseDate") or row.get("first_air_date") or "").strip()
+                try:
+                    if not air_date or datetime.strptime(air_date[:10], "%Y-%m-%d").date() < datetime(2015, 1, 1).date():
+                        continue
+                except ValueError:
                     continue
                 if has_soap_genre(genres) or is_known_indian_soap(*titles):
                     continue
@@ -7857,6 +7880,7 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
             "with_type": "2|4",
             "watch_region": "IN",
             "with_watch_monetization_types": "flatrate|free|ads",
+            "first_air_date.gte": "2015-01-01",
             "first_air_date.lte": today,
             "page": page,
         })
@@ -7880,7 +7904,8 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
             continue
         air_date = str(item.get("first_air_date") or "").strip()
         try:
-            if not air_date or datetime.strptime(air_date[:10], "%Y-%m-%d").date() > datetime.now(timezone.utc).date():
+            parsed_air_date = datetime.strptime(air_date[:10], "%Y-%m-%d").date()
+            if parsed_air_date < datetime(2015, 1, 1).date() or parsed_air_date > datetime.now(timezone.utc).date():
                 continue
         except ValueError:
             continue
@@ -7940,10 +7965,14 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
         })
         seen_ids.add(tmdb_id)
 
+    # This endpoint exposes a consistent 10-card page size. TMDB itself returns
+    # 20 candidates per source page, so keep the first 10 eligible verified rows.
+    results = results[:10]
     result = {
         "catalogue": catalogue_key, "page": page,
         "totalPages": int(payload.get("total_pages") or 1),
         "totalResults": len(results),
+        "pageSize": 10,
         "provider": "TMDB + verified India OTT availability",
         "results": results,
     }
