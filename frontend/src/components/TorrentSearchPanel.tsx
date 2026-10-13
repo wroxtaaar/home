@@ -3651,7 +3651,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     className="cursor-pointer border-slate-800 transition hover:border-slate-700 hover:bg-slate-900/95"
                     onClick={() => { if (!isSearching && !movieTorrentSearchLoading) void searchMovieTorrents(movie); }}
                   >
-                    <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} aria-label={`Find ${show.title} on NexStream`} className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950 text-left cursor-pointer">
+                    <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
                       {movie.posterUrl ? (
                         <img src={lowQualityPosterUrl(movie.posterUrl)} alt={movie.title} loading="lazy" className="h-full w-full object-cover"
                           onError={event => {
@@ -3713,7 +3713,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               }
               return (
                 <MovieCatalogueCard key={String(movie.id)} className="border-slate-800 transition hover:border-cyan-500/40 hover:bg-slate-900/95">
-                <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} aria-label={`Find ${show.title} on NexStream`} className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950 text-left cursor-pointer">
+                <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
                   {movie.posterUrl ? (
                     <img
                       src={movie.posterUrl}
@@ -4231,7 +4231,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     key={group.key || (group.title + '-' + index)}
                     className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-slate-700 hover:bg-slate-900/95 flex flex-col"
                   >
-                    <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} aria-label={`Find ${show.title} on NexStream`} className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950 text-left cursor-pointer">
+                    <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
                       {compactPosterUrl ? (
                         <>
                           <img
