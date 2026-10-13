@@ -3429,6 +3429,26 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             <div className="text-[11px] text-slate-500">Select a movie to search torrent providers</div>
           </div>
 
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900 px-3 py-2">
+            <button
+              type="button"
+              disabled={isSearching || movieCatalogue.page <= 1}
+              onClick={() => void openMovieCatalogue(movieCatalogue.catalogue, movieCatalogueSearchText, movieCatalogue.page - 1)}
+              className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-semibold text-slate-300 hover:border-cyan-500 disabled:opacity-40"
+            >
+              Previous
+            </button>
+            <span className="text-xs text-slate-500">Page {movieCatalogue.page} of {movieCatalogue.totalPages.toLocaleString()}</span>
+            <button
+              type="button"
+              disabled={isSearching || movieCatalogue.page >= movieCatalogue.totalPages}
+              onClick={() => void openMovieCatalogue(movieCatalogue.catalogue, movieCatalogueSearchText, movieCatalogue.page + 1)}
+              className="rounded-lg bg-cyan-500 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-40"
+            >
+              Next
+            </button>
+          </div>
+
           <div className="flex flex-col gap-2 rounded-xl border border-slate-800 bg-slate-900/80 px-3 py-2.5">
             <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
               <span className="text-xs font-semibold text-emerald-300">OTT available now, or released at least 7 days ago</span>
