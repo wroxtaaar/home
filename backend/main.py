@@ -7746,6 +7746,32 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
         "sony tv", "sony entertainment television", "sony entertainment tv",
         "set india", "sony sab",
     }
+    # TMDB's genre 10766 is Soap. TMDB genre tagging is not complete for every
+    # Indian serial, so retain a small, exact-title safety list for known soaps.
+    # Keep names normalized and exact-match only to avoid excluding unrelated titles.
+    known_indian_soap_titles = {
+        "agniphera", "bhabiji ghar par hain", "devon ke dev mahadev",
+        "jiji maa", "radha krishn", "sirf tum", "pushpa impossible",
+        "yeh rishta kya kehlata hai", "kundali bhagya", "kumkum bhagya",
+        "anupamaa", "ghum hai kisikey pyaar mein", "imli", "udne ki aasha",
+        "taarak mehta ka ooltah chashmah", "sasural simar ka", "saath nibhaana saathiya",
+        "diya aur baati hum", "yeh hai mohabbatein", "kasautii zindagii kay",
+        "naagin", "ishqbaaaz", "shakti astitva ke ehsaas ki", "choti sarrdaarni",
+        "molkki", "pinjara khubsurti ka", "mere angne mein", "swaragini",
+        "balika vadhu", "uttaran", "pavitra rishta", "kumkum",
+    }
+
+    def _normalized_tv_title(value: Any) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
+
+    def has_soap_genre(genres: Any) -> bool:
+        return isinstance(genres, list) and any(
+            isinstance(genre, dict) and int(genre.get("id") or 0) == 10766
+            for genre in genres
+        )
+
+    def is_known_indian_soap(*titles: Any) -> bool:
+        return any(_normalized_tv_title(title) in known_indian_soap_titles for title in titles if title)
 
     def has_excluded_broadcast_network(networks: Any) -> bool:
         if not isinstance(networks, list):
@@ -7769,25 +7795,31 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            networks = row.get("networks")
-            # Older in-memory/prebuilt entries may not have network metadata.
-            # Resolve it from the canonical TMDB TV-details endpoint rather than
-            # assuming an unknown broadcaster is safe to display.
-            if not isinstance(networks, list) or not networks:
-                try:
-                    tmdb_id = int(row.get("id") or 0)
-                    if not tmdb_id:
-                        continue
-                    details = await _tmdb_get_json(f"tv/{tmdb_id}", {})
-                    networks = details.get("networks") if isinstance(details.get("networks"), list) else []
-                    row = dict(row)
-                    row["networks"] = networks
-                except Exception as exc:
-                    logger.info("Skipping cached TV item %s because broadcaster metadata could not be verified: %s", row.get("id"), type(exc).__name__)
+            try:
+                tmdb_id = int(row.get("id") or 0)
+                if not tmdb_id:
                     continue
-            # Fail closed when TMDB has no broadcaster metadata: these catalogues
-            # must not leak linear-TV entries merely because their metadata is absent.
-            if not networks or has_excluded_broadcast_network(networks):
+                # Always resolve canonical metadata for cached entries. Old cache
+                # rows predate the soap filter and cannot be trusted on their own.
+                details = await _tmdb_get_json(f"tv/{tmdb_id}", {})
+                networks = details.get("networks") if isinstance(details.get("networks"), list) else []
+                genres = details.get("genres") if isinstance(details.get("genres"), list) else []
+                titles = (details.get("name"), details.get("original_name"), row.get("title"), row.get("name"))
+                series_type = str(details.get("type") or row.get("seriesType") or "").casefold()
+                if series_type not in {"scripted", "miniseries"}:
+                    continue
+                if has_soap_genre(genres) or is_known_indian_soap(*titles):
+                    continue
+                # Fail closed when network metadata is missing: this catalogue
+                # must not leak linear-TV entries merely because metadata is absent.
+                if not networks or has_excluded_broadcast_network(networks):
+                    continue
+                row = dict(row)
+                row["networks"] = networks
+                row["genres"] = genres
+                row["seriesType"] = series_type
+            except Exception as exc:
+                logger.info("Skipping cached TV item %s because its metadata could not be verified: %s", row.get("id"), type(exc).__name__)
                 continue
             filtered.append(row)
         result = dict(result)
@@ -7865,8 +7897,14 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
             continue
 
         networks = details.get("networks") if isinstance(details.get("networks"), list) else []
-        if exclude_indian_broadcast_networks and has_excluded_broadcast_network(networks):
-            continue
+        genres = details.get("genres") if isinstance(details.get("genres"), list) else []
+        title_candidates = (details.get("name"), details.get("original_name"), item.get("name"), item.get("original_name"))
+        if exclude_indian_broadcast_networks:
+            if has_soap_genre(genres) or is_known_indian_soap(*title_candidates):
+                continue
+            # Missing network metadata is ambiguous; do not assume it is a web series.
+            if not networks or has_excluded_broadcast_network(networks):
+                continue
 
         # The listing must show actual streaming access in India; rental/buy-only
         # offers do not qualify as an OTT streaming listing.
@@ -7898,6 +7936,7 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
             "originCountry": origins,
             "seriesType": series_type,
             "networks": networks,
+            "genres": genres,
         })
         seen_ids.add(tmdb_id)
 
