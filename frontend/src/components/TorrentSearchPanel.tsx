@@ -1810,7 +1810,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     });
   };
 
-  const runSearch = async (event?: React.FormEvent, searchOverride?: string, searchMode?: 'marvel' | 'marvel-hindi' | 'dc-live-action' | 'dc-live-action-hindi' | 'dc-animated') => {
+  const runSearch = async (event?: React.FormEvent, searchOverride?: string, searchMode?: 'marvel' | 'marvel-hindi' | 'dc-live-action' | 'dc-live-action-hindi' | 'dc-animated' | 'classics') => {
     event?.preventDefault();
     setIsPresetCatalogueAction(Boolean(searchMode));
     setIsMarvelEnglishResults(searchMode === 'marvel');
@@ -1979,7 +1979,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         const labels: Record<string, string> = {
           marvel: 'Marvel English', 'marvel-hindi': 'Marvel Hindi',
           'dc-live-action': 'DC Live-Action English', 'dc-live-action-hindi': 'DC Live-Action Hindi',
-          'dc-animated': 'DC animated'
+          'dc-animated': 'DC animated',
+          classics: 'Classics'
         };
         let catalogue = searchMode === 'marvel'
           ? await api.getMarvelCatalogue(controller.signal)
@@ -3174,6 +3175,20 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
           >
             🎞️ DC Animated
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setResolutionFilter(null);
+              setSizeSort(null);
+              setTimeSort(null);
+              setReleaseYearSort(null);
+              void runSearch(undefined, 'Classics', 'classics');
+            }}
+            className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
+          >
+            🎬 Classics
           </button>
 
           {([
