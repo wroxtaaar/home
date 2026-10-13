@@ -7701,287 +7701,8 @@ _INDIAN_LINEAR_TV_NETWORKS = {
 
 
 @app.get("/api/tv/catalogue/{catalogue_key}")
-async def api_tmdb_regional_web_series_catalogue(
-    catalogue_key: str,
-    page: int = Query(1, ge=1, le=500),
-    refresh: bool = Query(False),
-):
-    """Discover OTT web series; Indian entries are Hindi-language and OTT-only."""
-    allowed = {
-        "indian-popular", "indian-trending", "indian-latest",
-        "hollywood-popular", "hollywood-trending", "hollywood-latest",
-    }
-    if catalogue_key not in allowed:
-        raise HTTPException(status_code=404, detail="Unknown TV catalogue.")
-    cache_key = (catalogue_key, page)
-    if not refresh:
-        try:
-            with REGIONAL_TV_PREBUILT_CACHE_FILE.open("r", encoding="utf-8") as handle:
-                prebuilt = json.load(handle)
-            snapshot = (prebuilt.get("catalogues") or {}).get(catalogue_key) or {}
-            for saved_page in snapshot.get("pages") or []:
-                if int(saved_page.get("page") or 0) == page:
-                    rows = saved_page.get("results") or []
-                    return {
-                        "catalogue": catalogue_key,
-                        "page": page,
-                        "totalPages": int(saved_page.get("totalPages") or len(snapshot.get("pages") or []) or 1),
-                        "totalResults": int(saved_page.get("totalResults") or snapshot.get("seriesCount") or len(rows)),
-                        "provider": "Persistent Home cache · TMDB + confirmed India OTT availability",
-                        "results": rows,
-                        "cached": True,
-                    }
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            pass
-    cached = _REGIONAL_TV_PAGE_CACHE.get(cache_key)
-    now = time.monotonic()
-    if cached and now - cached[0] < _REGIONAL_TV_PAGE_CACHE_TTL:
-        return cached[1]
-    indian = catalogue_key.startswith("indian-")
-    mode = catalogue_key.rsplit("-", 1)[-1]
-    language = "hi" if indian else "en"
-    sort_by = "first_air_date.desc" if mode == "latest" else "popularity.desc"
-    params: dict[str, Any] = {
-        "include_adult": "false",
-        "language": "en-US",
-        "page": page,
-        "sort_by": sort_by,
-        "with_original_language": language,
-        "watch_region": "IN",
-        "with_watch_monetization_types": "flatrate|free|ads",
-    }
-    # Limit Indian listings to series with confirmed streaming providers, then
-    # exclude conventional linear-TV networks so the section stays web-series focused.
-    if indian:
-        params["with_origin_country"] = "IN"
-    try:
-        payload = await _tmdb_get_json("discover/tv", params)
-    except Exception as exc:
-        logger.exception("TMDB regional web-series discovery failed for %s page %s", catalogue_key, page)
-        raise HTTPException(status_code=502, detail="Could not load the OTT web-series catalogue.") from exc
-
-    source_rows = [row for row in (payload.get("results") or []) if isinstance(row, dict) and row.get("id")]
-    semaphore = asyncio.Semaphore(5)
-
-    async def enrich(row: dict[str, Any]) -> dict[str, Any] | None:
-        try:
-            tmdb_id = int(row["id"])
-            providers = await _tv_streaming_providers(tmdb_id)
-            # Subscription, free and ad-supported services count; rent/buy alone do not.
-            stream_providers = [p for p in providers if p.get("type") in {"subscription", "free", "ads"}]
-            if not stream_providers:
-                return None
-            if indian:
-                async with semaphore:
-                    details = await _tmdb_get_json(f"tv/{tmdb_id}", {"language": "en-US"})
-                original_language = str(details.get("original_language") or row.get("original_language") or "").lower()
-                origin_countries = {str(c.get("iso_3166_1") or "").upper() for c in details.get("origin_country") or [] if isinstance(c, dict)}
-                if original_language != "hi" or (origin_countries and "IN" not in origin_countries):
-                    return None
-                networks = {re.sub(r"[^a-z0-9& ]+", "", str(n.get("name") or "").casefold()).strip() for n in details.get("networks") or [] if isinstance(n, dict)}
-                if any(network.replace(" ", "") == re.sub(r"[^a-z0-9& ]+", "", linear_name).replace(" ", "") for network in networks for linear_name in _INDIAN_LINEAR_TV_NETWORKS):
-                    return None
-            air_date = str(row.get("first_air_date") or "").strip()
-            try:
-                air_day = datetime.strptime(air_date[:10], "%Y-%m-%d").date()
-                if air_day > datetime.now(timezone.utc).date():
-                    return None
-            except ValueError:
-                return None
-            poster = str(row.get("poster_path") or "").strip()
-            backdrop = str(row.get("backdrop_path") or "").strip()
-            return {
-                "id": tmdb_id,
-                "title": str(row.get("name") or "").strip(),
-                "year": int(air_date[:4]) if len(air_date) >= 4 and air_date[:4].isdigit() else None,
-                "releaseDate": air_date,
-                "overview": str(row.get("overview") or "").strip(),
-                "posterUrl": TMDB_IMAGE_BASE + poster if poster else "",
-                "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop if backdrop else "",
-                "rating": float(row.get("vote_average") or 0),
-                "tmdbUrl": f"https://www.themoviedb.org/tv/{tmdb_id}",
-                "streamingProviders": stream_providers,
-                "providerLink": "",
-                "source": "TMDB + India OTT availability",
-                "originalLanguage": language,
-                "webSeriesOnly": True,
-            }
-        except Exception as exc:
-            logger.debug("Skipping OTT series row %s: %s", row.get("id"), type(exc).__name__)
-            return None
-
-    enriched = await asyncio.gather(*(enrich(row) for row in source_rows))
-    results = [row for row in enriched if row]
-    # Keep the page result stable and don't advertise unreleased series.
-    result = {
-        "catalogue": catalogue_key,
-        "page": page,
-        "totalPages": max(1, int(payload.get("total_pages") or 1)),
-        "totalResults": int(payload.get("total_results") or len(results)),
-        "provider": "TMDB + confirmed India OTT availability",
-        "results": results,
-    }
-    _REGIONAL_TV_PAGE_CACHE[cache_key] = (time.monotonic(), result)
-    return result
-
-
-@app.post("/api/movies/catalogue/cache/clear")
-async def api_clear_tmdb_movie_caches():
-    """Clear all TMDB catalogue, OTT and company-discovery caches for a fresh lookup."""
-    global _tmdb_cache_clear_last_at
-
-    now = time.monotonic()
-    # This endpoint is available to Home visitors, so keep a small global cooldown
-    # to prevent accidental repeated cache flushes from exhausting the TMDB quota.
-    if now - _tmdb_cache_clear_last_at < 15:
-        raise HTTPException(status_code=429, detail="TMDB cache was cleared recently. Wait a few seconds before clearing it again.")
-    _tmdb_cache_clear_last_at = now
-
-    tasks = list(_tmdb_movie_catalogue_inflight.values()) + list(_tmdb_ott_inflight.values()) + list(_tmdb_company_inflight.values())
-    for task in tasks:
-        if not task.done():
-            task.cancel()
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-    _tmdb_movie_catalogue_cache.clear()
-    _tmdb_movie_catalogue_inflight.clear()
-    _tmdb_ott_cache.clear()
-    _tmdb_ott_inflight.clear()
-    _tmdb_company_id_cache.clear()
-    _tmdb_company_inflight.clear()
-
-    removed_files: list[str] = []
-    for cache_file in (TMDB_CATALOGUE_CACHE_FILE, TMDB_OTT_CACHE_FILE):
-        try:
-            cache_file.unlink(missing_ok=True)
-            removed_files.append(cache_file.name)
-        except OSError as exc:
-            logger.exception("Could not delete TMDB cache file %s", cache_file)
-            raise HTTPException(
-                status_code=500,
-                detail="In-memory TMDB caches were cleared, but a persistent cache file could not be deleted: " + cache_file.name,
-            ) from exc
-
-    logger.info("Cleared all TMDB caches: %s", ", ".join(removed_files))
-    return {
-        "status": "cleared",
-        "cacheTypes": ["movie catalogues", "OTT availability", "company discovery"],
-        "persistentFiles": removed_files,
-        "refetchRequired": True,
-    }
-
-
-def _attach_saved_ott_enrichment(catalogue_key: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """Attach saved franchise OTT data; franchise catalogue misses must not trigger live scans."""
-    source_paths: list[Path] = []
-    if catalogue_key == "marvel":
-        source_paths = [MARVEL_CATALOGUE_PATH]
-    elif catalogue_key == "dc-live-action":
-        source_paths = [
-            _EXTRA_CATALOGUE_PATHS["dc-live-action"],
-            _EXTRA_CATALOGUE_PATHS["dc-live-action-hindi"],
-        ]
-    elif catalogue_key == "dc-animated":
-        source_paths = [_EXTRA_CATALOGUE_PATHS["dc-animated"]]
-    if not source_paths:
-        return payload
-
-    by_tmdb_id: dict[str, dict[str, Any]] = {}
-    by_title_year: dict[tuple[str, str], dict[str, Any]] = {}
-    for source_path in source_paths:
-        try:
-            saved_catalogue = json.loads(source_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
-            continue
-        rows = saved_catalogue.get("results", []) if isinstance(saved_catalogue, dict) else []
-        if not isinstance(rows, list):
-            continue
-        for row in rows:
-            if not isinstance(row, dict) or not isinstance(row.get("ottAvailability"), dict):
-                continue
-            tmdb_id = str(row.get("tmdbId") or "").strip()
-            title = str(row.get("catalogueTitle") or row.get("mediaTitle") or row.get("title") or "").strip()
-            year_value = str(row.get("year") or "")
-            if tmdb_id:
-                by_tmdb_id.setdefault(tmdb_id, row)
-            normalized = _normalize_title(re.sub(r"\s*\(?((?:19|20)\d{2})\)?\s*$", "", title))
-            if normalized:
-                by_title_year.setdefault((normalized, year_value), row)
-
-    merged = dict(payload)
-    results = []
-    for original in payload.get("results", []) if isinstance(payload.get("results"), list) else []:
-        if not isinstance(original, dict):
-            results.append(original)
-            continue
-
-        item = dict(original)
-        item_id = str(item.get("id") or "").strip()
-        saved = by_tmdb_id.get(item_id)
-        if saved is None:
-            title = str(item.get("title") or "").strip()
-            year = str(item.get("year") or (str(item.get("releaseDate") or "")[:4]))
-            normalized = _normalize_title(re.sub(r"\s*\(?((?:19|20)\d{2})\)?\s*$", "", title))
-            saved = by_title_year.get((normalized, year)) or by_title_year.get((normalized, ""))
-
-        if saved:
-            item["tmdbId"] = saved.get("tmdbId") or item.get("id")
-            item["ottAvailability"] = saved.get("ottAvailability")
-        else:
-            # These three TMDB franchise catalogues are expected to use the
-            # already-enriched local catalogue as their OTT source. Emit an
-            # explicit completed state for cache misses so the frontend does
-            # not start a redundant per-card provider scan and spin forever.
-            item["tmdbId"] = item.get("id")
-            item["ottAvailability"] = {
-                "region": "IN",
-                "status": "not_confirmed",
-                "streamingProviders": [],
-                "rentProviders": [],
-                "buyProviders": [],
-                "providerLink": "",
-                "checkedAt": "",
-                "source": "saved-catalogue-miss",
-                "providerAttribution": "",
-                "attribution": "",
-            }
-
-        results.append(item)
-
-    merged["results"] = results
-    return merged
-
-REGIONAL_TV_PREBUILT_CACHE_FILE = Path(os.getenv("REGIONAL_TV_PREBUILT_CACHE_FILE", "/app/data/regional_tv_prebuilt_cache.json"))
-_REGIONAL_TV_DISCOVERY_CACHE: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
-
-
-def _read_regional_tv_prebuilt_page(catalogue_key: str, page: int) -> dict[str, Any] | None:
-    try:
-        saved = json.loads(REGIONAL_TV_PREBUILT_CACHE_FILE.read_text(encoding="utf-8"))
-        # Ignore old snapshots that may contain non-Hindi Indian series or TV-only titles.
-        if int(saved.get("version") or 0) < 2:
-            return None
-        catalogue = (saved.get("catalogues") or {}).get(catalogue_key) or {}
-        for item in catalogue.get("pages", []):
-            if int(item.get("page") or 0) == page:
-                return {
-                    "catalogue": catalogue_key,
-                    "page": page,
-                    "totalPages": max(1, len(catalogue.get("pages") or [])),
-                    "totalResults": int(catalogue.get("seriesCount") or len(item.get("results") or [])),
-                    "provider": "TMDB · persistent prebuilt cache",
-                    "results": item.get("results") or [],
-                    "cached": True,
-                }
-    except (OSError, ValueError, TypeError):
-        return None
-    return None
-
-
-@app.get("/api/tv/catalogue/{catalogue_key}")
 async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1, ge=1, le=500)):
-    """Return released OTT series, restricted to Hindi Indian originals for Indian catalogues."""
+    """Return Hindi Indian OTT web-series, excluding non-Hindi and non-scripted TV formats."""
     configs = {
         "indian-popular": ("IN", "hi", "popularity.desc"),
         "indian-trending": ("IN", "hi", "popularity.desc"),
@@ -7992,17 +7713,16 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
     }
     if catalogue_key not in configs:
         raise HTTPException(status_code=404, detail="Unknown TV catalogue.")
-    prebuilt = _read_regional_tv_prebuilt_page(catalogue_key, page)
-    if prebuilt is not None:
-        return prebuilt
 
     country, language, sort_by = configs[catalogue_key]
     cache_key = (catalogue_key, page)
     cached = _REGIONAL_TV_DISCOVERY_CACHE.get(cache_key)
-    if cached and time.monotonic() - cached[0] < (900 if catalogue_key.endswith("-trending") else 21600):
+    cache_ttl = 900 if catalogue_key.endswith("-trending") else 21600
+    if cached and time.monotonic() - cached[0] < cache_ttl:
         return cached[1]
     if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
         raise HTTPException(status_code=503, detail="TMDB credentials are not configured.")
+
     today = datetime.now(timezone.utc).date().isoformat()
     try:
         if catalogue_key.endswith("-trending"):
@@ -8024,8 +7744,15 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
         raise
 
     results = []
+    seen_ids = set()
     for item in payload.get("results", []):
         if not isinstance(item, dict) or not item.get("id"):
+            continue
+        try:
+            tmdb_id = int(item["id"])
+        except (TypeError, ValueError):
+            continue
+        if tmdb_id in seen_ids:
             continue
         origins = item.get("origin_country") or []
         original_language = str(item.get("original_language") or "").casefold()
@@ -8038,34 +7765,38 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
         except ValueError:
             continue
 
-        tmdb_id = int(item["id"])
-        series_type = item.get("type")
-        if catalogue_key.endswith("-trending"):
-            try:
-                details = await _tmdb_get_json(f"tv/{tmdb_id}", {})
-                series_type = details.get("type") or series_type
-            except Exception:
-                continue
-            # Keep scripted/limited series, not reality, news, talk, or other TV formats.
-            if str(series_type or "").casefold() not in {"scripted", "miniseries"}:
-                continue
+        # TMDB's discover and trending feeds mix web series with broadcast formats.
+        # Check the canonical series type for every result, not only Trending.
+        try:
+            details = await _tmdb_get_json(f"tv/{tmdb_id}", {})
+        except Exception as exc:
+            logger.info("Skipping TV item %s because series type could not be verified: %s", tmdb_id, type(exc).__name__)
+            continue
+        series_type = str(details.get("type") or item.get("type") or "").casefold()
+        if series_type not in {"scripted", "miniseries"}:
+            continue
+        # The listing must show actual streaming access in India; rental/buy-only
+        # offers do not qualify as an OTT streaming listing.
         providers = await _tv_streaming_providers(tmdb_id)
-        # A series only qualifies if it is actually listed for streaming in India.
-        providers = [p for p in providers if str(p.get("type") or "").casefold() in {"subscription", "free", "ads"}]
+        providers = [
+            provider for provider in providers
+            if str(provider.get("type") or "").casefold() in {"subscription", "free", "ads"}
+        ]
         if not providers:
             continue
-        poster = str(item.get("poster_path") or "").strip()
-        backdrop = str(item.get("backdrop_path") or "").strip()
-        year_match = re.match(r"^(\d{4})", air_date)
+
+        poster = str(item.get("poster_path") or details.get("poster_path") or "").strip()
+        backdrop = str(item.get("backdrop_path") or details.get("backdrop_path") or "").strip()
+        year_match = re.match(r"^(\\d{4})", air_date)
         results.append({
             "id": tmdb_id,
-            "title": str(item.get("name") or "").strip(),
+            "title": str(item.get("name") or details.get("name") or "").strip(),
             "year": int(year_match.group(1)) if year_match else None,
             "releaseDate": air_date,
-            "overview": str(item.get("overview") or "").strip(),
+            "overview": str(item.get("overview") or details.get("overview") or "").strip(),
             "posterUrl": TMDB_IMAGE_BASE + poster if poster else "",
             "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop if backdrop else "",
-            "rating": float(item.get("vote_average") or 0),
+            "rating": float(item.get("vote_average") or details.get("vote_average") or 0),
             "tmdbUrl": f"https://www.themoviedb.org/tv/{tmdb_id}",
             "streamingProviders": providers,
             "providerLink": "",
@@ -8074,11 +7805,13 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
             "originCountry": origins,
             "seriesType": series_type,
         })
+        seen_ids.add(tmdb_id)
+
     result = {
         "catalogue": catalogue_key, "page": page,
         "totalPages": int(payload.get("total_pages") or 1),
         "totalResults": len(results),
-        "provider": "TMDB + India OTT availability",
+        "provider": "TMDB + verified India OTT availability",
         "results": results,
     }
     _REGIONAL_TV_DISCOVERY_CACHE[cache_key] = (time.monotonic(), result)
