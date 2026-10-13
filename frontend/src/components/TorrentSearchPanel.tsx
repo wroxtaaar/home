@@ -3727,42 +3727,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           ))}
                         </div>
                       ) : ott?.status === 'loading' ? <p className="mt-auto text-[10px] text-slate-500">Checking streaming services…</p> : null}
-                      <div className="mt-auto grid grid-cols-2 gap-1.5 pt-1">
-                        <button
-                          type="button"
-                          disabled={isSearching || movieTorrentSearchLoading}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void searchMovieTorrents(movie);
-                          }}
-                          className="min-w-0 rounded-lg bg-cyan-500 px-2 py-2 text-[11px] font-bold text-slate-950 hover:bg-cyan-400 disabled:cursor-wait disabled:opacity-60"
-                        >
-                          {movieTorrentSearchLoading && movieTorrentSearchTitle === movie.title ? 'Searching…' : 'Prepare'}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={!Number(movie.tmdbId || movie.id) || nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id)}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            const tmdbId = Number(movie.tmdbId || movie.id);
-                            if (!Number.isInteger(tmdbId) || tmdbId <= 0) {
-                              setNexStreamError('This catalogue card has no valid TMDB ID for NexStream.');
-                              return;
-                            }
-                            void playWithNexStream({
-                              id: tmdbId,
-                              title: movie.title,
-                              date: movie.releaseDate || (movie.year ? String(movie.year) : ''),
-                              overview: movie.overview || '',
-                              poster: movie.posterUrl || null,
-                              type: 'movie',
-                            });
-                          }}
-                          className="min-w-0 rounded-lg border border-violet-400/50 bg-violet-500/15 px-2 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-50"
-                        >
-                          {nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id) ? 'Resolving…' : 'NexStream'}
-                        </button>
-                      </div>
                     </div>
                   </MovieCatalogueCard>
                 );
