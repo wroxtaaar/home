@@ -7985,65 +7985,70 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
             })
             source_total_pages = max(1, min(int(payload.get("total_pages") or 1), 500))
 
-            for item in payload.get("results", []):
+            # Resolve independent series concurrently. The old sequential loop
+            # made page 4+ wait for two remote requests per candidate in series.
+            tv_lookup_semaphore = asyncio.Semaphore(8)
+
+            async def verify_tv_item(item: Any) -> dict[str, Any] | None:
                 if not isinstance(item, dict) or not item.get("id"):
-                    continue
+                    return None
                 try:
                     tmdb_id = int(item["id"])
                 except (TypeError, ValueError):
-                    continue
-                if tmdb_id in seen_ids:
-                    continue
+                    return None
                 origins = item.get("origin_country") or []
                 original_language = str(item.get("original_language") or "").casefold()
                 if country not in origins or original_language != language:
-                    continue
+                    return None
                 air_date = str(item.get("first_air_date") or "").strip()
                 try:
                     parsed_air_date = datetime.strptime(air_date[:10], "%Y-%m-%d").date()
                     if parsed_air_date < datetime(2015, 1, 1).date() or parsed_air_date > datetime.now(timezone.utc).date():
-                        continue
+                        return None
                 except ValueError:
-                    continue
+                    return None
 
-                # Verify the canonical series type, soap/broadcaster exclusions,
-                # and Indian OTT availability before counting a result toward 18.
-                try:
-                    details = await _tmdb_get_json(f"tv/{tmdb_id}", {})
-                except Exception as exc:
-                    logger.info("Skipping TV item %s because series type could not be verified: %s", tmdb_id, type(exc).__name__)
-                    continue
-                series_type = str(details.get("type") or item.get("type") or "").casefold()
-                if series_type not in {"scripted", "miniseries"}:
-                    continue
+                async with tv_lookup_semaphore:
+                    try:
+                        details = await _tmdb_get_json(f"tv/{tmdb_id}", {})
+                    except Exception as exc:
+                        logger.info("Skipping TV item %s because series type could not be verified: %s", tmdb_id, type(exc).__name__)
+                        return None
+                    series_type = str(details.get("type") or item.get("type") or "").casefold()
+                    if series_type not in {"scripted", "miniseries"}:
+                        return None
 
-                networks = details.get("networks") if isinstance(details.get("networks"), list) else []
-                genres = details.get("genres") if isinstance(details.get("genres"), list) else []
-                title_candidates = (details.get("name"), details.get("original_name"), item.get("name"), item.get("original_name"))
-                title_keys = {
-                    re.sub(r"[^a-z0-9]+", "", str(title or "").casefold())
-                    for title in title_candidates
-                }
-                if catalogue_key.startswith("indian-") and title_keys.intersection({"gangaa", "dearishq", "mastram"}):
-                    continue
-                if exclude_indian_broadcast_networks:
-                    if has_soap_genre(genres) or is_known_indian_soap(*title_candidates):
-                        continue
-                    if not networks or has_excluded_broadcast_network(networks):
-                        continue
+                    networks = details.get("networks") if isinstance(details.get("networks"), list) else []
+                    genres = details.get("genres") if isinstance(details.get("genres"), list) else []
+                    title_candidates = (details.get("name"), details.get("original_name"), item.get("name"), item.get("original_name"))
+                    title_keys = {
+                        re.sub(r"[^a-z0-9]+", "", str(title or "").casefold())
+                        for title in title_candidates
+                    }
+                    if catalogue_key.startswith("indian-") and title_keys.intersection({"gangaa", "dearishq", "mastram"}):
+                        return None
+                    if exclude_indian_broadcast_networks:
+                        if has_soap_genre(genres) or is_known_indian_soap(*title_candidates):
+                            return None
+                        if not networks or has_excluded_broadcast_network(networks):
+                            return None
 
-                providers = await _tv_streaming_providers(tmdb_id)
-                providers = [
-                    provider for provider in providers
-                    if str(provider.get("type") or "").casefold() in {"subscription", "free", "ads"}
-                ]
-                if not providers:
-                    continue
+                    try:
+                        providers = await _tv_streaming_providers(tmdb_id)
+                    except Exception as exc:
+                        logger.info("Skipping TV item %s because OTT availability could not be verified: %s", tmdb_id, type(exc).__name__)
+                        return None
+                    providers = [
+                        provider for provider in providers
+                        if str(provider.get("type") or "").casefold() in {"subscription", "free", "ads"}
+                    ]
+                    if not providers:
+                        return None
 
                 poster = str(item.get("poster_path") or details.get("poster_path") or "").strip()
                 backdrop = str(item.get("backdrop_path") or details.get("backdrop_path") or "").strip()
-                year_match = re.match(r"^(\d{4})", air_date)
-                eligible_rows.append({
+                year_match = re.match(r"^(\\d{4})", air_date)
+                return {
                     "id": tmdb_id,
                     "title": str(item.get("name") or details.get("name") or "").strip(),
                     "year": int(year_match.group(1)) if year_match else None,
@@ -8061,8 +8066,16 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
                     "seriesType": series_type,
                     "networks": networks,
                     "genres": genres,
-                })
-                seen_ids.add(tmdb_id)
+                }
+
+            verified_rows = await asyncio.gather(
+                *(verify_tv_item(item) for item in payload.get("results", [])),
+                return_exceptions=True,
+            )
+            for row in verified_rows:
+                if isinstance(row, dict) and row.get("id") not in seen_ids:
+                    eligible_rows.append(row)
+                    seen_ids.add(int(row["id"]))
             source_page += 1
     except HTTPException:
         raise
