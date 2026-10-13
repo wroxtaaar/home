@@ -7997,6 +7997,12 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
                 networks = details.get("networks") if isinstance(details.get("networks"), list) else []
                 genres = details.get("genres") if isinstance(details.get("genres"), list) else []
                 title_candidates = (details.get("name"), details.get("original_name"), item.get("name"), item.get("original_name"))
+                title_keys = {
+                    re.sub(r"[^a-z0-9]+", "", str(title or "").casefold())
+                    for title in title_candidates
+                }
+                if catalogue_key.startswith("indian-") and title_keys.intersection({"gangaa", "dearishq"}):
+                    continue
                 if exclude_indian_broadcast_networks:
                     if has_soap_genre(genres) or is_known_indian_soap(*title_candidates):
                         continue
@@ -8184,6 +8190,12 @@ async def _fetch_paginated_regional_movie_catalogue(catalogue_key: str, page: in
         filtered_payload = await _apply_movie_release_eligibility(source_payload, enabled=True)
         for row in filtered_payload.get("results") or []:
             if not isinstance(row, dict):
+                continue
+            title_key = re.sub(r"[^a-z0-9]+", "", str(row.get("title") or row.get("name") or "").casefold())
+            # Filter known catalogue contamination before pagination, allowing
+            # later source candidates to backfill the page to 18 cards.
+            excluded_regional_titles = {"tantesiska", "kunwaridulhan"}
+            if catalogue_key == "popular-bollywood" and title_key in excluded_regional_titles:
                 continue
             identity = str(row.get("id") or row.get("tmdbId") or row.get("title") or "").strip()
             if not identity or identity in seen_ids:
