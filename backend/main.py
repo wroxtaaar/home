@@ -194,7 +194,7 @@ TMDB_SEARCH_METADATA_CACHE_FILE = Path(os.getenv("TMDB_SEARCH_METADATA_CACHE_FIL
 TMDB_SEARCH_METADATA_QUERY_TTL_SECONDS = max(3600, int(os.getenv("TMDB_SEARCH_METADATA_QUERY_TTL_SECONDS", str(30 * 24 * 60 * 60))))
 IMDB_RATING_CACHE_FILE = Path(os.getenv("IMDB_RATING_CACHE_FILE", "/app/data/imdb_rating_cache.json"))
 IMDB_RATING_CACHE_TTL_SECONDS = max(86400, int(os.getenv("IMDB_RATING_CACHE_TTL_SECONDS", str(30 * 24 * 60 * 60))))
-IMDB_RATING_LOOKUP_VERSION = 2
+IMDB_RATING_LOOKUP_VERSION = 3
 _OMDB_HTTP_CLIENT: httpx.AsyncClient | None = None
 _OMDB_REQUEST_SEMAPHORE = asyncio.Semaphore(4)
 _OMDB_RATE_LIMITED_UNTIL = 0.0
@@ -6775,7 +6775,9 @@ async def api_tmdb_catalogue_synopsis_enrichment_status():
 
 
 def _tmdb_ott_disk_key(cache_key: tuple[int, str]) -> str:
-    return str(cache_key[0]) + ":" + cache_key[1]
+    # Version the persistent key so deployments can deliberately refresh stale
+    # provider listings without deleting the historical cache file by hand.
+    return "v2:" + str(cache_key[0]) + ":" + cache_key[1]
 
 
 def _read_tmdb_ott_persistent_cache(cache_key: tuple[int, str]) -> tuple[float, dict[str, Any]] | None:
