@@ -2472,6 +2472,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const selectMovieTorrentGroup = (group: TorrentQualityGroup) => {
     setSelectedMovieTorrentQualityByGroup({ [group.key]: torrentResultKey(group.variants[0]) });
     setMovieTorrentPreviewGroup(group);
+    setMovieTorrentPreviewCatalogueId(null);
     setMovieTorrentPickerGroups(null);
     setMovieTorrentSearchError('');
     startPosterBackgroundSearch(group.variants);
