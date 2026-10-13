@@ -4643,7 +4643,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           <Film className="h-8 w-8" />
                         </div>
                       )}
-                      {displayImdbRating?.imdbRating != null && displayImdbRating.imdbRating > 0 && (
+                      {displayImdbRating?.imdbRating != null && displayImdbRating.imdbRating > 0 ? (
                         <a
                           href={displayImdbRating.imdbUrl || (displayImdbRating.imdbId ? 'https://www.imdb.com/title/' + displayImdbRating.imdbId + '/' : '#')}
                           target="_blank"
@@ -4653,7 +4653,11 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                         >
                           ⭐ {displayImdbRating.imdbRating.toFixed(1)}/10
                         </a>
-                      )}
+                      ) : mediaMetadata?.rating != null && mediaMetadata.rating > 0 ? (
+                        <span title="TMDB rating" className="absolute left-2 top-2 rounded-md border border-amber-300/40 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow">
+                          ⭐ TMDB {mediaMetadata.rating.toFixed(1)}
+                        </span>
+                      ) : null}
                     </div>
 
                     <div className="flex flex-1 flex-col gap-2 p-2.5">
