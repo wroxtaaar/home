@@ -4002,6 +4002,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                         <div className="mt-0.5 text-xs text-slate-500">{show.year || 'Year unknown'} · OTT Web Series</div></div>
                       {show.overview && <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{show.overview}</p>}
                       {show.streamingProviders?.length ? <div className="flex flex-wrap gap-1">{show.streamingProviders.filter(provider => ['subscription','free','ads'].includes(provider.type)).map(provider => <span key={provider.name} className="rounded bg-slate-800 px-1.5 py-1 text-[10px] text-cyan-200">{provider.name}</span>)}</div> : null}
+                      <div className="mt-auto grid grid-cols-1 gap-2">
+                        <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} className="w-full rounded-lg border border-violet-400/50 bg-violet-500/15 px-2 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25">Find on NexStream</button>
+                      </div>
                     </div>
                   </article>
                 ))}
