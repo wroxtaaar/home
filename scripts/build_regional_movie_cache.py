@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Build a persistent cache for six regional movie catalogues and their torrent searches.
+"""Build persistent regional movie and web-series catalogues plus movie torrent searches.
 
-Each catalogue is filled independently to at least 50 movies when the API can
-supply them. Titles may intentionally occur in multiple catalogues. A failed
-page does not abort the other catalogues, and a previously good snapshot is
-retained when a refresh fails.
+Each movie/series catalogue is filled independently to 50 unique eligible entries
+when the API can supply them. Titles may intentionally occur in multiple catalogues.
+A failed page does not abort other catalogues, and prior good snapshots are retained.
 """
 import json, os, re, time, urllib.parse, urllib.request
 from datetime import datetime, timezone
