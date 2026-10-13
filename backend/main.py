@@ -8047,7 +8047,7 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
 
                 poster = str(item.get("poster_path") or details.get("poster_path") or "").strip()
                 backdrop = str(item.get("backdrop_path") or details.get("backdrop_path") or "").strip()
-                year_match = re.match(r"^(\\d{4})", air_date)
+                year_match = re.match(r"^(\d{4})", air_date)
                 return {
                     "id": tmdb_id,
                     "title": str(item.get("name") or details.get("name") or "").strip(),
