@@ -1034,6 +1034,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     ottQueuePumpRef.current();
   };
 
+  // Keep every state value used by this memo initialized before the first render.
   type MarvelFilmFilter = 'all' | 'mcu' | 'spider-man' | 'x-men' | 'sony' | 'old-marvel';
   const [marvelFilmFilter, setMarvelFilmFilter] = useState<MarvelFilmFilter>('all');
   const [isMarvelEnglishResults, setIsMarvelEnglishResults] = useState(false);
