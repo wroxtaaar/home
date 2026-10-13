@@ -7816,11 +7816,35 @@ def _attach_saved_ott_enrichment(catalogue_key: str, payload: dict[str, Any]) ->
     merged["results"] = results
     return merged
 
+REGIONAL_TV_PREBUILT_CACHE_FILE = Path(os.getenv("REGIONAL_TV_PREBUILT_CACHE_FILE", "/app/data/regional_tv_prebuilt_cache.json"))
 _REGIONAL_TV_DISCOVERY_CACHE: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
+
+
+def _read_regional_tv_prebuilt_page(catalogue_key: str, page: int) -> dict[str, Any] | None:
+    try:
+        saved = json.loads(REGIONAL_TV_PREBUILT_CACHE_FILE.read_text(encoding="utf-8"))
+        catalogue = (saved.get("catalogues") or {}).get(catalogue_key) or {}
+        for item in catalogue.get("pages", []):
+            if int(item.get("page") or 0) == page:
+                return {
+                    "catalogue": catalogue_key,
+                    "page": page,
+                    "totalPages": int(item.get("totalPages") or len(catalogue.get("pages") or []) or 1),
+                    "totalResults": int(item.get("totalResults") or catalogue.get("totalResults") or len(item.get("results") or [])),
+                    "provider": "TMDB · persistent prebuilt cache",
+                    "results": item.get("results") or [],
+                    "cached": True,
+                }
+    except (OSError, ValueError, TypeError):
+        return None
+    return None
 
 
 @app.get("/api/tv/catalogue/{catalogue_key}")
 async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1, ge=1, le=500)):
+    prebuilt = _read_regional_tv_prebuilt_page(catalogue_key, page)
+    if prebuilt is not None:
+        return prebuilt
     """Discover released Indian or Hollywood TV series by popularity, trend, or premiere date."""
     configs = {
         "indian-popular": ("IN", "popularity.desc"),
