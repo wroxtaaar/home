@@ -1072,10 +1072,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           case 'spider-man': return isSpiderMan(title);
           case 'x-men': return isXMen(title);
           case 'sony': return isSony(title);
-          case 'old-marvel': return new Set([
-            'the punisher', 'the trial of the incredible hulk', 'the incredible hulk returns',
-            'howard the duck', 'captain america ii: death too soon', 'dr. strange'
-          ]).has(title) || /^(?:the punisher|the trial of the incredible hulk|the incredible hulk returns|howard the duck|captain america ii: death too soon|dr\.? strange)(?:\\s|$)/i.test(title);
+          case 'old-marvel': {
+            const normalized = title.replace(/[^a-z0-9]+/g, ' ').trim();
+            return /^(?:the punisher|the trial of the incredible hulk|the incredible hulk returns|howard the duck|captain america ii death too soon|dr strange)(?:\\s|$)/i.test(normalized);
+          }
           default: return true;
         }
       });
@@ -2914,7 +2914,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           case 'x-men': return isXMen(title);
           case 'sony': return isSony(title);
           case 'old-marvel': {
-            return /^(?:the punisher|the trial of the incredible hulk|the incredible hulk returns|howard the duck|captain america ii death too soon|dr strange)(?:\\s|$)/i.test(title);
+            const normalized = title.replace(/[^a-z0-9]+/g, ' ').trim();
+            return /^(?:the punisher|the trial of the incredible hulk|the incredible hulk returns|howard the duck|captain america ii death too soon|dr strange)(?:\\s|$)/i.test(normalized);
           }
           default: return true;
         }
@@ -4251,6 +4252,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               <button type="button" onClick={() => { setSizeSort(null); setTimeSort(null); setReleaseYearSort(current => current === null ? 'newest' : current === 'newest' ? 'oldest' : null); }} className={releaseYearSort ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950 shadow-[0_0_14px_rgba(34,211,238,0.45)]' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={Boolean(releaseYearSort)} title="Sort movie cards by release year: newest first, oldest first, then default ranking">{releaseYearSort === 'newest' ? 'Year ↓ Newest' : releaseYearSort === 'oldest' ? 'Year ↑ Oldest' : 'Year'}</button>
               {isDcLiveActionEnglishResults && (
                 <button type="button" onClick={() => { if (showDcWebSeries) setShowDcWebSeries(false); else void loadDcWebSeries(); }} className={showDcWebSeries ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={showDcWebSeries} title="Show DC live-action web series">📺 Web Series</button>
+              )}
+              {isMarvelEnglishResults && showMarvelWebSeries && (
+                <button type="button" onClick={() => setShowMarvelWebSeries(false)} className="shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950" title="Return to Marvel movies">🎬 Movies</button>
               )}
               {isMarvelEnglishResults && !showMarvelWebSeries && (
                 <>
