@@ -409,11 +409,13 @@ export const api = {
     releasedOnly = true,
     signal?: AbortSignal,
     maxSizeGb = 5,
+    basic = false,
   ): Promise<MovieCataloguePage> {
     const params = new URLSearchParams({
       page: String(Math.min(Math.max(page, 1), 500)),
       released_only: String(releasedOnly),
     });
+    if (basic) params.set('basic', 'true');
     if (key === 'bollywood-library') params.set('max_size_gb', String(Math.min(5, Math.max(1, maxSizeGb))));
     const res = await fetch(API_BASE + '/api/movies/catalogue/' + encodeURIComponent(key) + '?' + params.toString(), {
       signal,
