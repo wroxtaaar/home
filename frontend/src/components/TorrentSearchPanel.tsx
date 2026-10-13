@@ -3486,9 +3486,14 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           )}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
             {visibleMovieCatalogueItems.map(movie => {
-              const previewGroup = movieTorrentPreviewCatalogueId === String(movie.id)
-                ? movieTorrentPreviewGroup
-                : null;
+              // Keep the selected torrent preview attached to the movie that
+              // initiated the search. Some catalogue sources normalize IDs
+              // differently between the card and torrent-picker state, so use
+              // the exact searched title/year as a safe fallback.
+              const previewMatchesMovie =
+                movieTorrentPreviewCatalogueId === String(movie.id) ||
+                movieTorrentSearchTitle === movie.title + (movie.year ? ' ' + movie.year : '');
+              const previewGroup = previewMatchesMovie ? movieTorrentPreviewGroup : null;
               if (previewGroup) {
                 const selectedKey = selectedMovieTorrentQualityByGroup[previewGroup.key] || torrentResultKey(previewGroup.variants[0]);
                 const result = previewGroup.variants.find(variant => torrentResultKey(variant) === selectedKey) || previewGroup.variants[0];
