@@ -7816,6 +7816,82 @@ def _attach_saved_ott_enrichment(catalogue_key: str, payload: dict[str, Any]) ->
     merged["results"] = results
     return merged
 
+_REGIONAL_TV_DISCOVERY_CACHE: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
+
+
+@app.get("/api/tv/catalogue/{catalogue_key}")
+async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1, ge=1, le=500)):
+    """Discover released Indian or Hollywood TV series by popularity, trend, or premiere date."""
+    configs = {
+        "indian-popular": ("IN", "popularity.desc"),
+        "indian-trending": ("IN", "popularity.desc"),
+        "indian-latest": ("IN", "first_air_date.desc"),
+        "hollywood-popular": ("US", "popularity.desc"),
+        "hollywood-trending": ("US", "popularity.desc"),
+        "hollywood-latest": ("US", "first_air_date.desc"),
+    }
+    if catalogue_key not in configs:
+        raise HTTPException(status_code=404, detail="Unknown TV catalogue.")
+    country, sort_by = configs[catalogue_key]
+    if catalogue_key.endswith("-trending"):
+        sort_by = "popularity.desc"
+    cache_key = (catalogue_key, page)
+    cached = _REGIONAL_TV_DISCOVERY_CACHE.get(cache_key)
+    if cached and time.monotonic() - cached[0] < (900 if catalogue_key.endswith("-trending") else 21600):
+        return cached[1]
+    if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
+        raise HTTPException(status_code=503, detail="TMDB credentials are not configured.")
+    today = datetime.now(timezone.utc).date().isoformat()
+    try:
+        payload = await _tmdb_get_json("discover/tv", {
+            "include_adult": "false",
+            "language": "en-US",
+            "sort_by": sort_by,
+            "with_origin_country": country,
+            "first_air_date.lte": today,
+            "page": page,
+        })
+    except HTTPException:
+        raise
+    results = []
+    for item in payload.get("results", []):
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        air_date = str(item.get("first_air_date") or "").strip()
+        try:
+            if not air_date or datetime.strptime(air_date[:10], "%Y-%m-%d").date() > datetime.now(timezone.utc).date():
+                continue
+        except ValueError:
+            continue
+        tmdb_id = int(item["id"])
+        poster = str(item.get("poster_path") or "").strip()
+        backdrop = str(item.get("backdrop_path") or "").strip()
+        year_match = re.match(r"^(\\d{4})", air_date)
+        results.append({
+            "id": tmdb_id,
+            "title": str(item.get("name") or "").strip(),
+            "year": int(year_match.group(1)) if year_match else None,
+            "releaseDate": air_date,
+            "overview": str(item.get("overview") or "").strip(),
+            "posterUrl": TMDB_IMAGE_BASE + poster if poster else "",
+            "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop if backdrop else "",
+            "rating": float(item.get("vote_average") or 0),
+            "tmdbUrl": f"https://www.themoviedb.org/tv/{tmdb_id}",
+            "streamingProviders": await _tv_streaming_providers(tmdb_id),
+            "providerLink": "",
+            "source": "TMDB",
+        })
+    result = {
+        "catalogue": catalogue_key, "page": page,
+        "totalPages": int(payload.get("total_pages") or 1),
+        "totalResults": int(payload.get("total_results") or len(results)),
+        "provider": "TMDB",
+        "results": results,
+    }
+    _REGIONAL_TV_DISCOVERY_CACHE[cache_key] = (time.monotonic(), result)
+    return result
+
+
 async def _apply_movie_release_eligibility(payload: dict[str, Any], *, enabled: bool = True) -> dict[str, Any]:
     """Exclude unreleased films; OTT availability wins, otherwise wait seven full days after release."""
     if not enabled or not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
