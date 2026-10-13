@@ -3567,10 +3567,23 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             event.currentTarget.parentElement?.querySelector('[data-catalogue-torrent-poster-placeholder="true"]')?.classList.add('hidden');
                           }}
                           onError={(event) => {
+                            const image = event.currentTarget;
+                            const originalUrl = String(movie.posterUrl || previewGroup.posterResult?.posterUrl || '').trim();
+                            // The normal catalogue card retries the unmodified poster
+                            // when the resized URL fails. Do the same for the Prepare card
+                            // so it displays the exact same artwork.
+                            if (originalUrl && image.dataset.originalFallbackTried !== 'true') {
+                              const fallbackUrl = originalUrl.startsWith('/') ? API_BASE + originalUrl : originalUrl;
+                              image.dataset.originalFallbackTried = 'true';
+                              if (image.src !== new URL(fallbackUrl, window.location.origin).toString()) {
+                                image.src = fallbackUrl;
+                                return;
+                              }
+                            }
                             const key = posterKeyFor(previewGroup.posterResult);
                             posterLoadedRef.current.delete(key);
-                            event.currentTarget.style.display = 'none';
-                            event.currentTarget.parentElement?.querySelector('[data-catalogue-torrent-poster-placeholder="true"]')?.classList.remove('hidden');
+                            image.style.display = 'none';
+                            image.parentElement?.querySelector('[data-catalogue-torrent-poster-placeholder="true"]')?.classList.remove('hidden');
                             if (!posterBackgroundQueuedRef.current.has(key) && !posterOverrides[key]) {
                               posterBackgroundQueuedRef.current.add(key);
                               posterBackgroundQueueRef.current.unshift({ key, result: previewGroup.posterResult });
