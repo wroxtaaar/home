@@ -3562,7 +3562,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   ''
                 );
                 return (
-                  {/* Remount the selected card so it cannot inherit hidden image styles. */}
                   <MovieCatalogueCard
                     key={'movie-prepare-' + String(movie.id)}
                     className="relative border-slate-800 transition hover:border-slate-700"
