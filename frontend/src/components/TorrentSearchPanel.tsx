@@ -3651,7 +3651,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     className="cursor-pointer border-slate-800 transition hover:border-slate-700 hover:bg-slate-900/95"
                     onClick={() => { if (!isSearching && !movieTorrentSearchLoading) void searchMovieTorrents(movie); }}
                   >
-                    <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
+                    <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} aria-label={`Find ${show.title} on NexStream`} className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950 text-left cursor-pointer">
                       {movie.posterUrl ? (
                         <img src={lowQualityPosterUrl(movie.posterUrl)} alt={movie.title} loading="lazy" className="h-full w-full object-cover"
                           onError={event => {
@@ -3713,7 +3713,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               }
               return (
                 <MovieCatalogueCard key={String(movie.id)} className="border-slate-800 transition hover:border-cyan-500/40 hover:bg-slate-900/95">
-                <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
+                <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} aria-label={`Find ${show.title} on NexStream`} className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950 text-left cursor-pointer">
                   {movie.posterUrl ? (
                     <img
                       src={movie.posterUrl}
@@ -4117,10 +4117,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   <div className="grid grid-cols-2 items-stretch gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
                     {marvelWebSeriesCatalogue.results.map(show => (
                       <article key={String(show.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-cyan-500/40 hover:bg-slate-900/95 flex flex-col">
-                        <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
+                        <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} aria-label={`Find ${show.title} on NexStream`} className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950 text-left cursor-pointer">
                           {show.posterUrl ? <img src={lowQualityPosterUrl(show.posterUrl)} alt={show.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="absolute inset-0 flex items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
                           {show.rating ? <span className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow">⭐ {show.rating.toFixed(1)}/10</span> : null}
-                        </div>
+                        </button>
                         <div className="flex flex-1 flex-col gap-2 p-2.5">
                           <div className="min-h-[3.2rem]">
                             <h3 className="line-clamp-2 text-sm font-bold leading-snug text-slate-100">{show.title}</h3>
@@ -4152,7 +4152,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             )}
                           </div>
                           <div className="mt-auto grid grid-cols-1 gap-2">
-                            <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} className="w-full rounded-lg border border-violet-400/50 bg-violet-500/15 px-2 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25">Find on NexStream</button>
+                            
                             <a href={show.tmdbUrl || ('https://www.themoviedb.org/tv/' + show.id)} target="_blank" rel="noreferrer" className="block rounded-lg border border-slate-700 px-2 py-2 text-center text-[11px] font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">View on TMDB</a>
                           </div>
                         </div>
@@ -4231,7 +4231,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     key={group.key || (group.title + '-' + index)}
                     className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-slate-700 hover:bg-slate-900/95 flex flex-col"
                   >
-                    <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
+                    <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} aria-label={`Find ${show.title} on NexStream`} className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950 text-left cursor-pointer">
                       {compactPosterUrl ? (
                         <>
                           <img
