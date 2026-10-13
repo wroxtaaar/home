@@ -4733,7 +4733,7 @@ async def resolve_search_magnet(body: dict[str, Any]):
 # One-time Marvel catalogue. Results are shared by every visitor to this Home
 # instance and never expire; the deployment mounts /app/data on persistent VPS
 # storage so a container replacement does not force another provider crawl.
-MARVEL_CATALOGUE_VERSION = 7
+MARVEL_CATALOGUE_VERSION = 8
 MARVEL_CATALOGUE_PATH = Path(os.getenv("MARVEL_CATALOGUE_PATH", "/app/data/marvel_catalogue.json"))
 # Curated live-action theatrical Marvel films across studios (Marvel Studios, Fox,
 # Sony, Universal, etc.). Excludes TV films, specials, documentaries, and animated
@@ -4818,9 +4818,40 @@ MARVEL_MOVIE_SEARCHES: tuple[tuple[str, int], ...] = (
     ("Blade", 1998),
     ("Howard the Duck", 1986),
 
-    # Explicitly retained animated exception: the two released Spider-Verse films.
+    # Animated Spider-Verse films and other Marvel animated features.
     ("Spider-Man: Across the Spider-Verse", 2023),
     ("Spider-Man: Into the Spider-Verse", 2018),
+    ("Spider-Man: The Venom Saga", 2005),
+    ("Ultimate Avengers: The Movie", 2006),
+    ("Ultimate Avengers 2", 2006),
+    ("The Invincible Iron Man", 2007),
+    ("Doctor Strange: The Sorcerer Supreme", 2007),
+    ("Next Avengers: Heroes of Tomorrow", 2008),
+    ("Hulk Vs.", 2009),
+    ("Planet Hulk", 2010),
+    ("Thor: Tales of Asgard", 2011),
+    ("Iron Man: Rise of Technovore", 2013),
+    ("Avengers Confidential: Black Widow & Punisher", 2014),
+    ("Marvel Super Hero Adventures: Frost Fight!", 2015),
+    ("Captain America", 1944),
+    ("The Amazing Spider-Man", 1977),
+    ("Spider-Man Strikes Back", 1978),
+    ("Spider-Man: The Dragon's Challenge", 1981),
+    ("Dr. Strange", 1978),
+    ("Captain America", 1990),
+    ("Captain America II: Death Too Soon", 1979),
+    ("The Incredible Hulk Returns", 1988),
+    ("The Trial of the Incredible Hulk", 1989),
+    ("The Death of the Incredible Hulk", 1990),
+    ("Man-Thing", 2005),
+    ("Generation X", 1996),
+    ("Nick Fury: Agent of S.H.I.E.L.D.", 1998),
+    ("Blade", 1998),
+    ("Howard the Duck", 1986),
+    ("The Punisher", 1989),
+    ("The Punisher", 2004),
+    ("Dr. Strange", 1978),
+    ("The Fantastic Four", 1994),
 )
 _MARVEL_CATALOGUE_CONCURRENCY = 2
 _marvel_catalogue_task: asyncio.Task | None = None
