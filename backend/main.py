@@ -7716,6 +7716,7 @@ def _read_regional_tv_prebuilt_page(catalogue_key: str, page: int) -> dict[str, 
 
 _REGIONAL_TV_PAGE_CACHE: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
 _REGIONAL_TV_PAGE_CACHE_TTL = 6 * 60 * 60
+_REGIONAL_TV_DISCOVERY_CACHE = _REGIONAL_TV_PAGE_CACHE
 REGIONAL_TV_PREBUILT_CACHE_FILE = Path(os.getenv("REGIONAL_TV_PREBUILT_CACHE_FILE", "/app/data/regional_tv_prebuilt_cache.json"))
 _INDIAN_LINEAR_TV_NETWORKS = {
     "starplus", "colors", "zee tv", "zeetv", "sony entertainment television",
@@ -7977,7 +7978,7 @@ async def api_tmdb_movie_catalogue(
             stale_response["stale"] = True
             stale_response["cacheWarning"] = "TMDB is temporarily unavailable; showing the last cached catalogue."
             _schedule_tmdb_catalogue_synopsis_enrichment(stale_response)
-            return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, stale_response), enabled=released_only)
+            return await _apply_movie_release_eligibility(stale_response, enabled=released_only)
         raise HTTPException(status_code=502, detail="Could not load the movie catalogue from TMDB.") from exc
     finally:
         if task.done() and _tmdb_movie_catalogue_inflight.get(cache_key) is task:
