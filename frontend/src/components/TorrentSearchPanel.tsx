@@ -1072,8 +1072,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           case 'spider-man': return isSpiderMan(title);
           case 'x-men': return isXMen(title);
           case 'sony': return isSony(title);
-          case 'old-marvel': return year > 0 && year < 2000 || oldMarvelTitles.has(title) ||
-            /death too soon|dr\.? strange|man-thing|incredible hulk returns|trial of the incredible hulk|rise of technovore/i.test(title);
+          case 'old-marvel': return new Set([
+            'the punisher', 'the trial of the incredible hulk', 'the incredible hulk returns',
+            'howard the duck', 'captain america ii: death too soon', 'dr. strange'
+          ]).has(title) || /^(?:the punisher|the trial of the incredible hulk|the incredible hulk returns|howard the duck|captain america ii: death too soon|dr\.? strange)(?:\\s|$)/i.test(title);
           default: return true;
         }
       });
@@ -2912,8 +2914,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           case 'x-men': return isXMen(title);
           case 'sony': return isSony(title);
           case 'old-marvel': {
-            const year = torrentGroupReleaseYear(group);
-            return (year > 0 && year < 2000) || /blade|captain america ii|death too soon|dr strange|man thing|incredible hulk returns|trial of the incredible hulk|howard the duck|rise of technovore|fantastic four/i.test(title);
+            return /^(?:the punisher|the trial of the incredible hulk|the incredible hulk returns|howard the duck|captain america ii death too soon|dr strange)(?:\\s|$)/i.test(title);
           }
           default: return true;
         }
@@ -4352,7 +4353,16 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 <>
                   <div className="px-1 text-xs text-slate-400">{dcWebSeriesCatalogue.totalResults.toLocaleString()} DC web series · Page {dcWebSeriesCatalogue.page} of {dcWebSeriesCatalogue.totalPages.toLocaleString()} · Metadata by TMDB</div>
                   <div className="grid grid-cols-2 items-stretch gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
-                    {[...dcWebSeriesCatalogue.results].sort((a, b) => (Number(b.year) || 0) - (Number(a.year) || 0) || a.title.localeCompare(b.title)).map(show => (
+                    {[...dcWebSeriesCatalogue.results].sort((a, b) => {
+                      const yearA = Number(a.year) || 0;
+                      const yearB = Number(b.year) || 0;
+                      if (yearA !== yearB) {
+                        if (!yearA) return 1;
+                        if (!yearB) return -1;
+                        return releaseYearSort === 'oldest' ? yearA - yearB : yearB - yearA;
+                      }
+                      return a.title.localeCompare(b.title);
+                    }).map(show => (
                       <article key={String(show.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-cyan-500/40 hover:bg-slate-900/95 flex flex-col">
                         <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} aria-label={`Find ${show.title} on NexStream`} className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950 text-left cursor-pointer">
                           {show.posterUrl ? <img src={lowQualityPosterUrl(show.posterUrl)} alt={show.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="absolute inset-0 flex items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
