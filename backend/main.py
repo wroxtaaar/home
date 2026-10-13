@@ -8084,24 +8084,48 @@ async def _apply_movie_release_eligibility(payload: dict[str, Any], *, enabled: 
         if movie_id > 0:
             saved = row.get("ottAvailability")
             if isinstance(saved, dict):
+                checked_at = str(saved.get("checkedAt") or "").strip()
+                try:
+                    checked_dt = datetime.fromisoformat(checked_at.replace("Z", "+00:00"))
+                    if checked_dt.tzinfo is None:
+                        checked_dt = checked_dt.replace(tzinfo=timezone.utc)
+                    saved_is_fresh = 0 <= (datetime.now(timezone.utc) - checked_dt).total_seconds() < TMDB_OTT_CACHE_SECONDS
+                except (TypeError, ValueError):
+                    saved_is_fresh = False
                 status = str(saved.get("status") or "").casefold()
                 providers = saved.get("streamingProviders") or []
-                if status == "streaming" and providers:
+                if saved_is_fresh and status == "streaming" and providers:
                     return True
             async with semaphore:
                 try:
                     ott_key = (movie_id, "IN")
+                    now_monotonic = time.monotonic()
                     cached_ott = _tmdb_ott_cache.get(ott_key)
-                    availability = cached_ott[1] if cached_ott else None
+                    availability = None
+                    stale_availability = cached_ott[1] if cached_ott else None
+                    if cached_ott and now_monotonic - cached_ott[0] < TMDB_OTT_CACHE_SECONDS:
+                        availability = cached_ott[1]
                     if availability is None:
                         persistent_ott = _read_tmdb_ott_persistent_cache(ott_key)
                         if persistent_ott:
-                            availability = persistent_ott[1]
-                            _tmdb_ott_cache[ott_key] = (time.monotonic(), availability)
+                            saved_at, persistent_payload = persistent_ott
+                            if 0 <= time.time() - saved_at < TMDB_OTT_CACHE_SECONDS:
+                                availability = persistent_payload
+                                _tmdb_ott_cache[ott_key] = (time.monotonic(), availability)
+                            elif stale_availability is None:
+                                stale_availability = persistent_payload
                     if availability is None:
-                        availability = await asyncio.wait_for(_tmdb_fetch_movie_ott_availability(movie_id, "IN"), timeout=12)
-                        _tmdb_ott_cache[ott_key] = (time.monotonic(), availability)
-                        _write_tmdb_ott_persistent_cache(ott_key, availability)
+                        try:
+                            availability = await asyncio.wait_for(
+                                _tmdb_fetch_movie_ott_availability(movie_id, "IN"), timeout=12
+                            )
+                        except Exception:
+                            if stale_availability is None:
+                                raise
+                            availability = stale_availability
+                        else:
+                            _tmdb_ott_cache[ott_key] = (time.monotonic(), availability)
+                            _write_tmdb_ott_persistent_cache(ott_key, availability)
                     status = str(availability.get("status") or "").casefold() if isinstance(availability, dict) else ""
                     providers = availability.get("streamingProviders") or [] if isinstance(availability, dict) else []
                     if status == "streaming" and providers:
@@ -8324,17 +8348,20 @@ async def api_tmdb_movie_ott_availability(
 
     cache_key = (movie_id, region)
     cached = _tmdb_ott_cache.get(cache_key)
-    if cached and not force:
+    stale_payload = cached[1] if cached else None
+    if cached and not force and time.monotonic() - cached[0] < TMDB_OTT_CACHE_SECONDS:
         return cached[1]
 
     persistent = None if force else _read_tmdb_ott_persistent_cache(cache_key)
     if persistent:
-        _saved_at, persistent_payload = persistent
-        _tmdb_ott_cache[cache_key] = (time.monotonic(), persistent_payload)
-        return persistent_payload
+        saved_at, persistent_payload = persistent
+        if 0 <= time.time() - saved_at < TMDB_OTT_CACHE_SECONDS:
+            _tmdb_ott_cache[cache_key] = (time.monotonic(), persistent_payload)
+            return persistent_payload
+        if stale_payload is None:
+            stale_payload = persistent_payload
 
     # force=true bypasses both caches for a fresh provider lookup.
-    stale_payload = None
     task = _tmdb_ott_inflight.get(cache_key)
     owns_inflight_task = False
     if force:
