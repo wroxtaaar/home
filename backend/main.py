@@ -8084,6 +8084,70 @@ async def _apply_movie_release_eligibility(payload: dict[str, Any], *, enabled: 
     return result
 
 
+async def _fetch_paginated_regional_movie_catalogue(catalogue_key: str, page: int) -> dict[str, Any]:
+    """Build stable 18-item display pages from eligible regional movie candidates."""
+    page_size = 18
+    wanted = page * page_size + 1
+    max_source_pages = min(30, max(6, page * 4 + 6))
+    source_cache_prefix = catalogue_key + "|released-v4"
+    seen_ids: set[str] = set()
+    eligible_rows: list[dict[str, Any]] = []
+    source_total_pages = max_source_pages
+    exhausted = True
+
+    for source_page in range(1, max_source_pages + 1):
+        cache_key = (source_cache_prefix, source_page)
+        cached = _tmdb_movie_catalogue_cache.get(cache_key)
+        source_payload = cached[1] if cached else None
+        if source_payload is None:
+            persistent = _read_tmdb_persistent_cache(cache_key)
+            if persistent:
+                source_payload = persistent[1]
+                _tmdb_movie_catalogue_cache[cache_key] = (time.monotonic(), source_payload)
+        if source_payload is None:
+            source_payload = await _tmdb_fetch_movie_catalogue(catalogue_key, source_page, True)
+            _tmdb_movie_catalogue_cache[cache_key] = (time.monotonic(), source_payload)
+            _write_tmdb_persistent_cache(cache_key, source_payload)
+        source_total_pages = min(500, max(1, int(source_payload.get("totalPages") or source_page)))
+        filtered_payload = await _apply_movie_release_eligibility(source_payload, enabled=True)
+        for row in filtered_payload.get("results") or []:
+            if not isinstance(row, dict):
+                continue
+            identity = str(row.get("id") or row.get("tmdbId") or row.get("title") or "").strip()
+            if not identity or identity in seen_ids:
+                continue
+            seen_ids.add(identity)
+            eligible_rows.append(row)
+        if len(eligible_rows) >= wanted:
+            exhausted = source_page >= source_total_pages
+            break
+        if source_page >= source_total_pages:
+            exhausted = True
+            break
+        exhausted = False
+
+    start = (page - 1) * page_size
+    page_rows = eligible_rows[start:start + page_size]
+    if exhausted:
+        total_pages = max(1, (len(eligible_rows) + page_size - 1) // page_size)
+    else:
+        # Progressive pagination: the next display page is available, and its
+        # request will scan further source pages if the user continues.
+        total_pages = max(page + 1, (len(eligible_rows) + page_size - 1) // page_size)
+    return {
+        "catalogue": catalogue_key,
+        "releasedOnly": True,
+        "provider": "TMDB + verified India OTT availability",
+        "page": page,
+        "totalPages": total_pages,
+        "totalResults": len(eligible_rows) if exhausted else max(len(eligible_rows), (page + 1) * page_size),
+        "pageSize": page_size,
+        "results": page_rows,
+        "releaseEligibility": "streaming-in-india-or-seven-days",
+        "attribution": "This product uses the TMDB API but is not endorsed or certified by TMDB.",
+    }
+
+
 @app.get("/api/movies/catalogue/{catalogue_key}")
 async def api_tmdb_movie_catalogue(
     catalogue_key: str,
@@ -8098,6 +8162,26 @@ async def api_tmdb_movie_catalogue(
     }
     if catalogue_key not in allowed:
         raise HTTPException(status_code=404, detail="Unknown movie catalogue.")
+
+    if released_only and catalogue_key in {
+        "popular-bollywood", "trending-bollywood", "latest-bollywood",
+        "popular-hollywood", "trending-hollywood", "latest-hollywood",
+    }:
+        # Final eligible display pages have their own durable cache namespace;
+        # source-page caches remain separate and are reused while assembling them.
+        eligible_cache_key = (catalogue_key + "|eligible-v1", page)
+        eligible_cached = _tmdb_movie_catalogue_cache.get(eligible_cache_key)
+        if eligible_cached:
+            return eligible_cached[1]
+        eligible_persistent = _read_tmdb_persistent_cache(eligible_cache_key)
+        if eligible_persistent:
+            payload = eligible_persistent[1]
+            _tmdb_movie_catalogue_cache[eligible_cache_key] = (time.monotonic(), payload)
+            return payload
+        payload = await _fetch_paginated_regional_movie_catalogue(catalogue_key, page)
+        _tmdb_movie_catalogue_cache[eligible_cache_key] = (time.monotonic(), payload)
+        _write_tmdb_persistent_cache(eligible_cache_key, payload)
+        return payload
 
     # Keep released-only and include-upcoming responses in separate cache slots.
     cache_key = (catalogue_key + ("|released-v4" if released_only else "|upcoming-v3"), page)
