@@ -2339,7 +2339,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             const title = normalizeGroupTitle(group.title.replace(/\\s*\\((?:19|20)\\d{2}\\)\\s*$/, ''));
             let value = title === expectedTitle ? 100 : title.includes(expectedTitle) ? 20 : 0;
             if (expectedYear && torrentGroupReleaseYear(group) === Number(expectedYear)) value += 25;
-            if (/\\b(?:making of|behind the scenes|soundtrack|interview|trailer)\\b/i.test(group.title)) value -= 100;
+            if (/\b(?:making of|behind the scenes|soundtrack|interview|trailer)\b/i.test(group.title)) value -= 100;
             return value;
           };
           return score(b) - score(a);
@@ -2486,7 +2486,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           const title = normalizeGroupTitle(group.title.replace(/\\s*\\((?:19|20)\\d{2}\\)\\s*$/, ''));
           let score = title === expectedTitle ? 100 : title.includes(expectedTitle) ? 20 : 0;
           if (expectedYear && torrentGroupReleaseYear(group) === Number(expectedYear)) score += 25;
-          if (/\\b(?:making of|behind the scenes|soundtrack|interview|trailer)\\b/i.test(group.title)) score -= 100;
+          if (/\b(?:making of|behind the scenes|soundtrack|interview|trailer)\b/i.test(group.title)) score -= 100;
           return score;
         };
         const group = [...catalogueGroups].sort((a, b) => groupScore(b) - groupScore(a))[0];
