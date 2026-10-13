@@ -7714,6 +7714,35 @@ def _read_regional_tv_prebuilt_page(catalogue_key: str, page: int) -> dict[str, 
     return None
 
 
+def _save_regional_tv_prebuilt_pages(catalogue_key: str, rows: list[dict[str, Any]]) -> None:
+    """Store three 18-item pages in the persistent VPS TV catalogue."""
+    try:
+        REGIONAL_TV_PREBUILT_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"catalogues": {}}
+        if REGIONAL_TV_PREBUILT_CACHE_FILE.exists():
+            try:
+                existing = json.loads(REGIONAL_TV_PREBUILT_CACHE_FILE.read_text(encoding="utf-8"))
+                if isinstance(existing, dict):
+                    payload = existing
+            except Exception:
+                logger.warning("Regional TV cache unreadable; rebuilding its document")
+        catalogues = payload.setdefault("catalogues", {})
+        if not isinstance(catalogues, dict):
+            catalogues = {}
+            payload["catalogues"] = catalogues
+        pages = [{"page": n + 1, "results": rows[n * 18:(n + 1) * 18]} for n in range(3)]
+        catalogues[catalogue_key] = {
+            "totalResults": len(rows[:54]),
+            "seriesCount": len(rows[:54]),
+            "pages": pages,
+        }
+        temporary = REGIONAL_TV_PREBUILT_CACHE_FILE.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(REGIONAL_TV_PREBUILT_CACHE_FILE)
+    except Exception as exc:
+        logger.warning("Could not save regional TV catalogue %s: %s", catalogue_key, exc)
+
+
 _REGIONAL_TV_PAGE_CACHE: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
 _REGIONAL_TV_PAGE_CACHE_TTL = 6 * 60 * 60
 _REGIONAL_TV_DISCOVERY_CACHE = _REGIONAL_TV_PAGE_CACHE
