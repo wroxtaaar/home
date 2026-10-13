@@ -3542,7 +3542,12 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 const isPreparing = preparingTorrentKey === torrentKey;
                 const preparedFiles = preparedForResult(result);
                 const primaryFile = preparedFiles.find(file => /\.(mkv|mp4|m4v|webm|mov|avi|m3u8|ts|mp3|wav|flac|aac|ogg|m4a)$/i.test(file.name)) || preparedFiles[0];
-                const posterUrl = posterUrlFor(previewGroup.posterResult);
+                // Keep the catalogue poster as the source of truth for the
+                // inline Prepare card; torrent-result poster metadata is often absent
+                // or delayed and must not replace the movie's known poster.
+                const posterUrl = lowQualityPosterUrl(
+                  movie.posterUrl || posterUrlFor(previewGroup.posterResult) || previewGroup.posterResult?.posterUrl || ''
+                );
                 return (
                   <MovieCatalogueCard
                     key={String(movie.id)}
