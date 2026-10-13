@@ -8027,7 +8027,7 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
 
 
 async def _apply_movie_release_eligibility(payload: dict[str, Any], *, enabled: bool = True) -> dict[str, Any]:
-    """Show films with confirmed Indian OTT streaming now; otherwise wait seven full days after release."""
+    """Show films streaming on Indian OTT, or otherwise only after one month."""
     if not enabled or not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
         return payload
     today = datetime.now(timezone.utc).date()
@@ -8035,16 +8035,8 @@ async def _apply_movie_release_eligibility(payload: dict[str, Any], *, enabled: 
     semaphore = asyncio.Semaphore(4)
 
     async def eligible(row: dict[str, Any]) -> bool:
-        # Release confirmation is mandatory in every case: never let a provider
-        # metadata mismatch make an upcoming film visible.
-        raw_date = str(row.get("releaseDate") or row.get("release_date") or "").strip()
-        try:
-            release_date = datetime.strptime(raw_date[:10], "%Y-%m-%d").date()
-        except (TypeError, ValueError):
-            return False
-        if release_date > today:
-            return False
-
+        # Verified subscription/free/ad-supported OTT availability always qualifies.
+        # Release date is checked only when no OTT streaming listing is available.
         try:
             movie_id = int(row.get("tmdbId") or row.get("id") or 0)
         except (TypeError, ValueError):
@@ -8053,8 +8045,6 @@ async def _apply_movie_release_eligibility(payload: dict[str, Any], *, enabled: 
             saved = row.get("ottAvailability")
             if isinstance(saved, dict):
                 status = str(saved.get("status") or "").casefold()
-                # Only subscription/free/ad-supported streaming counts as OTT availability.
-                # Rent/buy listings alone do not bypass the seven-day theatrical wait.
                 providers = saved.get("streamingProviders") or []
                 if status == "streaming" and providers:
                     return True
@@ -8080,15 +8070,20 @@ async def _apply_movie_release_eligibility(payload: dict[str, Any], *, enabled: 
                 except Exception as exc:
                     logger.info("OTT eligibility lookup failed for movie %s: %s", movie_id, type(exc).__name__)
 
-        # No subscription/free/ad-supported OTT listing: wait a full seven days.
-        return (today - release_date).days >= 7
+        # Without OTT streaming, require a valid release date at least 30 days ago.
+        raw_date = str(row.get("releaseDate") or row.get("release_date") or "").strip()
+        try:
+            release_date = datetime.strptime(raw_date[:10], "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            return False
+        return release_date <= today and (today - release_date).days >= 30
 
     flags = await asyncio.gather(*(eligible(row) for row in rows))
     filtered = [row for row, keep in zip(rows, flags) if keep]
     result = dict(payload)
     result["results"] = filtered
     result["totalResults"] = len(filtered)
-    result["releaseEligibility"] = "streaming-in-india-or-seven-days"
+    result["releaseEligibility"] = "streaming-in-india-or-30-days"
     return result
 
 
@@ -8101,7 +8096,7 @@ async def _fetch_paginated_regional_movie_catalogue(catalogue_key: str, page: in
     # most candidates. Scan up to 30 weekly-trending pages to fill each
     # 18-card regional page without borrowing popularity-ranked Discover rows.
     max_source_pages = 30 if is_trending else min(30, max(6, page * 4 + 6))
-    source_cache_prefix = catalogue_key + ("|trending-v2" if is_trending else "|released-v4")
+    source_cache_prefix = catalogue_key + ("|trending-v3" if is_trending else "|released-v5")
     seen_ids: set[str] = set()
     eligible_rows: list[dict[str, Any]] = []
     source_total_pages = max_source_pages
@@ -8187,7 +8182,7 @@ async def api_tmdb_movie_catalogue(
         # Final eligible display pages have their own durable cache namespace;
         # source-page caches remain separate and are reused while assembling them.
         is_trending = catalogue_key.startswith("trending-")
-        eligible_cache_key = (catalogue_key + ("|eligible-trending-v2" if is_trending else "|eligible-v1"), page)
+        eligible_cache_key = (catalogue_key + ("|eligible-trending-v3" if is_trending else "|eligible-v1"), page)
         eligible_cached = _tmdb_movie_catalogue_cache.get(eligible_cache_key)
         if eligible_cached and (
             not is_trending or time.monotonic() - eligible_cached[0] < 900
@@ -8210,7 +8205,7 @@ async def api_tmdb_movie_catalogue(
     # Keep released-only and include-upcoming responses in separate cache slots.
     is_trending_catalogue = catalogue_key.startswith("trending-")
     cache_key = (catalogue_key + (
-        ("|trending-v2" if is_trending_catalogue else "|released-v4")
+        ("|trending-v3" if is_trending_catalogue else "|released-v5")
         if released_only else "|upcoming-v3"
     ), page)
     now = time.monotonic()
