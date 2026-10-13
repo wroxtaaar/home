@@ -7690,6 +7690,30 @@ async def api_tmdb_dc_live_action_tv_catalogue(page: int = Query(1, ge=1, le=500
 
 
 
+def _read_regional_tv_prebuilt_page(catalogue_key: str, page: int) -> dict[str, Any] | None:
+    """Read one page from the persistent TV catalogue built by scripts/build_regional_movie_cache.py."""
+    try:
+        if not REGIONAL_TV_PREBUILT_CACHE_FILE.exists():
+            return None
+        payload = json.loads(REGIONAL_TV_PREBUILT_CACHE_FILE.read_text(encoding="utf-8"))
+        catalogue = (payload.get("catalogues") or {}).get(catalogue_key) or {}
+        pages = catalogue.get("pages") or []
+        for entry in pages:
+            if int(entry.get("page") or 0) == page:
+                return {
+                    "catalogue": catalogue_key,
+                    "page": page,
+                    "totalPages": max(1, len(pages)),
+                    "totalResults": int(catalogue.get("totalResults") or catalogue.get("seriesCount") or 0),
+                    "provider": "Persistent TMDB + verified India OTT availability",
+                    "results": entry.get("results") or [],
+                    "prebuilt": True,
+                }
+    except Exception as exc:
+        logger.warning("Could not read regional TV prebuilt cache for %s page %s: %s", catalogue_key, page, exc)
+    return None
+
+
 _REGIONAL_TV_PAGE_CACHE: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
 _REGIONAL_TV_PAGE_CACHE_TTL = 6 * 60 * 60
 REGIONAL_TV_PREBUILT_CACHE_FILE = Path(os.getenv("REGIONAL_TV_PREBUILT_CACHE_FILE", "/app/data/regional_tv_prebuilt_cache.json"))
@@ -7909,7 +7933,7 @@ async def api_tmdb_movie_catalogue(
     cached = _tmdb_movie_catalogue_cache.get(cache_key)
     if cached and now - cached[0] < cache_ttl:
         _schedule_tmdb_catalogue_synopsis_enrichment(cached[1])
-        return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, cached[1]), enabled=released_only)
+        return await _apply_movie_release_eligibility(cached[1], enabled=released_only)
 
     # A disk cache survives container restarts, unlike the in-memory TTL cache.
     persistent = _read_tmdb_persistent_cache(cache_key)
@@ -7922,7 +7946,7 @@ async def api_tmdb_movie_catalogue(
                 persistent_payload,
             )
             _schedule_tmdb_catalogue_synopsis_enrichment(persistent_payload)
-            return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, persistent_payload), enabled=released_only)
+            return await _apply_movie_release_eligibility(persistent_payload, enabled=released_only)
 
     task = _tmdb_movie_catalogue_inflight.get(cache_key)
     if task is None or task.done():
@@ -7933,7 +7957,7 @@ async def api_tmdb_movie_catalogue(
         _tmdb_movie_catalogue_cache[cache_key] = (time.monotonic(), payload)
         _write_tmdb_persistent_cache(cache_key, payload)
         _schedule_tmdb_catalogue_synopsis_enrichment(payload)
-        return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, payload), enabled=released_only)
+        return await _apply_movie_release_eligibility(payload, enabled=released_only)
     except HTTPException as exc:
         # Prefer a stale response over an empty screen when TMDB has an outage.
         stale_payload = cached[1] if cached else (persistent[1] if persistent else None)
@@ -7943,7 +7967,7 @@ async def api_tmdb_movie_catalogue(
             stale_response["cacheWarning"] = exc.detail
             logger.warning("Serving stale TMDB catalogue %s page %s after upstream failure", catalogue_key, page)
             _schedule_tmdb_catalogue_synopsis_enrichment(stale_response)
-            return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, stale_response), enabled=released_only)
+            return await _apply_movie_release_eligibility(stale_response, enabled=released_only)
         raise
     except Exception as exc:
         logger.exception("TMDB movie catalogue failed for %s page %s", catalogue_key, page)
