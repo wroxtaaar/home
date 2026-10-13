@@ -469,7 +469,8 @@ function normalizeOttProviderName(name: string): string {
 function displayOttProviderName(name: string): string {
   const key = normalizeOttProviderName(name);
   const preferredLabels: Record<string, string> = {
-    'amazon prime video': 'Prime Video',
+    'amazon prime video': 'Amazon Prime',
+    'amazon mx player': 'MX Player',
     netflix: 'Netflix',
     sonyliv: 'SonyLIV',
     hotstar: 'Hotstar',
