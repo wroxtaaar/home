@@ -8107,7 +8107,11 @@ async def _fetch_paginated_regional_movie_catalogue(catalogue_key: str, page: in
     for source_page in range(1, max_source_pages + 1):
         cache_key = (source_cache_prefix, source_page)
         cached = _tmdb_movie_catalogue_cache.get(cache_key)
-        source_payload = cached[1] if cached else None
+        source_payload = cached[1] if cached and (
+            not is_trending or time.monotonic() - cached[0] < 900
+        ) else None
+        if cached and source_payload is None:
+            _tmdb_movie_catalogue_cache.pop(cache_key, None)
         if source_payload is None and not is_trending:
             persistent = _read_tmdb_persistent_cache(cache_key)
             if persistent:
