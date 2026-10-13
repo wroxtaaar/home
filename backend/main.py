@@ -7816,6 +7816,54 @@ def _attach_saved_ott_enrichment(catalogue_key: str, payload: dict[str, Any]) ->
     merged["results"] = results
     return merged
 
+async def _apply_movie_release_eligibility(payload: dict[str, Any], *, enabled: bool = True) -> dict[str, Any]:
+    """Exclude unreleased films; OTT availability wins, otherwise wait seven full days after release."""
+    if not enabled or not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+        return payload
+    today = datetime.now(timezone.utc).date()
+    rows = [row for row in payload.get("results", []) if isinstance(row, dict)]
+    semaphore = asyncio.Semaphore(4)
+
+    async def eligible(row: dict[str, Any]) -> bool:
+        raw_date = str(row.get("releaseDate") or row.get("release_date") or "").strip()
+        try:
+            release_date = datetime.strptime(raw_date[:10], "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            return False
+        if release_date > today:
+            return False
+        try:
+            movie_id = int(row.get("tmdbId") or row.get("id") or 0)
+        except (TypeError, ValueError):
+            movie_id = 0
+        if movie_id > 0:
+            saved = row.get("ottAvailability")
+            if isinstance(saved, dict):
+                status = str(saved.get("status") or "").casefold()
+                providers = saved.get("streamingProviders") or []
+                if status in {"streaming", "streaming_info_found"} or providers:
+                    return True
+            async with semaphore:
+                try:
+                    availability = await asyncio.wait_for(_tmdb_fetch_movie_ott_availability(movie_id, "IN"), timeout=12)
+                    status = str(availability.get("status") or "").casefold() if isinstance(availability, dict) else ""
+                    providers = availability.get("streamingProviders") or [] if isinstance(availability, dict) else []
+                    if status in {"streaming", "streaming_info_found"} or providers:
+                        row["ottAvailability"] = availability
+                        return True
+                except Exception as exc:
+                    logger.info("OTT eligibility lookup failed for movie %s: %s", movie_id, type(exc).__name__)
+        return (today - release_date).days >= 7
+
+    flags = await asyncio.gather(*(eligible(row) for row in rows))
+    filtered = [row for row, keep in zip(rows, flags) if keep]
+    result = dict(payload)
+    result["results"] = filtered
+    result["totalResults"] = len(filtered)
+    result["releaseEligibility"] = "ott-or-seven-days"
+    return result
+
+
 @app.get("/api/movies/catalogue/{catalogue_key}")
 async def api_tmdb_movie_catalogue(
     catalogue_key: str,
@@ -7838,7 +7886,7 @@ async def api_tmdb_movie_catalogue(
     cached = _tmdb_movie_catalogue_cache.get(cache_key)
     if cached and now - cached[0] < cache_ttl:
         _schedule_tmdb_catalogue_synopsis_enrichment(cached[1])
-        return _attach_saved_ott_enrichment(catalogue_key, cached[1])
+        return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, cached[1]), enabled=released_only)
 
     # A disk cache survives container restarts, unlike the in-memory TTL cache.
     persistent = _read_tmdb_persistent_cache(cache_key)
@@ -7851,7 +7899,7 @@ async def api_tmdb_movie_catalogue(
                 persistent_payload,
             )
             _schedule_tmdb_catalogue_synopsis_enrichment(persistent_payload)
-            return _attach_saved_ott_enrichment(catalogue_key, persistent_payload)
+            return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, persistent_payload), enabled=released_only)
 
     task = _tmdb_movie_catalogue_inflight.get(cache_key)
     if task is None or task.done():
@@ -7862,7 +7910,7 @@ async def api_tmdb_movie_catalogue(
         _tmdb_movie_catalogue_cache[cache_key] = (time.monotonic(), payload)
         _write_tmdb_persistent_cache(cache_key, payload)
         _schedule_tmdb_catalogue_synopsis_enrichment(payload)
-        return _attach_saved_ott_enrichment(catalogue_key, payload)
+        return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, payload), enabled=released_only)
     except HTTPException as exc:
         # Prefer a stale response over an empty screen when TMDB has an outage.
         stale_payload = cached[1] if cached else (persistent[1] if persistent else None)
@@ -7872,7 +7920,7 @@ async def api_tmdb_movie_catalogue(
             stale_response["cacheWarning"] = exc.detail
             logger.warning("Serving stale TMDB catalogue %s page %s after upstream failure", catalogue_key, page)
             _schedule_tmdb_catalogue_synopsis_enrichment(stale_response)
-            return _attach_saved_ott_enrichment(catalogue_key, stale_response)
+            return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, stale_response), enabled=released_only)
         raise
     except Exception as exc:
         logger.exception("TMDB movie catalogue failed for %s page %s", catalogue_key, page)
