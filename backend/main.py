@@ -4797,7 +4797,7 @@ MARVEL_MOVIE_SEARCHES: tuple[tuple[str, int], ...] = (
     ("X-Men: First Class", 2011),
     ("X-Men Origins: Wolverine", 2009),
     ("Punisher: War Zone", 2008),
-    ("The Incredible Hulk", 2008),
+    ("Venom: Let There Be Carnage", 2021),
     ("Fantastic Four: Rise of the Silver Surfer", 2007),
     ("Spider-Man 3", 2007),
     ("Ghost Rider", 2007),
