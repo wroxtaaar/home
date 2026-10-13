@@ -1034,11 +1034,13 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     ottQueuePumpRef.current();
   };
 
-  // Keep every state value used by this memo initialized before the first render.
+  // Initialize state used by visibleMovieCatalogueItems before evaluating its memo dependencies.
   type MarvelFilmFilter = 'all' | 'mcu' | 'spider-man' | 'x-men' | 'sony' | 'old-marvel';
   const [marvelFilmFilter, setMarvelFilmFilter] = useState<MarvelFilmFilter>('all');
   const [isMarvelEnglishResults, setIsMarvelEnglishResults] = useState(false);
   const [showMarvelWebSeries, setShowMarvelWebSeries] = useState(false);
+  const [releaseYearSort, setReleaseYearSort] = useState<'newest' | 'oldest' | null>(null);
+  const [isDcLiveActionEnglishResults, setIsDcLiveActionEnglishResults] = useState(false);
 
   const visibleMovieCatalogueItems = useMemo(() => {
     let movies = movieCatalogue?.results || [];
@@ -1108,8 +1110,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [resolutionFilter, setResolutionFilter] = useState<'720p' | '1080p' | null>(null);
   const [sizeSort, setSizeSort] = useState<'asc' | 'desc' | null>(null);
   const [timeSort, setTimeSort] = useState<'desc' | 'asc' | null>(null);
-  const [releaseYearSort, setReleaseYearSort] = useState<'newest' | 'oldest' | null>(null);
-  const [isDcLiveActionEnglishResults, setIsDcLiveActionEnglishResults] = useState(false);
   const [showDcWebSeries, setShowDcWebSeries] = useState(false);
   const [dcWebSeriesCatalogue, setDcWebSeriesCatalogue] = useState<TvCataloguePage | null>(null);
   const [dcWebSeriesLoading, setDcWebSeriesLoading] = useState(false);
