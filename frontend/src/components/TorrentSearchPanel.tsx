@@ -3686,7 +3686,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       <div className="font-mono text-[10px] sm:text-[11px] text-slate-300">
                         {formatBytes(Number(result.size) || 0)}
                       </div>
-                      <div className="grid grid-cols-2 gap-2">
+                      <div className="flex min-w-0 items-center gap-1.5">
                         <button
                           type="button"
                           disabled={!Number(movie.tmdbId || movie.id) || nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id)}
@@ -3705,7 +3705,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               type: 'movie',
                             });
                           }}
-                          className="min-w-0 rounded-lg border border-violet-400/50 bg-violet-500/15 px-2 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-50"
+                          className="min-w-0 flex-1 whitespace-nowrap rounded-lg border border-violet-400/50 bg-violet-500/15 px-1.5 py-1.5 text-[10px] leading-4 font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-50"
                         >
                           {nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id) ? 'Resolving…' : 'Direct Stream'}
                         </button>
@@ -3718,7 +3718,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               finally { setPlayingTorrentKey(current => current === torrentKey ? null : current); }
                             }}
                             disabled={playingTorrentKey === torrentKey}
-                            className="min-w-0 rounded-lg bg-emerald-400 px-2 py-2 text-xs font-bold text-slate-950 disabled:opacity-60"
+                            className="shrink-0 whitespace-nowrap rounded-lg bg-emerald-400 px-2 py-1.5 text-[11px] leading-4 font-bold text-slate-950 disabled:opacity-60"
                           >
                             {playingTorrentKey === torrentKey ? 'Opening…' : 'Play'}
                           </button>
@@ -3727,7 +3727,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             type="button"
                             onClick={() => void prepareMovieTorrent(result)}
                             disabled={!source || isPreparing}
-                            className="min-w-0 rounded-lg bg-cyan-500 px-2 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-50"
+                            className="shrink-0 whitespace-nowrap rounded-lg bg-cyan-500 px-3 py-1.5 text-[11px] leading-4 font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-50"
                           >
                             {isPreparing ? 'Preparing…' : 'Prepare'}
                           </button>
