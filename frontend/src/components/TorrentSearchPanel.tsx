@@ -802,6 +802,17 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     bollywood: 'popular',
     hollywood: 'popular',
   });
+  type RegionalTvGroup = 'indian' | 'hollywood';
+  type RegionalTvMode = 'popular' | 'trending' | 'latest';
+  const [openRegionalTvMenu, setOpenRegionalTvMenu] = useState<RegionalTvGroup | null>(null);
+  const [regionalTvModes, setRegionalTvModes] = useState<Record<RegionalTvGroup, RegionalTvMode>>({
+    indian: 'popular',
+    hollywood: 'popular',
+  });
+  const [regionalWebSeriesCatalogue, setRegionalWebSeriesCatalogue] = useState<TvCataloguePage | null>(null);
+  const [regionalWebSeriesLoading, setRegionalWebSeriesLoading] = useState(false);
+  const [regionalWebSeriesError, setRegionalWebSeriesError] = useState('');
+
 
   useEffect(() => {
     if (!openCachedLanguageMenu) return;
@@ -842,6 +853,29 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       document.removeEventListener('keydown', handleEscape);
     };
   }, [openRegionalCatalogueMenu]);
+
+  const openRegionalTvCatalogue = async (group: RegionalTvGroup, mode: RegionalTvMode) => {
+    const key = group + '-' + mode;
+    setRegionalTvModes(previous => ({ ...previous, [group]: mode }));
+    setOpenRegionalTvMenu(null);
+    setShowMarvelWebSeries(false);
+    setShowDcWebSeries(false);
+    setRegionalWebSeriesCatalogue(null);
+    setRegionalWebSeriesError('');
+    setRegionalWebSeriesLoading(true);
+    setMovieCatalogue(null);
+    setResults([]);
+    setSearched(false);
+    setIsSearching(false);
+    setShowRecentSearches(false);
+    try {
+      setRegionalWebSeriesCatalogue(await api.getTvCatalogue(key));
+    } catch (error: any) {
+      setRegionalWebSeriesError(String(error?.message || 'Could not load web series.'));
+    } finally {
+      setRegionalWebSeriesLoading(false);
+    }
+  };
 
   const openRegionalCatalogue = (group: RegionalCatalogueGroup, mode: RegionalCatalogueMode) => {
     const key = (mode + '-' + group) as MovieCatalogueKey;
@@ -3033,6 +3067,29 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           </button>
 
           {([
+            ['indian', '🇮🇳 Indian Web Series'],
+            ['hollywood', '🌎 Hollywood Web Series'],
+          ] as const).map(([group, label]) => (
+            <div key={group} data-regional-tv-menu="true" className="relative">
+              <button type="button" aria-expanded={openRegionalTvMenu === group}
+                onClick={() => setOpenRegionalTvMenu(current => current === group ? null : group)}
+                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">
+                {label} <span className="ml-1 text-[10px]">▾</span>
+              </button>
+              {openRegionalTvMenu === group && (
+                <div className="absolute left-0 top-full z-40 mt-1 min-w-[170px] overflow-hidden rounded-lg border border-slate-700 bg-slate-950 shadow-xl">
+                  {(['popular', 'trending', 'latest'] as const).map(mode => (
+                    <button key={mode} type="button" onClick={() => void openRegionalTvCatalogue(group, mode)}
+                      className={'block w-full px-3 py-2.5 text-left text-xs font-semibold hover:bg-slate-800 hover:text-cyan-300 ' + (regionalTvModes[group] === mode ? 'text-cyan-300' : 'text-slate-200')}>
+                      {mode.charAt(0).toUpperCase() + mode.slice(1)}{regionalTvModes[group] === mode ? ' ✓' : ''}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+
+          {([
             ['bollywood', '🎬 Bollywood'],
             ['hollywood', '🎥 Hollywood'],
           ] as const).map(([group, label]) => (
@@ -3919,7 +3976,32 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           </div>
 
 
-          {showDcWebSeries ? (
+          {regionalWebSeriesLoading ? (
+            <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-sm text-slate-300">Loading web series catalogue…</div>
+          ) : regionalWebSeriesError ? (
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">{regionalWebSeriesError}</div>
+          ) : regionalWebSeriesCatalogue ? (
+            <div className="space-y-3">
+              <div className="px-1 text-xs text-slate-400">{regionalWebSeriesCatalogue.totalResults.toLocaleString()} web series · Page {regionalWebSeriesCatalogue.page} of {regionalWebSeriesCatalogue.totalPages.toLocaleString()} · Metadata by TMDB</div>
+              <div className="grid grid-cols-2 items-stretch gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
+                {regionalWebSeriesCatalogue.results.map(show => (
+                  <article key={String(show.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 flex flex-col">
+                    <a href={show.tmdbUrl || '#'} target="_blank" rel="noreferrer" className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
+                      {show.posterUrl ? <img src={lowQualityPosterUrl(show.posterUrl)} alt={show.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="absolute inset-0 flex items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
+                      {show.rating ? <span className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300">⭐ {show.rating.toFixed(1)}/10</span> : null}
+                    </a>
+                    <div className="flex flex-1 flex-col gap-2 p-2.5">
+                      <div><a href={show.tmdbUrl || '#'} target="_blank" rel="noreferrer" className="line-clamp-2 text-sm font-bold leading-snug text-slate-100">{show.title}</a>
+                        <div className="mt-0.5 text-xs text-slate-500">{show.year || 'Year unknown'} · TV Series</div></div>
+                      {show.overview && <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{show.overview}</p>}
+                      {show.streamingProviders?.length ? <div className="flex flex-wrap gap-1">{show.streamingProviders.filter(provider => ['subscription','free','ads'].includes(provider.type)).map(provider => <span key={provider.name} className="rounded bg-slate-800 px-1.5 py-1 text-[10px] text-cyan-200">{provider.name}</span>)}</div> : null}
+                    </div>
+                  </article>
+                ))}
+              </div>
+              {regionalWebSeriesCatalogue.page < regionalWebSeriesCatalogue.totalPages && <button type="button" disabled={regionalWebSeriesLoading} onClick={async () => { setRegionalWebSeriesLoading(true); try { const nextPage = await api.getTvCatalogue(regionalWebSeriesCatalogue.catalogue, regionalWebSeriesCatalogue.page + 1); setRegionalWebSeriesCatalogue(current => current ? { ...nextPage, results: [...current.results, ...nextPage.results.filter(item => !current.results.some(existing => String(existing.id) === String(item.id)))] } : nextPage); } catch (error: any) { setRegionalWebSeriesError(String(error?.message || 'Could not load more series.')); } finally { setRegionalWebSeriesLoading(false); } }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-semibold text-slate-200 hover:border-cyan-500 disabled:opacity-50">Load more</button>}
+            </div>
+          ) : showDcWebSeries ? (
             <div className="space-y-3">
               {dcWebSeriesLoading && <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-sm text-slate-300">Loading DC web series…</div>}
               {dcWebSeriesError && <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">{dcWebSeriesError}</div>}
