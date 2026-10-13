@@ -2320,14 +2320,34 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     const persistedDetails = cachedDetails || readLocalCache<{ groups: TorrentQualityGroup[]; savedAt: number }>(MOVIE_TORRENT_CACHE_STORAGE_KEY, cacheKey);
     if (persistedDetails && Date.now() - persistedDetails.savedAt < MOVIE_TORRENT_CACHE_TTL_MS) {
       movieTorrentDetailsCacheRef.current.set(cacheKey, persistedDetails);
-      const groups = persistedDetails.groups;
-      if (groups.length === 1) {
-        const group = groups[0];
-        setSelectedMovieTorrentQualityByGroup({ [group.key]: torrentResultKey(group.variants[0]) });
-        setMovieTorrentPreviewGroup(group);
-        startPosterBackgroundSearch(group.variants);
-      } else if (groups.length > 1) {
-        setMovieTorrentPickerGroups(groups);
+      const groups = persistedDetails.groups.map(group => ({
+        ...group,
+        posterResult: {
+          ...group.posterResult,
+          posterUrl: group.posterResult?.posterUrl || movie.posterUrl || null,
+          mediaTitle: group.posterResult?.mediaTitle || movie.title,
+          tmdbId: group.posterResult?.tmdbId || movie.tmdbId || movie.id,
+          id: group.posterResult?.id || movie.tmdbId || movie.id,
+          year: group.posterResult?.year || movie.year || group.year,
+        },
+      }));
+      if (groups.length > 0) {
+        const expectedTitle = normalizeGroupTitle(movie.title);
+        const expectedYear = String(movie.year || '');
+        const selectedGroup = [...groups].sort((a, b) => {
+          const score = (group: TorrentQualityGroup) => {
+            const title = normalizeGroupTitle(group.title.replace(/\\s*\\((?:19|20)\\d{2}\\)\\s*$/, ''));
+            let value = title === expectedTitle ? 100 : title.includes(expectedTitle) ? 20 : 0;
+            if (expectedYear && torrentGroupReleaseYear(group) === Number(expectedYear)) value += 25;
+            if (/\\b(?:making of|behind the scenes|soundtrack|interview|trailer)\\b/i.test(group.title)) value -= 100;
+            return value;
+          };
+          return score(b) - score(a);
+        })[0];
+        setSelectedMovieTorrentQualityByGroup({ [selectedGroup.key]: torrentResultKey(selectedGroup.variants[0]) });
+        setMovieTorrentPreviewGroup(selectedGroup);
+        setMovieTorrentPreviewCatalogueId(String(movie.id));
+        startPosterBackgroundSearch(selectedGroup.variants);
       } else {
         setMovieTorrentSearchError('No usable torrent releases were found for ' + titleQuery + '. Try again later or use a shorter title.');
       }
@@ -2445,16 +2465,35 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       }
 
       startPosterBackgroundSearch(groups.flatMap(group => group.variants));
-      if (groups.length === 1) {
-        // One canonical result stays on the movie browser in a normal-style
-        // inline torrent card, including its grouped quality dropdown.
-        const group = groups[0];
+      if (groups.length > 0) {
+        // Open the normal Prepare card immediately instead of showing a
+        // separate release-selection modal. Prefer an exact movie title/year
+        // match so extras such as "The Making of..." are not selected first.
+        const catalogueGroups = groups.map(group => ({
+          ...group,
+          posterResult: {
+            ...group.posterResult,
+            posterUrl: group.posterResult?.posterUrl || movie.posterUrl || null,
+            mediaTitle: group.posterResult?.mediaTitle || movie.title,
+            tmdbId: group.posterResult?.tmdbId || movie.tmdbId || movie.id,
+            id: group.posterResult?.id || movie.tmdbId || movie.id,
+            year: group.posterResult?.year || movie.year || group.year,
+          },
+        }));
+        const expectedTitle = normalizeGroupTitle(movie.title);
+        const expectedYear = String(movie.year || '');
+        const groupScore = (group: TorrentQualityGroup) => {
+          const title = normalizeGroupTitle(group.title.replace(/\\s*\\((?:19|20)\\d{2}\\)\\s*$/, ''));
+          let score = title === expectedTitle ? 100 : title.includes(expectedTitle) ? 20 : 0;
+          if (expectedYear && torrentGroupReleaseYear(group) === Number(expectedYear)) score += 25;
+          if (/\\b(?:making of|behind the scenes|soundtrack|interview|trailer)\\b/i.test(group.title)) score -= 100;
+          return score;
+        };
+        const group = [...catalogueGroups].sort((a, b) => groupScore(b) - groupScore(a))[0];
         setSelectedMovieTorrentQualityByGroup({ [group.key]: torrentResultKey(group.variants[0]) });
         setMovieTorrentPreviewGroup(group);
-      } else {
-        // Keep the catalogue visible and let the user pick a release from a
-        // compact text/list modal. Choosing a row opens its grouped card below.
-        setMovieTorrentPickerGroups(groups);
+        setMovieTorrentPreviewCatalogueId(String(movie.id));
+        setMovieTorrentPickerGroups(null);
       }
     } catch (error: any) {
       if (generation !== movieTorrentSearchGenerationRef.current || error?.name === 'AbortError') return;
