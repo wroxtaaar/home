@@ -7903,6 +7903,16 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
             continue
 
         tmdb_id = int(item["id"])
+        series_type = item.get("type")
+        if catalogue_key.endswith("-trending"):
+            try:
+                details = await _tmdb_get_json(f"tv/{tmdb_id}", {})
+                series_type = details.get("type") or series_type
+            except Exception:
+                continue
+            # Keep scripted/limited series, not reality, news, talk, or other TV formats.
+            if str(series_type or "").casefold() not in {"scripted", "miniseries"}:
+                continue
         providers = await _tv_streaming_providers(tmdb_id)
         # A series only qualifies if it is actually listed for streaming in India.
         providers = [p for p in providers if str(p.get("type") or "").casefold() in {"subscription", "free", "ads"}]
@@ -7926,12 +7936,12 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
             "source": "TMDB",
             "originalLanguage": original_language,
             "originCountry": origins,
-            "seriesType": item.get("type"),
+            "seriesType": series_type,
         })
     result = {
         "catalogue": catalogue_key, "page": page,
         "totalPages": int(payload.get("total_pages") or 1),
-        "totalResults": int(payload.get("total_results") or len(results)),
+        "totalResults": len(results),
         "provider": "TMDB + India OTT availability",
         "results": results,
     }
