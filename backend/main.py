@@ -7759,13 +7759,37 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
                 return True
         return False
 
-    def filter_cached_networks(result: dict[str, Any]) -> dict[str, Any]:
+    async def filter_cached_networks(result: dict[str, Any]) -> dict[str, Any]:
         if not exclude_indian_broadcast_networks or not isinstance(result, dict):
             return result
         rows = result.get("results")
         if not isinstance(rows, list):
             return result
-        filtered = [row for row in rows if isinstance(row, dict) and not has_excluded_broadcast_network(row.get("networks"))]
+        filtered = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            networks = row.get("networks")
+            # Older in-memory/prebuilt entries may not have network metadata.
+            # Resolve it from the canonical TMDB TV-details endpoint rather than
+            # assuming an unknown broadcaster is safe to display.
+            if not isinstance(networks, list) or not networks:
+                try:
+                    tmdb_id = int(row.get("id") or 0)
+                    if not tmdb_id:
+                        continue
+                    details = await _tmdb_get_json(f"tv/{tmdb_id}", {})
+                    networks = details.get("networks") if isinstance(details.get("networks"), list) else []
+                    row = dict(row)
+                    row["networks"] = networks
+                except Exception as exc:
+                    logger.info("Skipping cached TV item %s because broadcaster metadata could not be verified: %s", row.get("id"), type(exc).__name__)
+                    continue
+            # Fail closed when TMDB has no broadcaster metadata: these catalogues
+            # must not leak linear-TV entries merely because their metadata is absent.
+            if not networks or has_excluded_broadcast_network(networks):
+                continue
+            filtered.append(row)
         result = dict(result)
         result["results"] = filtered
         result["totalResults"] = len(filtered)
@@ -7776,14 +7800,14 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
     # is actually checked against TMDB series details.
     prebuilt = None if exclude_indian_broadcast_networks else _read_regional_tv_prebuilt_page(catalogue_key, page)
     if prebuilt is not None:
-        return filter_cached_networks(prebuilt)
+        return await filter_cached_networks(prebuilt)
 
     country, language, sort_by = configs[catalogue_key]
     cache_key = (catalogue_key, page)
     cached = _REGIONAL_TV_DISCOVERY_CACHE.get(cache_key)
     cache_ttl = 900 if catalogue_key.endswith("-trending") else 21600
     if cached and time.monotonic() - cached[0] < cache_ttl:
-        return filter_cached_networks(cached[1])
+        return await filter_cached_networks(cached[1])
     if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
         raise HTTPException(status_code=503, detail="TMDB credentials are not configured.")
 
