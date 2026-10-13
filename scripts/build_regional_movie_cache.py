@@ -13,6 +13,7 @@ from pathlib import Path
 BASE = Path(os.getenv("HOME_DATA_DIR", "/home/ubuntu/home-data"))
 API = os.getenv("HOME_API_BASE", "http://127.0.0.1:10000").rstrip("/")
 CACHE = BASE / "regional_movie_prebuilt_cache.json"
+TV_CACHE = BASE / "regional_tv_prebuilt_cache.json"
 STATE = BASE / "regional_movie_prebuilt_state.json"
 CATALOGUES = (
     "popular-bollywood", "trending-bollywood", "latest-bollywood",
@@ -132,6 +133,91 @@ def main():
         }
         atomic_json(CACHE, cache)
         print(json.dumps({"event": "catalogue_cached", "catalogue": cat, "movies": cache["catalogues"][cat]["movieCount"], "status": cache["catalogues"][cat]["status"]}), flush=True)
+
+    # Prebuild six Indian/Hollywood TV-series catalogues separately from movies.
+    # These pages are served by the backend as a persistent snapshot, so browsing
+    # the section does not require live TMDB requests on every visit.
+    tv_old = {}
+    if TV_CACHE.exists():
+        try:
+            tv_old = json.loads(TV_CACHE.read_text(encoding="utf-8"))
+        except Exception:
+            tv_old = {}
+    tv_cache = {
+        "version": 1,
+        "builtAt": tv_old.get("builtAt"),
+        "catalogues": tv_old.get("catalogues", {}),
+        "targetPerCatalogue": TARGET_PER_CATALOGUE,
+        "status": "building",
+    }
+    tv_catalogues = (
+        "indian-popular", "indian-trending", "indian-latest",
+        "hollywood-popular", "hollywood-trending", "hollywood-latest",
+    )
+    failed_tv_catalogues = []
+    for cat in tv_catalogues:
+        prior = tv_cache["catalogues"].get(cat, {})
+        pages = []
+        seen = set()
+        total_pages = PAGE_LIMIT
+        failed = False
+        for page in range(1, PAGE_LIMIT + 1):
+            data = None
+            error = None
+            for attempt in range(1, 4):
+                try:
+                    data = request("/api/tv/catalogue/" + cat + "?page=" + str(page))
+                    break
+                except Exception as exc:
+                    error = str(exc)
+                    if attempt < 3:
+                        time.sleep(attempt)
+            if data is None:
+                print(json.dumps({"event": "tv_catalogue_error", "catalogue": cat, "page": page, "error": error}), flush=True)
+                failed = True
+                break
+            rows = data.get("results", [])
+            pages.append({
+                "page": page,
+                "results": rows,
+                "totalPages": data.get("totalPages", 1),
+                "totalResults": data.get("totalResults", 0),
+            })
+            for show in rows:
+                if not isinstance(show, dict) or not str(show.get("title") or "").strip():
+                    continue
+                seen.add(str(show.get("id") or (norm(show.get("title")) + "|" + str(show.get("year") or ""))))
+            try:
+                total_pages = max(1, int(data.get("totalPages") or 1))
+            except (TypeError, ValueError):
+                total_pages = PAGE_LIMIT
+            print(json.dumps({"event": "tv_catalogue_page", "catalogue": cat, "page": page, "pageSeries": len(rows), "uniqueSeries": len(seen), "target": TARGET_PER_CATALOGUE}), flush=True)
+            if len(seen) >= TARGET_PER_CATALOGUE or page >= total_pages:
+                break
+            time.sleep(float(os.getenv("REGIONAL_CACHE_DELAY_SECONDS", "0.4")))
+        if failed:
+            failed_tv_catalogues.append(cat)
+            if prior.get("pages"):
+                pages = prior["pages"]
+                print(json.dumps({"event": "tv_catalogue_preserved", "catalogue": cat, "pages": len(pages)}), flush=True)
+        count = len({str(show.get("id") or (norm(show.get("title")) + "|" + str(show.get("year") or ""))) for p in pages for show in p.get("results", []) if isinstance(show, dict) and show.get("title")})
+        tv_cache["catalogues"][cat] = {
+            "builtAt": datetime.now(timezone.utc).isoformat(),
+            "targetSeries": TARGET_PER_CATALOGUE,
+            "seriesCount": count,
+            "totalResults": max((int(p.get("totalResults") or 0) for p in pages), default=count),
+            "pages": pages,
+            "status": "ready" if count >= TARGET_PER_CATALOGUE else "partial",
+        }
+        tv_cache["builtAt"] = datetime.now(timezone.utc).isoformat()
+        tv_cache["status"] = "building"
+        atomic_json(TV_CACHE, tv_cache)
+        print(json.dumps({"event": "tv_catalogue_cached", "catalogue": cat, "series": count, "status": tv_cache["catalogues"][cat]["status"]}), flush=True)
+    tv_cache["builtAt"] = datetime.now(timezone.utc).isoformat()
+    tv_cache["status"] = "partial" if failed_tv_catalogues or any(v.get("status") != "ready" for v in tv_cache["catalogues"].values()) else "ready"
+    tv_cache["failedCatalogues"] = failed_tv_catalogues
+    atomic_json(TV_CACHE, tv_cache)
+    print(json.dumps({"event": "tv_catalogues_complete", "status": tv_cache["status"], "catalogues": {k: v.get("seriesCount", 0) for k, v in tv_cache["catalogues"].items()}, "file": str(TV_CACHE)}), flush=True)
 
     # Merge movie records for title-to-torrent lookup. This shared index may be
     # deduplicated; the per-catalogue snapshots above remain independent.
