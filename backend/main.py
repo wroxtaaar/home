@@ -7621,7 +7621,7 @@ async def api_tmdb_marvel_tv_catalogue(page: int = Query(1, ge=1, le=500)):
                 return fallback
             item = candidates[0]
             air_date = str(item.get("first_air_date") or "").strip()
-            year_match = re.match(r"^(\d{4})", air_date)
+        year_match = re.match(r"^(\d{4})", air_date)
             poster_path = str(item.get("poster_path") or "").strip()
             backdrop_path = str(item.get("backdrop_path") or "").strip()
             tmdb_id = int(item["id"])
@@ -7677,7 +7677,7 @@ async def api_tmdb_dc_live_action_tv_catalogue(page: int = Query(1, ge=1, le=500
             if not candidates: return fallback
             item = candidates[0]
             air_date = str(item.get("first_air_date") or "").strip()
-            year_match = re.match(r"^(\d{4})", air_date)
+        year_match = re.match(r"^(\d{4})", air_date)
             poster_path = str(item.get("poster_path") or "").strip()
             backdrop_path = str(item.get("backdrop_path") or "").strip()
             tmdb_id = int(item["id"])
@@ -7875,7 +7875,7 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
         tmdb_id = int(item["id"])
         poster = str(item.get("poster_path") or "").strip()
         backdrop = str(item.get("backdrop_path") or "").strip()
-        year_match = re.match(r"^(\\d{4})", air_date)
+        year_match = re.match(r"^(\d{4})", air_date)
         results.append({
             "id": tmdb_id,
             "title": str(item.get("name") or "").strip(),
@@ -7984,7 +7984,7 @@ async def api_tmdb_movie_catalogue(
                 persistent_payload,
             )
             _schedule_tmdb_catalogue_synopsis_enrichment(persistent_payload)
-            return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, persistent_payload), enabled=released_only)
+            return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, persistent_payload), enabled=True)
 
     task = _tmdb_movie_catalogue_inflight.get(cache_key)
     if task is None or task.done():
@@ -7995,7 +7995,7 @@ async def api_tmdb_movie_catalogue(
         _tmdb_movie_catalogue_cache[cache_key] = (time.monotonic(), payload)
         _write_tmdb_persistent_cache(cache_key, payload)
         _schedule_tmdb_catalogue_synopsis_enrichment(payload)
-        return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, payload), enabled=released_only)
+        return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, payload), enabled=True)
     except HTTPException as exc:
         # Prefer a stale response over an empty screen when TMDB has an outage.
         stale_payload = cached[1] if cached else (persistent[1] if persistent else None)
@@ -8005,7 +8005,7 @@ async def api_tmdb_movie_catalogue(
             stale_response["cacheWarning"] = exc.detail
             logger.warning("Serving stale TMDB catalogue %s page %s after upstream failure", catalogue_key, page)
             _schedule_tmdb_catalogue_synopsis_enrichment(stale_response)
-            return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, stale_response), enabled=released_only)
+            return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, stale_response), enabled=True)
         raise
     except Exception as exc:
         logger.exception("TMDB movie catalogue failed for %s page %s", catalogue_key, page)
