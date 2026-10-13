@@ -459,6 +459,8 @@ function normalizeOttProviderName(name: string): string {
   }
   if (/^sonyliv$/.test(normalized)) return 'sonyliv';
   if (/^zee ?5$/.test(normalized)) return 'zee5';
+  // TMDB can list the same service as both "MX Player" and "Amazon MX Player".
+  if (/^(?:amazon )?mx player$/.test(normalized)) return 'mx player';
   if (normalized.startsWith('sony pictures ') && normalized.includes('amazon channel')) {
     return 'sony pictures amazon channel';
   }
@@ -470,7 +472,7 @@ function displayOttProviderName(name: string): string {
   const key = normalizeOttProviderName(name);
   const preferredLabels: Record<string, string> = {
     'amazon prime video': 'Amazon Prime',
-    'amazon mx player': 'MX Player',
+    'mx player': 'MX Player',
     netflix: 'Netflix',
     sonyliv: 'SonyLIV',
     hotstar: 'Hotstar',
