@@ -7909,7 +7909,7 @@ async def api_tmdb_movie_catalogue(
     cached = _tmdb_movie_catalogue_cache.get(cache_key)
     if cached and now - cached[0] < cache_ttl:
         _schedule_tmdb_catalogue_synopsis_enrichment(cached[1])
-        return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, cached[1]), enabled=True)
+        return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, cached[1]), enabled=released_only)
 
     # A disk cache survives container restarts, unlike the in-memory TTL cache.
     persistent = _read_tmdb_persistent_cache(cache_key)
@@ -7922,7 +7922,7 @@ async def api_tmdb_movie_catalogue(
                 persistent_payload,
             )
             _schedule_tmdb_catalogue_synopsis_enrichment(persistent_payload)
-            return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, persistent_payload), enabled=True)
+            return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, persistent_payload), enabled=released_only)
 
     task = _tmdb_movie_catalogue_inflight.get(cache_key)
     if task is None or task.done():
@@ -7933,7 +7933,7 @@ async def api_tmdb_movie_catalogue(
         _tmdb_movie_catalogue_cache[cache_key] = (time.monotonic(), payload)
         _write_tmdb_persistent_cache(cache_key, payload)
         _schedule_tmdb_catalogue_synopsis_enrichment(payload)
-        return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, payload), enabled=True)
+        return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, payload), enabled=released_only)
     except HTTPException as exc:
         # Prefer a stale response over an empty screen when TMDB has an outage.
         stale_payload = cached[1] if cached else (persistent[1] if persistent else None)
@@ -7943,7 +7943,7 @@ async def api_tmdb_movie_catalogue(
             stale_response["cacheWarning"] = exc.detail
             logger.warning("Serving stale TMDB catalogue %s page %s after upstream failure", catalogue_key, page)
             _schedule_tmdb_catalogue_synopsis_enrichment(stale_response)
-            return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, stale_response), enabled=True)
+            return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, stale_response), enabled=released_only)
         raise
     except Exception as exc:
         logger.exception("TMDB movie catalogue failed for %s page %s", catalogue_key, page)
@@ -7953,7 +7953,7 @@ async def api_tmdb_movie_catalogue(
             stale_response["stale"] = True
             stale_response["cacheWarning"] = "TMDB is temporarily unavailable; showing the last cached catalogue."
             _schedule_tmdb_catalogue_synopsis_enrichment(stale_response)
-            return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, stale_response), enabled=True)
+            return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, stale_response), enabled=released_only)
         raise HTTPException(status_code=502, detail="Could not load the movie catalogue from TMDB.") from exc
     finally:
         if task.done() and _tmdb_movie_catalogue_inflight.get(cache_key) is task:
