@@ -7902,7 +7902,7 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
 
 
 async def _apply_movie_release_eligibility(payload: dict[str, Any], *, enabled: bool = True) -> dict[str, Any]:
-    """Exclude unreleased films; OTT availability wins, otherwise wait seven full days after release."""
+    """Show films with confirmed Indian OTT streaming now; otherwise wait seven full days after release."""
     if not enabled or not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
         return payload
     today = datetime.now(timezone.utc).date()
@@ -7910,13 +7910,6 @@ async def _apply_movie_release_eligibility(payload: dict[str, Any], *, enabled: 
     semaphore = asyncio.Semaphore(4)
 
     async def eligible(row: dict[str, Any]) -> bool:
-        raw_date = str(row.get("releaseDate") or row.get("release_date") or "").strip()
-        try:
-            release_date = datetime.strptime(raw_date[:10], "%Y-%m-%d").date()
-        except (TypeError, ValueError):
-            return False
-        if release_date > today:
-            return False
         try:
             movie_id = int(row.get("tmdbId") or row.get("id") or 0)
         except (TypeError, ValueError):
@@ -7949,6 +7942,14 @@ async def _apply_movie_release_eligibility(payload: dict[str, Any], *, enabled: 
                         return True
                 except Exception as exc:
                     logger.info("OTT eligibility lookup failed for movie %s: %s", movie_id, type(exc).__name__)
+
+        raw_date = str(row.get("releaseDate") or row.get("release_date") or "").strip()
+        try:
+            release_date = datetime.strptime(raw_date[:10], "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            return False
+        if release_date > today:
+            return False
         return (today - release_date).days >= 7
 
     flags = await asyncio.gather(*(eligible(row) for row in rows))
@@ -7956,7 +7957,7 @@ async def _apply_movie_release_eligibility(payload: dict[str, Any], *, enabled: 
     result = dict(payload)
     result["results"] = filtered
     result["totalResults"] = len(filtered)
-    result["releaseEligibility"] = "ott-or-seven-days"
+    result["releaseEligibility"] = "streaming-in-india-or-seven-days"
     return result
 
 
