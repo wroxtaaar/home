@@ -30,6 +30,7 @@ export interface MarvelCatalogueResponse {
   resultCount?: number;
   builtAt?: string;
   error?: string;
+  refreshing?: boolean;
 }
 
 export interface TvCatalogueItem {
