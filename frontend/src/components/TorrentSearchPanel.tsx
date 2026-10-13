@@ -1043,8 +1043,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const visibleMovieCatalogueItems = useMemo(() => {
     let movies = movieCatalogue?.results || [];
     if (isMarvelEnglishResults && !showMarvelWebSeries && marvelFilmFilter !== 'all') {
-      const titleOf = (movie: MovieCatalogueItem) => String(movie.title || '').replace(/\\s*\\(?((?:19|20)\\d{2})\\)?\\s*$/, '').trim().toLowerCase();
-      const yearOf = (movie: MovieCatalogueItem) => Number(movie.year || String(movie.title || '').match(/\\b(?:19|20)\\d{2}\\b/)?.[0] || 0);
+      const titleOf = (movie: MovieCatalogueItem) => String(movie.title || '').replace(/\s*\(?((?:19|20)\d{2})\)?\s*$/, '').trim().toLowerCase();
+      const yearOf = (movie: MovieCatalogueItem) => Number(movie.year || String(movie.title || '').match(/\b(?:19|20)\d{2}\b/)?.[0] || 0);
       const mcuTitles = new Set([
         'ant-man','ant-man and the wasp','ant-man and the wasp: quantumania','avengers: age of ultron','avengers: endgame','avengers: infinity war','the avengers',
         'black panther','black panther: wakanda forever','black widow','captain america: brave new world','captain america: civil war',
@@ -1073,7 +1073,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           case 'x-men': return isXMen(title);
           case 'sony': return isSony(title);
           case 'old-marvel': return year > 0 && year < 2000 || oldMarvelTitles.has(title) ||
-            /death too soon|dr\\.? strange|man-thing|incredible hulk returns|trial of the incredible hulk|rise of technovore/i.test(title);
+            /death too soon|dr\.? strange|man-thing|incredible hulk returns|trial of the incredible hulk|rise of technovore/i.test(title);
           default: return true;
         }
       });
