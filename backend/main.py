@@ -7734,21 +7734,36 @@ def _read_regional_tv_prebuilt_page(catalogue_key: str, page: int) -> dict[str, 
         if not REGIONAL_TV_PREBUILT_CACHE_FILE.exists():
             return None
         payload = json.loads(REGIONAL_TV_PREBUILT_CACHE_FILE.read_text(encoding="utf-8"))
-        if int(payload.get("schemaVersion") or 0) < 3:
+        # The cache builder writes "version", not "schemaVersion". Accept both
+        # formats so valid snapshots created by the VPS builder are actually used.
+        cache_version = int(payload.get("schemaVersion") or payload.get("version") or 0)
+        if cache_version < 3:
             return None
         catalogue = (payload.get("catalogues") or {}).get(catalogue_key) or {}
-        if not catalogue.get("verifiedWebSeries"):
-            return None
+        # The builder marks snapshots with status/seriesCount; the API's own
+        # writer uses verifiedWebSeries. Accept either valid persisted format.
         pages = catalogue.get("pages") or []
+        is_verified = bool(catalogue.get("verifiedWebSeries")) or (
+            catalogue.get("status") in {"ready", "partial"} and bool(pages)
+        )
+        if not is_verified:
+            return None
         for entry in pages:
             if int(entry.get("page") or 0) == page:
+                rows = [row for row in (entry.get("results") or []) if isinstance(row, dict)]
+                if catalogue_key.startswith("indian-"):
+                    excluded_titles = {"gangaa", "dearishq", "mastram"}
+                    rows = [
+                        row for row in rows
+                        if re.sub(r"[^a-z0-9]+", "", str(row.get("title") or row.get("name") or "").casefold()) not in excluded_titles
+                    ]
                 return {
                     "catalogue": catalogue_key,
                     "page": page,
                     "totalPages": max(1, len(pages)),
                     "totalResults": int(catalogue.get("totalResults") or catalogue.get("seriesCount") or 0),
                     "provider": "Persistent TMDB + verified India OTT availability",
-                    "results": entry.get("results") or [],
+                    "results": rows,
                     "prebuilt": True,
                 }
     except Exception as exc:
