@@ -3721,7 +3721,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                         {preparedFiles.length > 0 && primaryFile ? (
                           <button
                             type="button"
-                            onClick={async () => {
+                            onClick={async event => {
+                              event.stopPropagation();
                               setPlayingTorrentKey(torrentKey);
                               try { await onPlaySeedrFile?.(primaryFile); }
                               finally { setPlayingTorrentKey(current => current === torrentKey ? null : current); }
@@ -3794,8 +3795,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow">
                           ⭐ {imdb.imdbRating.toFixed(1)}/10
                         </a>
-                      ) : movie.rating != null && movie.rating > 0 ? (
-                        <span className="absolute left-2 top-2 rounded-md bg-slate-950/90 px-2 py-1 text-[10px] font-bold text-emerald-300">TMDB {movie.rating.toFixed(1)}</span>
                       ) : null}
                     </div>
                     <div className="flex flex-1 flex-col gap-2 p-2.5">
@@ -3805,8 +3804,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           {movie.year && <span className="text-slate-400">{movie.year}</span>}
                           {imdb?.imdbRating != null && imdb.imdbRating > 0 ? (
                             <a href={imdb.imdbUrl || (imdb.imdbId ? 'https://www.imdb.com/title/' + imdb.imdbId + '/' : '#')} target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()} className="font-semibold text-amber-300 hover:text-amber-200">IMDb {imdb.imdbRating.toFixed(1)}</a>
-                          ) : movie.rating != null && movie.rating > 0 ? (
-                            <span className="font-semibold text-amber-300">TMDB {movie.rating.toFixed(1)}</span>
                           ) : null}
                         </div>
                       </div>
