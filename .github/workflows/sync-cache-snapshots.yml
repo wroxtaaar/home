@@ -77,6 +77,10 @@ jobs:
             dc_animated_catalogue.json \
             latest_hollywood_catalogue.json \
             latest_bollywood_catalogue.json \
+            popular_hollywood_catalogue.json \
+            popular_bollywood_catalogue.json \
+            trending_hollywood_catalogue.json \
+            trending_bollywood_catalogue.json \
             bollywood_torrent_matched_catalogue.json; do
             sync_remote_file "$DATA_DIR/$name" "backend/cache-seed/$name"
           done

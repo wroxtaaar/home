@@ -4275,14 +4275,20 @@ def _cached_catalogue_year(item: Any) -> int:
 
 
 def _sort_cached_catalogue_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    def key(item: dict[str, Any]) -> tuple[int, str, int]:
+    def key(item: dict[str, Any]) -> tuple[int, int, str, int]:
         title = str(item.get("catalogueTitle") or item.get("marvelCatalogueTitle") or item.get("mediaTitle") or item.get("title") or "")
         normalized = re.sub(r"[^a-z0-9]+", "", title.casefold())
         try:
             seeders = int(float(item.get("seeders") or 0))
         except (TypeError, ValueError):
             seeders = 0
-        return (-_cached_catalogue_year(item), normalized, -seeders)
+        # Ranked catalogues (popular/trending) carry TMDB's popularity position
+        # in catalogueRank and must keep that order. Rows without a rank (every
+        # other catalogue) all share the same first key, so they sort exactly as
+        # before: newest year first, then title, then seeders.
+        rank = item.get("catalogueRank")
+        rank_key = rank if isinstance(rank, int) and not isinstance(rank, bool) and rank >= 0 else 10**9
+        return (rank_key, -_cached_catalogue_year(item), normalized, -seeders)
     return sorted(results, key=key)
 
 
@@ -5236,6 +5242,37 @@ _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
         "file": "latest_bollywood_catalogue.json", "version": 7, "refresh_days": 30,
         "minimum_movies": 1, "mode": "latest", "discovery_pages": 2,
     },
+    # Popular / trending catalogues use the same TMDB-discovered-title + torrent
+    # match pipeline as "latest", so they get the same card experience as the
+    # Marvel/DC catalogues (IMDb card + prepare card with torrent details).
+    # Differences from "latest":
+    #   * year_window False: popular titles are not limited to the current and
+    #     previous year (the torrent year only has to agree with TMDB's year).
+    #   * rank_order True: rows keep TMDB's popularity order (catalogueRank)
+    #     instead of being re-sorted newest-first.
+    #   * shorter refresh_days: popularity/trending data goes stale quickly.
+    # discovery_pages is chosen so each catalogue covers roughly 40-50 titles
+    # (Bollywood and trending pages hold up to 50 titles, popular-hollywood 20).
+    "popular-hollywood": {
+        "file": "popular_hollywood_catalogue.json", "version": 1, "refresh_days": 14,
+        "minimum_movies": 1, "mode": "latest", "discovery_pages": 2,
+        "year_window": False, "rank_order": True,
+    },
+    "trending-hollywood": {
+        "file": "trending_hollywood_catalogue.json", "version": 1, "refresh_days": 7,
+        "minimum_movies": 1, "mode": "latest", "discovery_pages": 1,
+        "year_window": False, "rank_order": True,
+    },
+    "popular-bollywood": {
+        "file": "popular_bollywood_catalogue.json", "version": 1, "refresh_days": 14,
+        "minimum_movies": 1, "mode": "latest", "discovery_pages": 1,
+        "year_window": False, "rank_order": True,
+    },
+    "trending-bollywood": {
+        "file": "trending_bollywood_catalogue.json", "version": 1, "refresh_days": 7,
+        "minimum_movies": 1, "mode": "latest", "discovery_pages": 1,
+        "year_window": False, "rank_order": True,
+    },
 }
 # Separate persistent caches keep English-original and Hindi/dubbed options
 # independent so neither language can pollute the other catalogue.
@@ -5271,6 +5308,10 @@ _CACHE_SEED_FILES = (
     "dc_live_action_hindi_catalogue.json",
     "latest_bollywood_catalogue.json",
     "latest_hollywood_catalogue.json",
+    "popular_bollywood_catalogue.json",
+    "popular_hollywood_catalogue.json",
+    "trending_bollywood_catalogue.json",
+    "trending_hollywood_catalogue.json",
     "marvel_catalogue.json",
     "marvel_web_series_catalogue.json",
     "marvel_hindi_catalogue.json",
@@ -6166,10 +6207,13 @@ def _extra_item_year(item: dict[str, Any], fallback: int = 0) -> int:
 
 async def _discover_latest_catalogue_jobs(key: str) -> list[tuple[str, int]]:
     """Discover recently released movie titles from TMDB instead of a hardcoded query list."""
-    if key not in {"latest-hollywood", "latest-bollywood"}:
+    if key not in _EXTRA_CATALOGUES or _EXTRA_CATALOGUES[key].get("mode") != "latest":
         raise ValueError(f"Unsupported dynamic latest catalogue: {key}")
 
     config = _EXTRA_CATALOGUES[key]
+    # Latest catalogues only cover the current and previous year. Popular and
+    # trending catalogues (year_window False) accept any release year.
+    year_window = bool(config.get("year_window", True))
     today = datetime.now(timezone.utc).date()
     first_page = await api_tmdb_movie_catalogue(key, 1, released_only=True)
     payloads: list[dict[str, Any]] = [first_page]
@@ -6207,7 +6251,9 @@ async def _discover_latest_catalogue_jobs(key: str) -> list[tuple[str, int]]:
                 year = int(item.get("year") or 0)
             except (TypeError, ValueError, OverflowError):
                 continue
-            if year < current_year - 1 or year > current_year:
+            if year_window and (year < current_year - 1 or year > current_year):
+                continue
+            if year <= 0:
                 continue
             identity = _normalize_title(title) + "|" + str(year)
             if identity in seen:
@@ -6217,7 +6263,9 @@ async def _discover_latest_catalogue_jobs(key: str) -> list[tuple[str, int]]:
 
     if not jobs:
         raise RuntimeError(
-            f"TMDB returned no released {key} titles from the current or previous year; keeping the previous catalogue."
+            f"TMDB returned no released {key} titles"
+            + (" from the current or previous year" if year_window else "")
+            + "; keeping the previous catalogue."
         )
     logger.info(
         "Discovered %d released movie titles for %s from TMDB across %d page(s)",
@@ -6236,6 +6284,11 @@ async def _build_extra_catalogue(key: str) -> None:
     state.update({"status": "building", "completed": 0, "total": len(jobs), "resultCount": 0, "error": ""})
     rows: dict[str, dict[str, Any]] = {}
     found_movies: set[str] = set()
+    year_window = bool(config.get("year_window", True))
+    rank_order = bool(config.get("rank_order", False))
+    # Position of each discovered title in TMDB's popularity order. Filled in
+    # after discovery; read by search_job when it tags the torrent rows.
+    job_rank: dict[str, int] = {}
 
     async def search_job(title: str, year: int) -> list[dict[str, Any]]:
         async with semaphore:
@@ -6310,6 +6363,9 @@ async def _build_extra_catalogue(key: str) -> None:
                     year_match = re.search(r"\b((?:19|20)\d{2})\b", query)
                     expected_year = int(year_match.group(1)) if year_match else datetime.now(timezone.utc).year
                     provider_query = re.sub(r"\b((?:19|20)\d{2})\b", "", query).strip(" .-_")
+                    if not provider_query:
+                        # Titles that are themselves a year (e.g. "1917", "2012").
+                        provider_query = title
                     calls = [
                         asyncio.wait_for(
                             search_1337x_direct(
@@ -6326,7 +6382,7 @@ async def _build_extra_catalogue(key: str) -> None:
                             timeout=14,
                         ),
                     ]
-                    if key == "latest-hollywood":
+                    if key.endswith("-hollywood"):
                         calls.append(asyncio.wait_for(search_yts_movies(query, limit=20), timeout=12))
                     searched = await asyncio.gather(*calls, return_exceptions=True)
                     items = []
@@ -6361,6 +6417,8 @@ async def _build_extra_catalogue(key: str) -> None:
                         query_year_match = re.search(r"\b((?:19|20)\d{2})\b", query)
                         expected_year = int(query_year_match.group(1)) if query_year_match else datetime.now(timezone.utc).year
                         query_title = re.sub(r"\b((?:19|20)\d{2})\b", "", query).strip(" .-_")
+                        if not query_title:
+                            query_title = title
                         query_tokens = [
                             token for token in _normalize_title(query_title).split()
                             if token not in {"the", "a", "an", "of", "and", "for", "to", "movie", "film"}
@@ -6392,7 +6450,13 @@ async def _build_extra_catalogue(key: str) -> None:
                             media_year = title_years[-1]
                         else:
                             media_year = _extra_item_year(item, fallback=expected_year)
-                        if media_year < current_year - 1 or media_year > current_year:
+                        if year_window:
+                            if media_year < current_year - 1 or media_year > current_year:
+                                continue
+                        elif year and abs(media_year - year) > 1:
+                            # Popular/trending titles span many years. Require the
+                            # torrent's year to agree with TMDB's year so a same-named
+                            # film from another decade is not attached to this card.
                             continue
 
                         # The query title is the canonical display/group title for all of its torrent variants.
@@ -6436,6 +6500,11 @@ async def _build_extra_catalogue(key: str) -> None:
                         item["catalogueKey"] = key
                         item["catalogueTitle"] = str(item.get("mediaTitle") or item.get("title") or "")
                     found_movies.update(group_key + "|" + str(v.get("year") or "") for v in variants for group_key in [_normalize_title(str(v.get("mediaTitle") or v.get("title") or ""))])
+                if rank_order:
+                    rank = job_rank.get(_normalize_title(title) + "|" + str(year))
+                    if rank is not None:
+                        for item in accepted:
+                            item["catalogueRank"] = rank
                 return accepted
             finally:
                 state["completed"] = int(state.get("completed") or 0) + 1
@@ -6443,6 +6512,8 @@ async def _build_extra_catalogue(key: str) -> None:
     try:
         if not fixed_mode:
             jobs = await _discover_latest_catalogue_jobs(key)
+            for rank, (job_title, job_year) in enumerate(jobs):
+                job_rank.setdefault(_normalize_title(job_title) + "|" + str(job_year), rank)
             state.update({"status": "building", "completed": 0, "total": len(jobs), "resultCount": 0, "error": ""})
         tasks = [asyncio.create_task(search_job(title, year)) for title, year in jobs]
         for task in asyncio.as_completed(tasks):
@@ -6468,7 +6539,14 @@ async def _build_extra_catalogue(key: str) -> None:
         movie_count = len({ _normalize_title(str(item.get("mediaTitle") or item.get("title") or "")) + "|" + str(item.get("year") or "") for item in results })
         if movie_count < int(config["minimum_movies"]):
             raise RuntimeError(f"Only {movie_count} titles found; keeping the previous catalogue.")
-        results.sort(key=lambda item: (_extra_item_year(item), float(item.get("rating") or 0), int(item.get("seeders") or 0)), reverse=True)
+        if rank_order:
+            # Keep TMDB's popularity order; best-seeded release first within a title.
+            results.sort(key=lambda item: (
+                item["catalogueRank"] if isinstance(item.get("catalogueRank"), int) else 10**9,
+                -int(item.get("seeders") or 0),
+            ))
+        else:
+            results.sort(key=lambda item: (_extra_item_year(item), float(item.get("rating") or 0), int(item.get("seeders") or 0)), reverse=True)
         payload = {"version": config["version"], "builtAt": datetime.now(timezone.utc).isoformat(),
                    "titlesQueried": len(jobs), "movieCount": movie_count, "resultCount": len(results), "results": results}
         _merge_saved_catalogue_metadata(payload, _EXTRA_CATALOGUE_PATHS[key])

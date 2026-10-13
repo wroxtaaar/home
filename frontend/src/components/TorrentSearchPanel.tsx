@@ -592,6 +592,15 @@ function groupTorrentResults(results: TorrentSearchResult[]): TorrentQualityGrou
   return groups;
 }
 
+// Preset catalogues served from the persistent torrent caches. They all render
+// as the same card pair: an IMDb card that opens into a torrent "prepare" card.
+type CachedCatalogueMode =
+  | 'marvel' | 'marvel-hindi'
+  | 'dc-live-action' | 'dc-live-action-hindi' | 'dc-animated'
+  | 'latest-hollywood' | 'latest-bollywood'
+  | 'popular-hollywood' | 'popular-bollywood'
+  | 'trending-hollywood' | 'trending-bollywood';
+
 export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepare, onCancelPrepare, onOpenProgress, seedrFiles = [], seedrDeletedFolderIds = [], onPlaySeedrFile }) => {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<TorrentSearchResult[]>([]);
@@ -1445,7 +1454,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     }
   };
 
-  const runSearch = async (event?: React.FormEvent, searchOverride?: string, searchMode?: 'marvel' | 'marvel-hindi' | 'dc-live-action' | 'dc-live-action-hindi' | 'dc-animated' | 'latest-hollywood' | 'latest-bollywood') => {
+  const runSearch = async (event?: React.FormEvent, searchOverride?: string, searchMode?: CachedCatalogueMode) => {
     event?.preventDefault();
     setIsMarvelEnglishResults(searchMode === 'marvel');
     setIsDcLiveActionEnglishResults(searchMode === 'dc-live-action');
@@ -1615,7 +1624,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           marvel: 'Marvel English', 'marvel-hindi': 'Marvel Hindi',
           'dc-live-action': 'DC Live-Action English', 'dc-live-action-hindi': 'DC Live-Action Hindi',
           'dc-animated': 'DC animated',
-          'latest-hollywood': 'Latest Hollywood', 'latest-bollywood': 'Latest Bollywood'
+          'latest-hollywood': 'Latest Hollywood', 'latest-bollywood': 'Latest Bollywood',
+          'popular-hollywood': 'Popular Hollywood', 'popular-bollywood': 'Popular Bollywood',
+          'trending-hollywood': 'Trending Hollywood', 'trending-bollywood': 'Trending Bollywood'
         };
         let catalogue = searchMode === 'marvel'
           ? await api.getMarvelCatalogue(controller.signal)
@@ -2619,7 +2630,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               setTimeSort(null);
               setReleaseYearSort(null);
               setStreamingOnly(false);
-              void openMovieCatalogue('popular-bollywood', 'Popular Bollywood', 1);
+              void runSearch(undefined, 'Popular Bollywood', 'popular-bollywood');
             }}
             className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
           >
@@ -2634,7 +2645,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               setTimeSort(null);
               setReleaseYearSort(null);
               setStreamingOnly(false);
-              void openMovieCatalogue('trending-bollywood', 'Trending Bollywood', 1);
+              void runSearch(undefined, 'Trending Bollywood', 'trending-bollywood');
             }}
             className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
           >
@@ -2649,11 +2660,11 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               setTimeSort(null);
               setReleaseYearSort(null);
               setStreamingOnly(false);
-              void openMovieCatalogue('latest-bollywood', 'Recently Released', 1);
+              void runSearch(undefined, 'Latest Bollywood', 'latest-bollywood');
             }}
             className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
           >
-            🎬 Recently Released
+            🎬 Latest Bollywood
           </button>
 
           <button
@@ -2716,15 +2727,17 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           </button>
 
           {([
-            ['popular-hollywood', '⭐ Popular Hollywood', 'Popular Hollywood Movies'],
-            ['trending-hollywood', '🔥 Trending Hollywood', 'Trending Hollywood Movies'],
+            ['popular-hollywood', '⭐ Popular Hollywood', 'Popular Hollywood'],
+            ['trending-hollywood', '🔥 Trending Hollywood', 'Trending Hollywood'],
+            ['latest-hollywood', '🎬 Latest Hollywood', 'Latest Hollywood'],
           ] as const).map(([key, label, searchText]) => (
             <button key={key} type="button" onClick={() => {
               setResolutionFilter(null);
               setSizeSort(null);
               setTimeSort(null);
               setReleaseYearSort(null);
-              void openMovieCatalogue(key, searchText, 1);
+              setStreamingOnly(false);
+              void runSearch(undefined, searchText, key);
             }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">{label}</button>
           ))}
         </div>
@@ -3881,9 +3894,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               // attach a poster for a different title/remake. Retry the strict
                               // title-and-year resolver instead.
                               const key = posterKeyFor(posterResult);
-                              if (canonicalPosterUrl && compactPosterUrl === canonicalPosterUrl) {
-                                posterMetadataFailedRef.current.add(key);
-                              }
                               posterLoadedRef.current.delete(key);
                               image.style.display = 'none';
                               image.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.remove('hidden');
@@ -4058,9 +4068,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               }}
                               onError={(event) => {
                                 const key = posterKeyFor(posterResult);
-                                if (canonicalPosterUrl && resolvedPosterUrl === canonicalPosterUrl) {
-                                  posterMetadataFailedRef.current.add(key);
-                                }
                                 posterLoadedRef.current.delete(key);
                                 event.currentTarget.style.display = 'none';
                                 event.currentTarget.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.remove('hidden');
