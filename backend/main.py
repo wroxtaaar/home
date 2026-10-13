@@ -7697,6 +7697,8 @@ def _read_regional_tv_prebuilt_page(catalogue_key: str, page: int) -> dict[str, 
             return None
         payload = json.loads(REGIONAL_TV_PREBUILT_CACHE_FILE.read_text(encoding="utf-8"))
         catalogue = (payload.get("catalogues") or {}).get(catalogue_key) or {}
+        if not catalogue.get("verifiedWebSeries"):
+            return None
         pages = catalogue.get("pages") or []
         for entry in pages:
             if int(entry.get("page") or 0) == page:
@@ -7732,6 +7734,7 @@ def _save_regional_tv_prebuilt_pages(catalogue_key: str, rows: list[dict[str, An
             payload["catalogues"] = catalogues
         pages = [{"page": n + 1, "results": rows[n * 18:(n + 1) * 18]} for n in range(3)]
         catalogues[catalogue_key] = {
+            "verifiedWebSeries": True,
             "totalResults": len(rows[:54]),
             "seriesCount": len(rows[:54]),
             "pages": pages,
@@ -7879,10 +7882,8 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
         result["totalResults"] = len(filtered)
         return result
 
-    # Older prebuilt catalogue rows do not consistently contain network metadata,
-    # so bypass that cache for these two catalogues to ensure the broadcaster rule
-    # is actually checked against TMDB series details.
-    prebuilt = None if exclude_indian_broadcast_networks else _read_regional_tv_prebuilt_page(catalogue_key, page)
+    # Use only pages explicitly marked as verified by this endpoint.
+    prebuilt = _read_regional_tv_prebuilt_page(catalogue_key, page)
     if prebuilt is not None:
         return await filter_cached_networks(prebuilt)
 
@@ -7904,7 +7905,8 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
         source_total_pages = 1
         eligible_rows: list[dict[str, Any]] = []
         seen_ids: set[int] = set()
-        required_count = page * 18
+        # Keep three full UI pages in the durable VPS catalogue cache.
+        required_count = 54
 
         while source_page <= source_total_pages and len(eligible_rows) < required_count:
             payload = await _tmdb_get_json("discover/tv", {
@@ -7998,6 +8000,7 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
     except HTTPException:
         raise
 
+    _save_regional_tv_prebuilt_pages(catalogue_key, eligible_rows[:54])
     start_index = (page - 1) * 18
     results = eligible_rows[start_index:start_index + 18]
     # UI pages are 18 filtered titles each. Estimate the number of pages from
