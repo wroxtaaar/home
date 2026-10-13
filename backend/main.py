@@ -7829,8 +7829,8 @@ def _read_regional_tv_prebuilt_page(catalogue_key: str, page: int) -> dict[str, 
                 return {
                     "catalogue": catalogue_key,
                     "page": page,
-                    "totalPages": int(item.get("totalPages") or len(catalogue.get("pages") or []) or 1),
-                    "totalResults": int(item.get("totalResults") or catalogue.get("totalResults") or len(item.get("results") or [])),
+                    "totalPages": max(1, len(catalogue.get("pages") or [])),
+                    "totalResults": int(catalogue.get("seriesCount") or len(item.get("results") or [])),
                     "provider": "TMDB · persistent prebuilt cache",
                     "results": item.get("results") or [],
                     "cached": True,
@@ -8051,7 +8051,7 @@ async def api_tmdb_movie_catalogue(
             stale_response["stale"] = True
             stale_response["cacheWarning"] = "TMDB is temporarily unavailable; showing the last cached catalogue."
             _schedule_tmdb_catalogue_synopsis_enrichment(stale_response)
-            return _attach_saved_ott_enrichment(catalogue_key, stale_response)
+            return await _apply_movie_release_eligibility(_attach_saved_ott_enrichment(catalogue_key, stale_response), enabled=True)
         raise HTTPException(status_code=502, detail="Could not load the movie catalogue from TMDB.") from exc
     finally:
         if task.done() and _tmdb_movie_catalogue_inflight.get(cache_key) is task:
