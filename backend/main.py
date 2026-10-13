@@ -379,9 +379,13 @@ CORS_ORIGINS = [
     for origin in os.getenv("CORS_ORIGINS", "").split(",")
     if origin.strip()
 ]
+# Credentials are allowed below, so the default must NOT trust shared hosting
+# domains such as *.vercel.app or *.onrender.com: anyone can deploy a page there
+# and make credentialed requests to this API. Deployed frontends must be listed
+# explicitly in CORS_ORIGINS (or matched by a deliberate CORS_ORIGIN_REGEX).
 CORS_ORIGIN_REGEX = os.getenv(
     "CORS_ORIGIN_REGEX",
-    r"https://([a-zA-Z0-9-]+\.)*vercel\.app|https://([a-zA-Z0-9-]+\.)*onrender\.com|http://localhost(:\d+)?|http://127\.0\.0\.1(:\d+)?",
+    r"http://localhost(:\d+)?|http://127\.0\.0\.1(:\d+)?",
 )
 
 app.add_middleware(
@@ -524,7 +528,10 @@ async def attach_seedr_session(request: Request, call_next):
     try:
         path = request.url.path or ""
         method = request.method.upper()
-        if path.startswith("/api/seedr/") and method not in {"GET", "HEAD", "OPTIONS"}:
+        # Every state-changing API call needs the session CSRF token, not only
+        # /api/seedr/*: compatibility routes such as /api/files/delete and
+        # /api/v2/torrents/* also act on the connected Seedr account.
+        if path.startswith("/api/") and method not in {"GET", "HEAD", "OPTIONS"}:
             if not _seedr_session_csrf_ok(request):
                 response = JSONResponse(
                     status_code=403,
@@ -4639,12 +4646,27 @@ async def resolve_search_magnet(body: dict[str, Any]):
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     }
     try:
-        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True, headers=headers) as client:
-            response = await client.get(info_url)
-            final_url = urlsplit(str(response.url))
-            final_host = str(final_url.hostname or "").lower().removeprefix("www.")
-            if final_url.scheme != "https" or final_host not in allowed_hosts:
-                raise HTTPException(400, "The provider redirected to an unapproved domain.")
+        # Follow redirects manually so every hop is checked against the
+        # allowlist BEFORE it is requested (httpx would otherwise fetch an
+        # unapproved redirect target and we would only notice afterwards).
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=False, headers=headers) as client:
+            current_url = info_url
+            response = None
+            for _ in range(6):
+                response = await client.get(current_url)
+                if response.status_code not in {301, 302, 303, 307, 308}:
+                    break
+                location = response.headers.get("location")
+                if not location:
+                    break
+                next_url = urljoin(current_url, location)
+                next_parts = urlsplit(next_url)
+                next_host = str(next_parts.hostname or "").lower().removeprefix("www.")
+                if next_parts.scheme != "https" or next_host not in allowed_hosts:
+                    raise HTTPException(400, "The provider redirected to an unapproved domain.")
+                current_url = next_url
+            else:
+                raise HTTPException(502, "The torrent provider redirected too many times.")
             response.raise_for_status()
     except HTTPException:
         raise

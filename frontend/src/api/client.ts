@@ -245,12 +245,19 @@ const apiFetch = (input: RequestInfo | URL, init?: RequestInit) => {
   const value = String(input);
   const url = value.startsWith('/') ? API_BASE + value : value;
   const method = String(init?.method || 'GET').toUpperCase();
-  const isSeedrMutation =
-    value.startsWith('/api/seedr/') &&
+  // Some callers pass an absolute URL (API_BASE + '/api/...'); normalise to a
+  // path so the CSRF header is attached to every state-changing API request.
+  const path = value.startsWith('/')
+    ? value
+    : API_BASE && value.startsWith(API_BASE)
+      ? value.slice(API_BASE.length)
+      : value;
+  const isApiMutation =
+    path.startsWith('/api/') &&
     !['GET', 'HEAD', 'OPTIONS'].includes(method);
 
   const headers = new Headers(init?.headers || undefined);
-  if (isSeedrMutation && seedrCsrfToken) {
+  if (isApiMutation && seedrCsrfToken) {
     headers.set('X-Torrent-Studio-CSRF', seedrCsrfToken);
   }
 
@@ -423,9 +430,8 @@ export const api = {
   },
 
   async clearTmdbMovieCaches(): Promise<{ status: string; cacheTypes?: string[]; refetchRequired?: boolean }> {
-    const res = await fetch(API_BASE + '/api/movies/catalogue/cache/clear', {
+    const res = await apiFetch('/api/movies/catalogue/cache/clear', {
       method: 'POST',
-      credentials: 'include',
       cache: 'no-store',
     });
     const body = await res.text();

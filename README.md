@@ -25,9 +25,9 @@ For users who already created a Seedr account with Google/Facebook, Seedr may re
 
 Torrent Studio never asks the user for their Seedr password.
 
-Seedr's current settings page exposes **Add Device Code** under **Extensions, API & External Access**, and Seedr says its REST API uses OAuth2 for third-party integrations. citeturn160665search1turn160665search2
+Seedr's current settings page exposes **Add Device Code** under **Extensions, API & External Access**, and Seedr says its REST API uses OAuth2 for third-party integrations.
 
-The exact device-code endpoints used by the implementation are the currently reachable Seedr device-code endpoints; the live code endpoint returns a device code, user code, verification URL, expiry, and polling interval. citeturn594779view0
+The exact device-code endpoints used by the implementation are the currently reachable Seedr device-code endpoints; the live code endpoint returns a device code, user code, verification URL, expiry, and polling interval.
 
 ## Dynamic movie catalogues
 
@@ -87,6 +87,8 @@ SEEDR_SESSION_SECRET=<long-random-secret>
 CORS_ORIGINS=https://YOUR-VERCEL-DOMAIN.vercel.app
 ```
 
+`CORS_ORIGINS` (comma-separated) is required whenever the frontend is hosted on a different origin than the API. Because credentialed requests are allowed, the backend deliberately does **not** trust all `*.vercel.app` / `*.onrender.com` origins by default; only `localhost` / `127.0.0.1` are allowed unless you list your own origins or set `CORS_ORIGIN_REGEX`. All state-changing `/api/*` requests must also send the session CSRF token (`X-Torrent-Studio-CSRF`).
+
 A legacy developer token can only be used when explicitly enabled with:
 
 ```
@@ -142,4 +144,4 @@ Example using placeholders only:
 WATCHMODE_API_KEYS=your_first_key,your_second_key,your_third_key
 ```
 
-The backend tries another configured key after an authentication failure, server error, or transport failure. It does not switch keys on HTTP 429 rate-limit/quota responses or HTTP 403 access restrictions. Multiple keys should only be used in accordance with Watchmode's terms and each account's plan; this code does not treat keys as a way to bypass quotas. Watchmode source lookups send the key using the recommended `X-API-Key` request header. The backend rotates to another configured key for invalid-key authentication failures and transient server/transport failures, but respects HTTP 429 rate limits and HTTP 403 account/plan restrictions instead of switching accounts to bypass them.
+The backend tries another configured key after an authentication failure, server error, or transport failure. It does not switch keys on HTTP 429 rate-limit/quota responses or HTTP 403 access restrictions. Multiple keys should only be used in accordance with Watchmode's terms and each account's plan; this code does not treat keys as a way to bypass quotas. Watchmode source lookups send the key using the recommended `X-API-Key` request header.
