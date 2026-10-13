@@ -8096,11 +8096,11 @@ async def _fetch_paginated_regional_movie_catalogue(catalogue_key: str, page: in
     """Build stable 18-item display pages from eligible regional movie candidates."""
     page_size = 18
     wanted = page * page_size + 1
-    # Trending is a global feed, and language + release/OTT eligibility can
-    # leave very few results on its first pages. Scan a wider candidate pool
-    # so the UI can still fill its 18-card page without borrowing Popular rows.
-    max_source_pages = min(30, max(12, page * 6 + 12))
     is_trending = catalogue_key.startswith("trending-")
+    # Trending is global; language + India release/OTT eligibility can discard
+    # most candidates. Scan up to 30 weekly-trending pages to fill each
+    # 18-card regional page without borrowing popularity-ranked Discover rows.
+    max_source_pages = 30 if is_trending else min(30, max(6, page * 4 + 6))
     source_cache_prefix = catalogue_key + ("|trending-v2" if is_trending else "|released-v4")
     seen_ids: set[str] = set()
     eligible_rows: list[dict[str, Any]] = []
