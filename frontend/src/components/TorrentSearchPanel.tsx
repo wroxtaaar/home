@@ -30,7 +30,35 @@ type NexStreamEpisodePayload = { seasons: NexStreamSeason[]; episodes: NexStream
 // module cache so opening the picker and revisiting a title is usually instant.
 const nexStreamEpisodeCache = new Map<string, NexStreamEpisodePayload>();
 const nexStreamEpisodeRequests = new Map<string, Promise<NexStreamEpisodePayload>>();
+const NEXSTREAM_EPISODE_CACHE_STORAGE_KEY = 'home_nexstream_episode_metadata_v1';
 const nexStreamEpisodeCacheKey = (id: number, season: number) => String(id) + ':' + String(season);
+
+function readPersistentNexStreamEpisodeCache(key: string): NexStreamEpisodePayload | null {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(NEXSTREAM_EPISODE_CACHE_STORAGE_KEY) || '{}');
+    const payload = parsed && typeof parsed === 'object' ? parsed[key] : null;
+    if (
+      payload &&
+      Array.isArray(payload.seasons) &&
+      Array.isArray(payload.episodes) &&
+      Number.isFinite(Number(payload.selectedSeason))
+    ) {
+      return payload as NexStreamEpisodePayload;
+    }
+  } catch {}
+  return null;
+}
+
+function writePersistentNexStreamEpisodeCache(key: string, payload: NexStreamEpisodePayload): void {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(NEXSTREAM_EPISODE_CACHE_STORAGE_KEY) || '{}');
+    const cache = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    cache[key] = payload;
+    localStorage.setItem(NEXSTREAM_EPISODE_CACHE_STORAGE_KEY, JSON.stringify(cache));
+  } catch {
+    // Storage can be unavailable or full. In-memory caching still works.
+  }
+}
 const POSTER_TITLE_CACHE_STORAGE_KEY = 'home_poster_title_cache_v1';
 const POSTER_TITLE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 type CachedTitlePoster = { url: string; expiresAt: number };
@@ -95,6 +123,11 @@ async function fetchNexStreamEpisodeMetadata(tmdbId: number, season: number): Pr
   const key = nexStreamEpisodeCacheKey(tmdbId, season);
   const cached = nexStreamEpisodeCache.get(key);
   if (cached) return cached;
+  const persistentCached = readPersistentNexStreamEpisodeCache(key);
+  if (persistentCached) {
+    nexStreamEpisodeCache.set(key, persistentCached);
+    return persistentCached;
+  }
   const pending = nexStreamEpisodeRequests.get(key);
   if (pending) return pending;
 
@@ -122,6 +155,8 @@ async function fetchNexStreamEpisodeMetadata(tmdbId: number, season: number): Pr
         };
         nexStreamEpisodeCache.set(nexStreamEpisodeCacheKey(tmdbId, payload.selectedSeason), payload);
         nexStreamEpisodeCache.set(key, payload);
+        writePersistentNexStreamEpisodeCache(key, payload);
+        writePersistentNexStreamEpisodeCache(nexStreamEpisodeCacheKey(tmdbId, payload.selectedSeason), payload);
         return payload;
       } catch (error: any) {
         lastError = error;
