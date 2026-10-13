@@ -7861,7 +7861,7 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
     cache_key = (catalogue_key, page)
     cached = _REGIONAL_TV_DISCOVERY_CACHE.get(cache_key)
     cache_ttl = 900 if catalogue_key.endswith("-trending") else 21600
-    if cached and time.monotonic() - cached[0] < cache_ttl:
+    if cached and time.monotonic() - cached[0] < cache_ttl and not exclude_indian_broadcast_networks:
         return await filter_cached_networks(cached[1])
     if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
         raise HTTPException(status_code=503, detail="TMDB credentials are not configured.")
