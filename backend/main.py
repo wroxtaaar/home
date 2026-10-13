@@ -7868,110 +7868,116 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
 
     today = datetime.now(timezone.utc).date().isoformat()
     try:
-        # Global TMDB trending is not scoped to India/Hindi, so strict regional
-        # filters can discard every result. Discover within the target region
-        # and language, ranked by popularity, then verify OTT providers below.
-        payload = await _tmdb_get_json("discover/tv", {
-            "include_adult": "false",
-            "language": "en-US",
-            "sort_by": sort_by,
-            "with_origin_country": country,
-            "with_original_language": language,
-            "with_type": "2|4",
-            "watch_region": "IN",
-            "with_watch_monetization_types": "flatrate|free|ads",
-            "first_air_date.gte": "2015-01-01",
-            "first_air_date.lte": today,
-            "page": page,
-        })
+        # Build UI pages from the filtered result set, not raw TMDB pages.
+        # Continue fetching source pages until this page has 18 eligible series
+        # (or TMDB runs out), so strict Indian web-series filters don't leave gaps.
+        source_page = 1
+        source_total_pages = 1
+        eligible_rows: list[dict[str, Any]] = []
+        seen_ids: set[int] = set()
+        required_count = page * 18
+
+        while source_page <= source_total_pages and len(eligible_rows) < required_count:
+            payload = await _tmdb_get_json("discover/tv", {
+                "include_adult": "false",
+                "language": "en-US",
+                "sort_by": sort_by,
+                "with_origin_country": country,
+                "with_original_language": language,
+                "with_type": "2|4",
+                "watch_region": "IN",
+                "with_watch_monetization_types": "flatrate|free|ads",
+                "first_air_date.gte": "2015-01-01",
+                "first_air_date.lte": today,
+                "page": source_page,
+            })
+            source_total_pages = max(1, min(int(payload.get("total_pages") or 1), 500))
+
+            for item in payload.get("results", []):
+                if not isinstance(item, dict) or not item.get("id"):
+                    continue
+                try:
+                    tmdb_id = int(item["id"])
+                except (TypeError, ValueError):
+                    continue
+                if tmdb_id in seen_ids:
+                    continue
+                origins = item.get("origin_country") or []
+                original_language = str(item.get("original_language") or "").casefold()
+                if country not in origins or original_language != language:
+                    continue
+                air_date = str(item.get("first_air_date") or "").strip()
+                try:
+                    parsed_air_date = datetime.strptime(air_date[:10], "%Y-%m-%d").date()
+                    if parsed_air_date < datetime(2015, 1, 1).date() or parsed_air_date > datetime.now(timezone.utc).date():
+                        continue
+                except ValueError:
+                    continue
+
+                # Verify the canonical series type, soap/broadcaster exclusions,
+                # and Indian OTT availability before counting a result toward 18.
+                try:
+                    details = await _tmdb_get_json(f"tv/{tmdb_id}", {})
+                except Exception as exc:
+                    logger.info("Skipping TV item %s because series type could not be verified: %s", tmdb_id, type(exc).__name__)
+                    continue
+                series_type = str(details.get("type") or item.get("type") or "").casefold()
+                if series_type not in {"scripted", "miniseries"}:
+                    continue
+
+                networks = details.get("networks") if isinstance(details.get("networks"), list) else []
+                genres = details.get("genres") if isinstance(details.get("genres"), list) else []
+                title_candidates = (details.get("name"), details.get("original_name"), item.get("name"), item.get("original_name"))
+                if exclude_indian_broadcast_networks:
+                    if has_soap_genre(genres) or is_known_indian_soap(*title_candidates):
+                        continue
+                    if not networks or has_excluded_broadcast_network(networks):
+                        continue
+
+                providers = await _tv_streaming_providers(tmdb_id)
+                providers = [
+                    provider for provider in providers
+                    if str(provider.get("type") or "").casefold() in {"subscription", "free", "ads"}
+                ]
+                if not providers:
+                    continue
+
+                poster = str(item.get("poster_path") or details.get("poster_path") or "").strip()
+                backdrop = str(item.get("backdrop_path") or details.get("backdrop_path") or "").strip()
+                year_match = re.match(r"^(\d{4})", air_date)
+                eligible_rows.append({
+                    "id": tmdb_id,
+                    "title": str(item.get("name") or details.get("name") or "").strip(),
+                    "year": int(year_match.group(1)) if year_match else None,
+                    "releaseDate": air_date,
+                    "overview": str(item.get("overview") or details.get("overview") or "").strip(),
+                    "posterUrl": TMDB_IMAGE_BASE + poster if poster else "",
+                    "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop if backdrop else "",
+                    "rating": float(item.get("vote_average") or details.get("vote_average") or 0),
+                    "tmdbUrl": f"https://www.themoviedb.org/tv/{tmdb_id}",
+                    "streamingProviders": providers,
+                    "providerLink": "",
+                    "source": "TMDB",
+                    "originalLanguage": original_language,
+                    "originCountry": origins,
+                    "seriesType": series_type,
+                    "networks": networks,
+                    "genres": genres,
+                })
+                seen_ids.add(tmdb_id)
+            source_page += 1
     except HTTPException:
         raise
 
-    results = []
-    seen_ids = set()
-    for item in payload.get("results", []):
-        if not isinstance(item, dict) or not item.get("id"):
-            continue
-        try:
-            tmdb_id = int(item["id"])
-        except (TypeError, ValueError):
-            continue
-        if tmdb_id in seen_ids:
-            continue
-        origins = item.get("origin_country") or []
-        original_language = str(item.get("original_language") or "").casefold()
-        if country not in origins or original_language != language:
-            continue
-        air_date = str(item.get("first_air_date") or "").strip()
-        try:
-            parsed_air_date = datetime.strptime(air_date[:10], "%Y-%m-%d").date()
-            if parsed_air_date < datetime(2015, 1, 1).date() or parsed_air_date > datetime.now(timezone.utc).date():
-                continue
-        except ValueError:
-            continue
-
-        # TMDB's discover and trending feeds mix web series with broadcast formats.
-        # Check the canonical series type for every result, not only Trending.
-        try:
-            details = await _tmdb_get_json(f"tv/{tmdb_id}", {})
-        except Exception as exc:
-            logger.info("Skipping TV item %s because series type could not be verified: %s", tmdb_id, type(exc).__name__)
-            continue
-        series_type = str(details.get("type") or item.get("type") or "").casefold()
-        if series_type not in {"scripted", "miniseries"}:
-            continue
-
-        networks = details.get("networks") if isinstance(details.get("networks"), list) else []
-        genres = details.get("genres") if isinstance(details.get("genres"), list) else []
-        title_candidates = (details.get("name"), details.get("original_name"), item.get("name"), item.get("original_name"))
-        if exclude_indian_broadcast_networks:
-            if has_soap_genre(genres) or is_known_indian_soap(*title_candidates):
-                continue
-            # Missing network metadata is ambiguous; do not assume it is a web series.
-            if not networks or has_excluded_broadcast_network(networks):
-                continue
-
-        # The listing must show actual streaming access in India; rental/buy-only
-        # offers do not qualify as an OTT streaming listing.
-        providers = await _tv_streaming_providers(tmdb_id)
-        providers = [
-            provider for provider in providers
-            if str(provider.get("type") or "").casefold() in {"subscription", "free", "ads"}
-        ]
-        if not providers:
-            continue
-
-        poster = str(item.get("poster_path") or details.get("poster_path") or "").strip()
-        backdrop = str(item.get("backdrop_path") or details.get("backdrop_path") or "").strip()
-        year_match = re.match(r"^(\d{4})", air_date)
-        results.append({
-            "id": tmdb_id,
-            "title": str(item.get("name") or details.get("name") or "").strip(),
-            "year": int(year_match.group(1)) if year_match else None,
-            "releaseDate": air_date,
-            "overview": str(item.get("overview") or details.get("overview") or "").strip(),
-            "posterUrl": TMDB_IMAGE_BASE + poster if poster else "",
-            "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop if backdrop else "",
-            "rating": float(item.get("vote_average") or details.get("vote_average") or 0),
-            "tmdbUrl": f"https://www.themoviedb.org/tv/{tmdb_id}",
-            "streamingProviders": providers,
-            "providerLink": "",
-            "source": "TMDB",
-            "originalLanguage": original_language,
-            "originCountry": origins,
-            "seriesType": series_type,
-            "networks": networks,
-            "genres": genres,
-        })
-        seen_ids.add(tmdb_id)
-
-    # This endpoint exposes a consistent 18-card page size. TMDB returns 20
-    # candidates per source page, so keep up to 18 eligible verified rows.
-    results = results[:18]
+    start_index = (page - 1) * 18
+    results = eligible_rows[start_index:start_index + 18]
+    # UI pages are 18 filtered titles each. Estimate the number of pages from
+    # TMDB's candidate count; the last page may be shorter after verification.
+    total_eligible_pages = max(1, (int(payload.get("total_results") or len(eligible_rows)) + 17) // 18)
     result = {
         "catalogue": catalogue_key, "page": page,
-        "totalPages": int(payload.get("total_pages") or 1),
-        "totalResults": len(results),
+        "totalPages": total_eligible_pages,
+        "totalResults": len(eligible_rows),
         "pageSize": 18,
         "provider": "TMDB + verified India OTT availability",
         "results": results,
