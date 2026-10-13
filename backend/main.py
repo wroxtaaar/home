@@ -7800,9 +7800,9 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
                     except (TypeError, ValueError):
                         continue
                 updated = dict(result)
-                updated["results"] = filtered_by_year[:10]
+                updated["results"] = filtered_by_year[:18]
                 updated["totalResults"] = len(filtered_by_year)
-                updated["pageSize"] = 10
+                updated["pageSize"] = 18
                 return updated
             return result
         rows = result.get("results")
@@ -7965,14 +7965,14 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
         })
         seen_ids.add(tmdb_id)
 
-    # This endpoint exposes a consistent 10-card page size. TMDB itself returns
-    # 20 candidates per source page, so keep the first 10 eligible verified rows.
-    results = results[:10]
+    # This endpoint exposes a consistent 18-card page size. TMDB returns 20
+    # candidates per source page, so keep up to 18 eligible verified rows.
+    results = results[:18]
     result = {
         "catalogue": catalogue_key, "page": page,
         "totalPages": int(payload.get("total_pages") or 1),
         "totalResults": len(results),
-        "pageSize": 10,
+        "pageSize": 18,
         "provider": "TMDB + verified India OTT availability",
         "results": results,
     }
