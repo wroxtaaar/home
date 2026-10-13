@@ -140,12 +140,12 @@ def main():
     if TV_CACHE.exists():
         try:
             candidate = json.loads(TV_CACHE.read_text(encoding="utf-8"))
-            if int(candidate.get("version") or 0) >= 2:
+            if int(candidate.get("version") or 0) >= 3:
                 tv_old = candidate
         except Exception:
             tv_old = {}
     tv_cache = {
-        "version": 2,
+        "version": 3,
         "builtAt": tv_old.get("builtAt"),
         "catalogues": tv_old.get("catalogues", {}),
         "targetPerCatalogue": TARGET_PER_CATALOGUE,
