@@ -2643,7 +2643,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       posterBackgroundAttemptsRef.current.clear();
       posterBackgroundGenerationRef.current += 1;
 
-      if (page > 3 && /^(popular|trending|latest)-(bollywood|hollywood)$/.test(String(key))) {
+      if (page > 3) {
         // Deep pages paint quickly with source metadata and lightweight posters.
         // The full eligibility/provider/details response replaces this in the background.
         const basic = await api.getMovieCatalogue(key, page, onlyReleased, controller.signal, 5, true);
