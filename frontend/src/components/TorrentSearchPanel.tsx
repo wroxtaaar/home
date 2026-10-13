@@ -3491,8 +3491,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               // differently between the card and torrent-picker state, so use
               // the exact searched title/year as a safe fallback.
               const previewMatchesMovie =
-                movieTorrentPreviewCatalogueId === String(movie.id) ||
-                movieTorrentSearchTitle === movie.title + (movie.year ? ' ' + movie.year : '');
+                !/^(popular|trending|latest)-(bollywood|hollywood)$/.test(String(movieCatalogue.catalogue)) && (
+                  movieTorrentPreviewCatalogueId === String(movie.id) ||
+                  movieTorrentSearchTitle === movie.title + (movie.year ? ' ' + movie.year : '')
+                );
               const previewGroup = previewMatchesMovie ? movieTorrentPreviewGroup : null;
               if (previewGroup) {
                 const selectedKey = selectedMovieTorrentQualityByGroup[previewGroup.key] || torrentResultKey(previewGroup.variants[0]);
@@ -4189,6 +4191,51 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               )}
             </div>
           ) : (
+          {/^(popular|trending|latest)-(bollywood|hollywood)$/.test(String(movieCatalogue.catalogue)) && movieTorrentPreviewGroup && (
+            <section className="mb-3 overflow-hidden rounded-2xl border border-cyan-500/40 bg-slate-950 shadow-lg">
+              <div className="flex items-start justify-between gap-3 border-b border-slate-800 px-4 py-3">
+                <div className="min-w-0">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-cyan-300">Prepare card</div>
+                  <h3 className="mt-1 truncate text-sm font-bold text-slate-100">{movieTorrentPreviewGroup.title}</h3>
+                  <p className="mt-1 text-[11px] text-slate-400">Choose a release quality, then prepare it or try NexStream.</p>
+                </div>
+                <button type="button" onClick={() => { setMovieTorrentPreviewGroup(null); setMovieTorrentPreviewCatalogueId(null); setMovieTorrentSearchError(''); }} className="shrink-0 rounded-lg px-2 py-1 text-xs text-slate-400 hover:bg-slate-800 hover:text-white" aria-label="Close Prepare card">✕</button>
+              </div>
+              {(() => {
+                const group = movieTorrentPreviewGroup;
+                const selectedKey = selectedMovieTorrentQualityByGroup[group.key] || torrentResultKey(group.variants[0]);
+                const result = group.variants.find(variant => torrentResultKey(variant) === selectedKey) || group.variants[0];
+                const source = result.magnetUrl || result.downloadUrl || result.sourceUrl;
+                const torrentKey = result.infoHash || source || result.title;
+                const isPreparing = preparingTorrentKey === torrentKey;
+                const preparedFiles = preparedForResult(result);
+                const primaryFile = preparedFiles.find(file => /\\.(mkv|mp4|m4v|webm|mov|avi|m3u8|ts|mp3|wav|flac|aac|ogg|m4a)$/i.test(file.name)) || preparedFiles[0];
+                const qualityLabel = torrentQualityDetails(result).label;
+                return (
+                  <div className="grid gap-3 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                    <div className="min-w-0">
+                      {group.variants.length > 1 ? (
+                        <select aria-label={'Choose quality for ' + group.title} value={torrentResultKey(result)} onChange={event => setSelectedMovieTorrentQualityByGroup(previous => ({ ...previous, [group.key]: event.target.value }))} className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-xs font-medium text-slate-200 outline-none focus:border-cyan-500">
+                          {group.variants.map(variant => <option key={torrentResultKey(variant)} value={torrentResultKey(variant)}>{torrentQualityDetails(variant).label} · {formatBytes(Number(variant.size) || 0)} · ▲{Number(variant.seeders) || 0}{variant.indexer ? ' · ' + variant.indexer : ''}</option>)}
+                        </select>
+                      ) : <div className="text-xs font-semibold text-slate-200">{qualityLabel}</div>}
+                      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-400">
+                        <span>{formatBytes(Number(result.size) || 0)}</span><span className="text-emerald-400">▲ {Number(result.seeders) || 0} seeders</span><span className="text-amber-400">▼ {Number(result.leechers) || 0} peers</span>{result.indexer && <span>{result.indexer}</span>}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                      {preparedFiles.length > 0 && primaryFile ? (
+                        <button type="button" onClick={async () => { setPlayingTorrentKey(torrentKey); try { await onPlaySeedrFile?.(primaryFile); } finally { setPlayingTorrentKey(current => current === torrentKey ? null : current); } }} disabled={playingTorrentKey === torrentKey} className="rounded-lg bg-emerald-400 px-4 py-2 text-xs font-bold text-slate-950 disabled:opacity-60">{playingTorrentKey === torrentKey ? 'Opening…' : 'Play'}</button>
+                      ) : (
+                        <button type="button" onClick={() => void prepareMovieTorrent(result)} disabled={!source || isPreparing} className="rounded-lg bg-cyan-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-50">{isPreparing ? 'Preparing…' : 'Prepare'}</button>
+                      )}
+                      <button type="button" disabled={!Number(movieTorrentPreviewGroup.posterResult?.tmdbId || movieTorrentPreviewGroup.posterResult?.id) || nexStreamResolvingId === 'movie:' + String(movieTorrentPreviewGroup.posterResult?.tmdbId || movieTorrentPreviewGroup.posterResult?.id)} onClick={() => { const item = movieTorrentPreviewGroup.posterResult; const tmdbId = Number(item?.tmdbId || item?.id); if (!Number.isInteger(tmdbId) || tmdbId <= 0) { setNexStreamError('This catalogue card has no valid TMDB ID for NexStream.'); return; } void playWithNexStream({ id: tmdbId, title: item.title || movieTorrentPreviewGroup.title, date: item.releaseDate || (item.year ? String(item.year) : ''), overview: item.overview || '', poster: item.posterUrl || null, type: 'movie' }); }} className="rounded-lg border border-violet-400/50 bg-violet-500/15 px-4 py-2 text-xs font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-50">{nexStreamResolvingId.startsWith('movie:') ? 'Resolving…' : 'NexStream'}</button>
+                    </div>
+                  </div>
+                );
+              })()}
+            </section>
+          )}
           <div
             className="grid grid-cols-2 items-stretch gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:rounded-2xl lg:border-0 lg:bg-transparent lg:gap-4 lg:w-full lg:max-w-none lg:mx-0 lg:p-0 lg:divide-y-0 lg:overflow-visible"
           >
