@@ -8251,21 +8251,23 @@ async def api_tmdb_movie_catalogue(
     if catalogue_key not in allowed:
         raise HTTPException(status_code=404, detail="Unknown movie catalogue.")
 
-    if basic and catalogue_key in {
-        "popular-bollywood", "trending-bollywood", "latest-bollywood",
-        "popular-hollywood", "trending-hollywood", "latest-hollywood",
-    }:
-        # Fast first paint for deep pages: return source metadata immediately;
+    if basic:
+        # Fast first paint for deep pages: return basic source metadata immediately;
         # the frontend replaces this with the fully eligible/enriched page.
-        fast_key = (catalogue_key + "|fast-basic-v1", page)
+        fast_key = (catalogue_key + "|fast-basic-v2", page)
         fast_cached = _tmdb_movie_catalogue_cache.get(fast_key)
         if fast_cached and time.monotonic() - fast_cached[0] < 900:
             return fast_cached[1]
         raw = await _tmdb_fetch_movie_catalogue(catalogue_key, page, True)
         rows = [row for row in (raw.get("results") or []) if isinstance(row, dict)]
-        excluded = {"tantesiska", "kunwaridulhan", "mastram"}
+        normalized_titles = {
+            re.sub(r"[^a-z0-9]+", "", str(row.get("title") or "").casefold())
+            for row in rows
+        }
+        # Keep the same permanent exclusions in the fast first-paint response.
+        excluded_bollywood = {"tantesiska", "kunwaridulhan", "mastram"}
         if catalogue_key == "popular-bollywood":
-            rows = [row for row in rows if re.sub(r"[^a-z0-9]+", "", str(row.get("title") or "").casefold()) not in excluded]
+            rows = [row for row in rows if re.sub(r"[^a-z0-9]+", "", str(row.get("title") or "").casefold()) not in excluded_bollywood]
         if catalogue_key in {"popular-bollywood", "trending-bollywood", "latest-bollywood"}:
             rows = [row for row in rows if re.sub(r"[^a-z0-9]+", "", str(row.get("title") or "").casefold()) not in {"gangaa", "dearishq", "mastram"}]
         fast_payload = dict(raw)
