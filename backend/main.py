@@ -7692,6 +7692,7 @@ async def api_tmdb_dc_live_action_tv_catalogue(page: int = Query(1, ge=1, le=500
 
 _REGIONAL_TV_PAGE_CACHE: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
 _REGIONAL_TV_PAGE_CACHE_TTL = 6 * 60 * 60
+REGIONAL_TV_PREBUILT_CACHE_FILE = Path(os.getenv("REGIONAL_TV_PREBUILT_CACHE_FILE", "/app/data/regional_tv_prebuilt_cache.json"))
 _INDIAN_LINEAR_TV_NETWORKS = {
     "starplus", "colors", "zee tv", "zeetv", "sony entertainment television",
     "sony sab", "sab tv", "dd national", "andtv", "&tv", "star bharat",
@@ -7703,6 +7704,7 @@ _INDIAN_LINEAR_TV_NETWORKS = {
 async def api_tmdb_regional_web_series_catalogue(
     catalogue_key: str,
     page: int = Query(1, ge=1, le=500),
+    refresh: bool = Query(False),
 ):
     """Discover OTT web series; Indian entries are Hindi-language and OTT-only."""
     allowed = {
@@ -7712,6 +7714,25 @@ async def api_tmdb_regional_web_series_catalogue(
     if catalogue_key not in allowed:
         raise HTTPException(status_code=404, detail="Unknown TV catalogue.")
     cache_key = (catalogue_key, page)
+    if not refresh:
+        try:
+            with REGIONAL_TV_PREBUILT_CACHE_FILE.open("r", encoding="utf-8") as handle:
+                prebuilt = json.load(handle)
+            snapshot = (prebuilt.get("catalogues") or {}).get(catalogue_key) or {}
+            for saved_page in snapshot.get("pages") or []:
+                if int(saved_page.get("page") or 0) == page:
+                    rows = saved_page.get("results") or []
+                    return {
+                        "catalogue": catalogue_key,
+                        "page": page,
+                        "totalPages": int(saved_page.get("totalPages") or len(snapshot.get("pages") or []) or 1),
+                        "totalResults": int(saved_page.get("totalResults") or snapshot.get("seriesCount") or len(rows)),
+                        "provider": "Persistent Home cache · TMDB + confirmed India OTT availability",
+                        "results": rows,
+                        "cached": True,
+                    }
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
     cached = _REGIONAL_TV_PAGE_CACHE.get(cache_key)
     now = time.monotonic()
     if cached and now - cached[0] < _REGIONAL_TV_PAGE_CACHE_TTL:
