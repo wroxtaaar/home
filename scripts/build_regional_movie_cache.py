@@ -143,7 +143,7 @@ def main():
         except Exception:
             tv_old = {}
     tv_cache = {
-        "version": 1,
+        "version": 2,
         "builtAt": tv_old.get("builtAt"),
         "catalogues": tv_old.get("catalogues", {}),
         "targetPerCatalogue": TARGET_PER_CATALOGUE,
