@@ -4733,7 +4733,7 @@ async def resolve_search_magnet(body: dict[str, Any]):
 # One-time Marvel catalogue. Results are shared by every visitor to this Home
 # instance and never expire; the deployment mounts /app/data on persistent VPS
 # storage so a container replacement does not force another provider crawl.
-MARVEL_CATALOGUE_VERSION = 6
+MARVEL_CATALOGUE_VERSION = 7
 MARVEL_CATALOGUE_PATH = Path(os.getenv("MARVEL_CATALOGUE_PATH", "/app/data/marvel_catalogue.json"))
 # Curated live-action theatrical Marvel films across studios (Marvel Studios, Fox,
 # Sony, Universal, etc.). Excludes TV films, specials, documentaries, and animated
@@ -4783,6 +4783,8 @@ MARVEL_MOVIE_SEARCHES: tuple[tuple[str, int], ...] = (
     ("Kraven the Hunter", 2024),
     ("Madame Web", 2024),
     ("Venom: The Last Dance", 2024),
+    ("Morbius", 2022),
+    ("The New Mutants", 2020),
     ("Deadpool 2", 2018),
     ("Venom", 2018),
     ("Logan", 2017),
@@ -4899,6 +4901,198 @@ def _write_marvel_catalogue(payload: dict[str, Any]) -> None:
                 temporary_path.unlink()
             except OSError:
                 pass
+
+
+def _merge_bundled_marvel_catalogue_cache(
+    payload: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Restore curated, OTT-enriched torrent rows from the bundled snapshot.
+
+    The VPS's persistent cache can be older and narrower than the bundled
+    snapshot. Merge only titles in the current curated list, while leaving the
+    cache version old so the normal background refresh still runs.
+    """
+    seed_path = _CACHE_SEED_DIR / "marvel_catalogue.json"
+    try:
+        seed_payload = json.loads(seed_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return payload
+
+    if not isinstance(seed_payload, dict) or not isinstance(seed_payload.get("results"), list):
+        return payload
+    if payload and (
+        int(payload.get("version") or 0) >= MARVEL_CATALOGUE_VERSION
+        or int(payload.get("seedMigrationVersion") or 0) >= MARVEL_CATALOGUE_VERSION
+    ):
+        return payload
+
+    # With no usable live file, start from the seed's metadata but rebuild its
+    # result list from current allowed titles only (no legacy TV films/specials).
+    if isinstance(payload, dict) and isinstance(payload.get("results"), list):
+        migrated = dict(payload)
+        rows = [dict(item) for item in payload["results"] if isinstance(item, dict)]
+    else:
+        migrated = dict(seed_payload)
+        migrated["results"] = []
+        rows = []
+
+    current_titles = {
+        (re.sub(r"[^a-z0-9]+", "", title.casefold()), year): title
+        for title, year in MARVEL_MOVIE_SEARCHES
+    }
+
+    def row_key(item: dict[str, Any]) -> str:
+        digest = str(item.get("infoHash") or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", digest):
+            digest = info_hash(str(item.get("magnetUrl") or item.get("downloadUrl") or ""))
+        if re.fullmatch(r"[0-9a-f]{40}", digest, re.I):
+            return "hash:" + digest.lower()
+        normalized = _normalize_title(str(item.get("title") or ""))
+        if not normalized:
+            return ""
+        try:
+            size = int(float(item.get("size") or 0))
+        except (TypeError, ValueError, OverflowError):
+            size = 0
+        return f"title-size:{normalized}|{size}"
+
+    def score(item: dict[str, Any]) -> tuple[int, int]:
+        try:
+            seeders = int(float(item.get("seeders") or 0))
+        except (TypeError, ValueError, OverflowError):
+            seeders = 0
+        try:
+            leechers = int(float(item.get("leechers") or 0))
+        except (TypeError, ValueError, OverflowError):
+            leechers = 0
+        return seeders, leechers
+
+    def missing(value: Any) -> bool:
+        return value is None or value == "" or value == [] or value == {}
+
+    def ott_score(value: Any) -> int:
+        if not isinstance(value, dict):
+            return 0
+        streaming = value.get("streamingProviders") or []
+        rent = value.get("rentProviders") or []
+        buy = value.get("buyProviders") or []
+        status = str(value.get("status") or "").strip().lower()
+        if streaming:
+            return 4
+        if rent or buy:
+            return 3
+        if status in {"unavailable", "not_available", "not available"}:
+            return 2
+        if status and status not in {"unknown", "error", "pending"}:
+            return 1
+        return 0
+
+    metadata_fields = (
+        "tmdbId", "tmdbUrl", "releaseDate", "rating", "posterUrl",
+        "backdropUrl", "overview", "genres", "synopsisCheckedAt",
+        "synopsisLookupVersion", "synopsisSource", "ottAvailability",
+    )
+    positions: dict[str, int] = {}
+    for index, item in enumerate(rows):
+        key = row_key(item)
+        if key:
+            positions[key] = index
+
+    changed = False
+    restored_rows = 0
+    restored_titles: set[tuple[str, int]] = set()
+    for seed_item in seed_payload["results"]:
+        if (
+            not isinstance(seed_item, dict)
+            or _catalogue_row_has_3d_quality(seed_item)
+            or _catalogue_row_is_excluded_franchise_title(seed_item)
+        ):
+            continue
+        old_title = str(
+            seed_item.get("marvelCatalogueTitle")
+            or seed_item.get("catalogueTitle")
+            or seed_item.get("mediaTitle")
+            or ""
+        ).strip()
+        try:
+            old_year = int(seed_item.get("year") or 0)
+        except (TypeError, ValueError, OverflowError):
+            old_year = 0
+        canonical = current_titles.get((
+            re.sub(r"[^a-z0-9]+", "", old_title.casefold()),
+            old_year,
+        ))
+        if not canonical:
+            continue
+
+        candidate = dict(seed_item)
+        candidate["mediaTitle"] = canonical
+        candidate["marvelCatalogueTitle"] = canonical
+        candidate["year"] = old_year
+        key = row_key(candidate)
+        if not key:
+            continue
+        restored_titles.add((
+            re.sub(r"[^a-z0-9]+", "", canonical.casefold()),
+            old_year,
+        ))
+
+        position = positions.get(key)
+        if position is None:
+            positions[key] = len(rows)
+            rows.append(candidate)
+            restored_rows += 1
+            changed = True
+            continue
+
+        existing = rows[position]
+        merged = dict(existing)
+        if score(candidate) > score(existing):
+            merged = dict(candidate)
+            for field in metadata_fields:
+                if missing(merged.get(field)) and not missing(existing.get(field)):
+                    merged[field] = existing[field]
+
+        # Preserve the better existing metadata, but restore useful India OTT
+        # results when the persistent row has no provider data or only an error.
+        for field in metadata_fields:
+            value = candidate.get(field)
+            if field == "ottAvailability":
+                if ott_score(value) > ott_score(merged.get(field)):
+                    merged[field] = value
+            elif missing(merged.get(field)) and not missing(value):
+                merged[field] = value
+
+        if merged != existing:
+            rows[position] = merged
+            changed = True
+
+    if not changed and int(migrated.get("seedMigrationVersion") or 0) >= MARVEL_CATALOGUE_VERSION:
+        return migrated
+
+    migrated["results"] = _sort_cached_catalogue_results(rows)
+    migrated["resultCount"] = len(migrated["results"])
+    migrated["movieCount"] = len({
+        (
+            re.sub(
+                r"[^a-z0-9]+", "",
+                str(item.get("marvelCatalogueTitle") or item.get("mediaTitle") or item.get("title") or "").casefold(),
+            ),
+            int(item.get("year") or 0),
+        )
+        for item in migrated["results"]
+        if isinstance(item, dict)
+    })
+    migrated["titlesQueried"] = len(MARVEL_MOVIE_SEARCHES)
+    migrated["seedMigrationVersion"] = MARVEL_CATALOGUE_VERSION
+    _write_marvel_catalogue(migrated)
+    logger.info(
+        "Restored %d torrent variants across %d curated Marvel titles from bundled snapshot %s",
+        restored_rows,
+        len(restored_titles),
+        seed_path.name,
+    )
+    return migrated
 
 
 def _marvel_result_matches_title(item: dict[str, Any], title: str, year: int) -> bool:
@@ -5126,7 +5320,7 @@ async def _build_marvel_catalogue() -> None:
             _marvel_catalogue_state["resultCount"] = len(rows_by_hash)
             _marvel_catalogue_state["movieCount"] = len(found_movies)
 
-        # Preserve valid variants for current MCU titles if a provider misses them
+        # Preserve valid variants for current curated Marvel titles if a provider misses them
         # during this rebuild; new search hits are merged into the existing cache.
         previous_payload = _read_marvel_catalogue()
         current_titles = {
@@ -8881,7 +9075,7 @@ async def api_search_saved_ott(titles: list[str] = Query(..., min_length=1, max_
 @app.get("/api/catalogue/marvel")
 async def api_marvel_catalogue():
     global _marvel_catalogue_task
-    cached = _read_marvel_catalogue()
+    cached = _merge_bundled_marvel_catalogue_cache(_read_marvel_catalogue())
     if cached:
         # Keep the current cache available immediately while rebuilding it once
         # when its version predates the updated MCU film list.
