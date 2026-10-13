@@ -854,6 +854,25 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     };
   }, [openRegionalCatalogueMenu]);
 
+  useEffect(() => {
+    if (!openRegionalTvMenu) return;
+    const handleOutsidePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Element && !target.closest('[data-regional-tv-menu="true"]')) {
+        setOpenRegionalTvMenu(null);
+      }
+    };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpenRegionalTvMenu(null);
+    };
+    document.addEventListener('pointerdown', handleOutsidePointerDown);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('pointerdown', handleOutsidePointerDown);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [openRegionalTvMenu]);
+
   const openRegionalTvCatalogue = async (group: RegionalTvGroup, mode: RegionalTvMode) => {
     const key = group + '-' + mode;
     setRegionalTvModes(previous => ({ ...previous, [group]: mode }));
