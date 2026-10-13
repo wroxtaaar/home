@@ -208,12 +208,59 @@ async def search_titles(
     return result
 
 
+
+
+_NEXSTREAM_EPISODE_CACHE_PATH = Path(os.getenv("NEXSTREAM_EPISODE_CACHE_PATH", "/app/data/nexstream_episode_metadata_cache.json"))
+_NEXSTREAM_EPISODE_CACHE_LOCK = threading.Lock()
+
+
+def _read_episode_cache(tmdb_id: int, season: int):
+    try:
+        with _NEXSTREAM_EPISODE_CACHE_LOCK:
+            if not _NEXSTREAM_EPISODE_CACHE_PATH.is_file():
+                return None
+            data = json.loads(_NEXSTREAM_EPISODE_CACHE_PATH.read_text(encoding="utf-8"))
+        show = (data.get("shows") or {}).get(str(tmdb_id)) or {}
+        episodes = (show.get("episodesBySeason") or {}).get(str(season))
+        if episodes is None:
+            return None
+        return {"success": True, "tmdbId": tmdb_id, "seasons": show.get("seasons") or [], "selectedSeason": season, "episodes": episodes, "cached": True}
+    except Exception:
+        return None
+
+
+def _write_episode_cache(tmdb_id: int, seasons: list, season: int, episodes: list) -> None:
+    try:
+        _NEXSTREAM_EPISODE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _NEXSTREAM_EPISODE_CACHE_LOCK:
+            data = {"shows": {}}
+            if _NEXSTREAM_EPISODE_CACHE_PATH.is_file():
+                try:
+                    existing = json.loads(_NEXSTREAM_EPISODE_CACHE_PATH.read_text(encoding="utf-8"))
+                    if isinstance(existing, dict):
+                        data = existing
+                except Exception:
+                    pass
+            shows = data.setdefault("shows", {})
+            show = shows.setdefault(str(tmdb_id), {"tmdbId": tmdb_id, "seasons": [], "episodesBySeason": {}})
+            show["tmdbId"] = tmdb_id
+            show["seasons"] = seasons or show.get("seasons", [])
+            show.setdefault("episodesBySeason", {})[str(season)] = episodes
+            temp = _NEXSTREAM_EPISODE_CACHE_PATH.with_suffix(".json.tmp")
+            temp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            temp.replace(_NEXSTREAM_EPISODE_CACHE_PATH)
+    except Exception:
+        return
+
 @router.get("/api/nexstream/episodes")
 async def get_tv_episodes(
     tmdb_id: int = Query(..., gt=0),
     season: int = Query(1, ge=1),
 ):
-    """Return TMDB season and episode metadata for the in-page NexStream picker."""
+    """Serve persisted episode metadata first; fetch TMDB only on cache misses."""
+    cached = _read_episode_cache(tmdb_id, season)
+    if cached is not None:
+        return cached
     api_keys = _env_values("TMDB_API_KEYS", "TMDB_API_KEY")
     bearer_tokens = _env_values("TMDB_READ_ACCESS_TOKENS", "TMDB_READ_ACCESS_TOKEN", "TMDB_BEARER_TOKEN")
     if not api_keys and not bearer_tokens:
@@ -270,6 +317,7 @@ async def get_tv_episodes(
         for item in season_data.get("episodes", [])
         if isinstance(item, dict) and int(item.get("episode_number", 0)) > 0
     ]
+    _write_episode_cache(tmdb_id, seasons, selected_season, episodes)
     return {"success": True, "tmdbId": tmdb_id, "seasons": seasons, "selectedSeason": selected_season, "episodes": episodes}
 
 
