@@ -7439,6 +7439,26 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_on
                 recent_cutoff = datetime.fromtimestamp(time.time() - 5 * 365 * 86400, timezone.utc).date()
                 params["primary_release_date.gte"] = recent_cutoff.isoformat()
             payload = await _tmdb_get_json("discover/movie", params)
+            if mode == "latest" and not (payload.get("results") or []):
+                # TMDB's primary_release_date filter can return an empty page
+                # for English-language films with regional-only release dates.
+                # Retry using the broader release_date fields while retaining
+                # the language and five-year window.
+                fallback_params = dict(params)
+                fallback_params.pop("primary_release_date.gte", None)
+                fallback_params["release_date.gte"] = recent_cutoff.isoformat()
+                fallback_params["sort_by"] = "release_date.desc"
+                fallback = await _tmdb_get_json("discover/movie", fallback_params)
+                if fallback.get("results"):
+                    payload = fallback
+                else:
+                    # Last fallback: popularity ranking inside the same date
+                    # window. This avoids a permanently empty catalogue when
+                    # the release-date sort/filter combination is sparse.
+                    fallback_params["sort_by"] = "popularity.desc"
+                    fallback = await _tmdb_get_json("discover/movie", fallback_params)
+                    if fallback.get("results"):
+                        payload = fallback
     else:
         raise HTTPException(status_code=404, detail="Unknown movie catalogue.")
 
