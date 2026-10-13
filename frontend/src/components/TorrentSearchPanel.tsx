@@ -3563,15 +3563,21 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 );
                 return (
                   <MovieCatalogueCard
-                    key={String(movie.id)}
+                    // Force a fresh image element when a movie switches from its
+                    // catalogue card to the selected Prepare card. Reusing the
+                    // same keyed DOM node can preserve the old hidden/broken-image
+                    // inline styles from a prior poster failure.
+                    key={'movie-prepare-' + String(movie.id)}
                     className="relative border-slate-800 transition hover:border-slate-700"
                   >
                     <div className="relative aspect-[2/3] w-full overflow-hidden rounded-t-xl bg-slate-950">
                       {posterUrl ? (
                         <img
+                          key={'prepare-poster-' + String(movie.id) + '-' + posterUrl}
                           src={posterUrl}
                           alt={previewGroup.title}
-                          loading="lazy"
+                          loading="eager"
+                          style={{ display: 'block' }}
                           className="h-full w-full object-cover"
                           onLoad={(event) => {
                             const key = posterKeyFor(previewGroup.posterResult);
@@ -3681,10 +3687,32 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           })}
                         </select>
                       )}
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="shrink-0 font-mono text-[10px] sm:text-[11px] text-slate-300">
-                          {formatBytes(Number(result.size) || 0)}
-                        </span>
+                      <div className="font-mono text-[10px] sm:text-[11px] text-slate-300">
+                        {formatBytes(Number(result.size) || 0)}
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          disabled={!Number(movie.tmdbId || movie.id) || nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id)}
+                          onClick={() => {
+                            const tmdbId = Number(movie.tmdbId || movie.id);
+                            if (!Number.isInteger(tmdbId) || tmdbId <= 0) {
+                              setNexStreamError('This catalogue card has no valid TMDB ID for NexStream.');
+                              return;
+                            }
+                            void playWithNexStream({
+                              id: tmdbId,
+                              title: movie.title,
+                              date: movie.releaseDate || (movie.year ? String(movie.year) : ''),
+                              overview: movie.overview || '',
+                              poster: movie.posterUrl || movieTorrentPreviewPosterUrl || null,
+                              type: 'movie',
+                            });
+                          }}
+                          className="min-w-0 rounded-lg border border-violet-400/50 bg-violet-500/15 px-2 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-50"
+                        >
+                          {nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id) ? 'Resolving…' : 'Direct Stream'}
+                        </button>
                         {preparedFiles.length > 0 && primaryFile ? (
                           <button
                             type="button"
@@ -3694,7 +3722,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                               finally { setPlayingTorrentKey(current => current === torrentKey ? null : current); }
                             }}
                             disabled={playingTorrentKey === torrentKey}
-                            className="shrink-0 rounded-lg bg-emerald-400 px-3 py-2 text-xs font-bold text-slate-950 disabled:opacity-60"
+                            className="min-w-0 rounded-lg bg-emerald-400 px-2 py-2 text-xs font-bold text-slate-950 disabled:opacity-60"
                           >
                             {playingTorrentKey === torrentKey ? 'Opening…' : 'Play'}
                           </button>
@@ -3703,34 +3731,12 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             type="button"
                             onClick={() => void prepareMovieTorrent(result)}
                             disabled={!source || isPreparing}
-                            className="shrink-0 rounded-lg bg-cyan-500 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-50"
+                            className="min-w-0 rounded-lg bg-cyan-500 px-2 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-50"
                           >
                             {isPreparing ? 'Preparing…' : 'Prepare'}
                           </button>
                         )}
                       </div>
-                      <button
-                        type="button"
-                        disabled={!Number(movie.tmdbId || movie.id) || nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id)}
-                        onClick={() => {
-                          const tmdbId = Number(movie.tmdbId || movie.id);
-                          if (!Number.isInteger(tmdbId) || tmdbId <= 0) {
-                            setNexStreamError('This catalogue card has no valid TMDB ID for NexStream.');
-                            return;
-                          }
-                          void playWithNexStream({
-                            id: tmdbId,
-                            title: movie.title,
-                            date: movie.releaseDate || (movie.year ? String(movie.year) : ''),
-                            overview: movie.overview || '',
-                            poster: movie.posterUrl || null,
-                            type: 'movie',
-                          });
-                        }}
-                        className="w-full rounded-lg border border-violet-400/50 bg-violet-500/15 px-2 py-2 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-50"
-                      >
-                        {nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id) ? 'Resolving stream…' : 'Direct Stream'}
-                      </button>
                     </div>
                   </MovieCatalogueCard>
                 );
