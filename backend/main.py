@@ -8312,6 +8312,7 @@ async def api_tmdb_movie_catalogue(
 async def api_tmdb_movie_ott_availability(
     movie_id: int,
     region: str = Query("IN", min_length=2, max_length=2),
+    force: bool = Query(False),
 ):
     """Return cached streaming, rental, purchase and digital-release data for one movie."""
     if movie_id < 1:
@@ -8322,26 +8323,26 @@ async def api_tmdb_movie_ott_availability(
         raise HTTPException(status_code=422, detail="Region must be a two-letter country code.")
 
     cache_key = (movie_id, region)
-    now = time.monotonic()
     cached = _tmdb_ott_cache.get(cache_key)
-    if cached:
-        # OTT availability is deliberately a permanent snapshot: opening the
-        # same film/region must not trigger another Watchmode/TMDB lookup.
+    if cached and not force:
         return cached[1]
 
-    persistent = _read_tmdb_ott_persistent_cache(cache_key)
+    persistent = None if force else _read_tmdb_ott_persistent_cache(cache_key)
     if persistent:
         _saved_at, persistent_payload = persistent
         _tmdb_ott_cache[cache_key] = (time.monotonic(), persistent_payload)
         return persistent_payload
 
-    # There is no saved result yet, so perform the first lookup. Once saved,
-    # this result remains available until an explicit cache clear.
+    # force=true bypasses both caches for a fresh provider lookup.
     stale_payload = None
     task = _tmdb_ott_inflight.get(cache_key)
-    if task is None or task.done():
+    owns_inflight_task = False
+    if force:
+        task = asyncio.create_task(_tmdb_fetch_movie_ott_availability(movie_id, region))
+    elif task is None or task.done():
         task = asyncio.create_task(_tmdb_fetch_movie_ott_availability(movie_id, region))
         _tmdb_ott_inflight[cache_key] = task
+        owns_inflight_task = True
     try:
         payload = await task
         _tmdb_ott_cache[cache_key] = (time.monotonic(), payload)
@@ -8363,7 +8364,7 @@ async def api_tmdb_movie_ott_availability(
             return stale_response
         raise HTTPException(status_code=502, detail="Could not load OTT availability from TMDB.") from exc
     finally:
-        if task.done() and _tmdb_ott_inflight.get(cache_key) is task:
+        if owns_inflight_task and task.done() and _tmdb_ott_inflight.get(cache_key) is task:
             _tmdb_ott_inflight.pop(cache_key, None)
 
 
