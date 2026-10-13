@@ -1036,8 +1036,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
   type MarvelFilmFilter = 'all' | 'mcu' | 'spider-man' | 'x-men' | 'sony' | 'old-marvel';
   const [marvelFilmFilter, setMarvelFilmFilter] = useState<MarvelFilmFilter>('all');
-  const [isMarvelEnglishResults, setIsMarvelEnglishResults] = useState(false);
-  const [showMarvelWebSeries, setShowMarvelWebSeries] = useState(false);
 
   const visibleMovieCatalogueItems = useMemo(() => {
     let movies = movieCatalogue?.results || [];
