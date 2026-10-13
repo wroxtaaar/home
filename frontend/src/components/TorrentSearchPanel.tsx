@@ -4155,7 +4155,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               </div>
               {(() => {
                 const goToRegionalPage = async (targetPage: number) => {
-                  if (regionalWebSeriesLoading || targetPage < 1 || targetPage > regionalWebSeriesCatalogue.totalPages || targetPage === regionalWebSeriesCatalogue.page) return;
+                  if (regionalWebSeriesLoading || targetPage < 1 || targetPage === regionalWebSeriesCatalogue.page) return;
                   setRegionalWebSeriesLoading(true);
                   setRegionalWebSeriesError('');
                   try {
@@ -4171,7 +4171,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   <div className="flex items-center justify-between gap-3">
                     <button type="button" disabled={regionalWebSeriesLoading || regionalWebSeriesCatalogue.page <= 1} onClick={() => void goToRegionalPage(regionalWebSeriesCatalogue.page - 1)} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-semibold text-slate-200 hover:border-cyan-500 disabled:cursor-not-allowed disabled:opacity-40">← Previous</button>
                     <span className="text-xs text-slate-500">Page {regionalWebSeriesCatalogue.page} of {regionalWebSeriesCatalogue.totalPages}</span>
-                    <button type="button" disabled={regionalWebSeriesLoading || regionalWebSeriesCatalogue.page >= regionalWebSeriesCatalogue.totalPages} onClick={() => void goToRegionalPage(regionalWebSeriesCatalogue.page + 1)} className="rounded-lg border border-cyan-500/50 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-40">Next →</button>
+                    <button type="button" disabled={regionalWebSeriesLoading || regionalWebSeriesCatalogue.results.length < 18} onClick={() => void goToRegionalPage(regionalWebSeriesCatalogue.page + 1)} className="rounded-lg border border-cyan-500/50 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-40">Next →</button>
                   </div>
                 );
               })()}
