@@ -8241,6 +8241,7 @@ async def api_tmdb_movie_catalogue(
     page: int = Query(1, ge=1, le=500),
     released_only: bool = Query(True),
     max_size_gb: int = Query(5, ge=1, le=5),
+    basic: bool = Query(False),
 ):
     allowed = {
         "marvel", "dc-live-action", "dc-animated",
@@ -8249,6 +8250,28 @@ async def api_tmdb_movie_catalogue(
     }
     if catalogue_key not in allowed:
         raise HTTPException(status_code=404, detail="Unknown movie catalogue.")
+
+    if basic and catalogue_key in {
+        "popular-bollywood", "trending-bollywood", "latest-bollywood",
+        "popular-hollywood", "trending-hollywood", "latest-hollywood",
+    }:
+        # Fast first paint for deep pages: return source metadata immediately;
+        # the frontend replaces this with the fully eligible/enriched page.
+        fast_key = (catalogue_key + "|fast-basic-v1", page)
+        fast_cached = _tmdb_movie_catalogue_cache.get(fast_key)
+        if fast_cached and time.monotonic() - fast_cached[0] < 900:
+            return fast_cached[1]
+        raw = await _tmdb_fetch_movie_catalogue(catalogue_key, page, True)
+        rows = [row for row in (raw.get("results") or []) if isinstance(row, dict)]
+        excluded = {"tantesiska", "kunwaridulhan", "mastram"}
+        if catalogue_key == "popular-bollywood":
+            rows = [row for row in rows if re.sub(r"[^a-z0-9]+", "", str(row.get("title") or "").casefold()) not in excluded]
+        if catalogue_key in {"popular-bollywood", "trending-bollywood", "latest-bollywood"}:
+            rows = [row for row in rows if re.sub(r"[^a-z0-9]+", "", str(row.get("title") or "").casefold()) not in {"gangaa", "dearishq", "mastram"}]
+        fast_payload = dict(raw)
+        fast_payload.update({"catalogue": catalogue_key, "page": page, "results": rows[:18], "pageSize": 18, "basic": True})
+        _tmdb_movie_catalogue_cache[fast_key] = (time.monotonic(), fast_payload)
+        return fast_payload
 
     if released_only and catalogue_key in {
         "popular-bollywood", "trending-bollywood", "latest-bollywood",
