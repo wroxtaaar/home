@@ -1662,9 +1662,19 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     // title-search these shows: pass the exact series ID into the episode flow.
     const tmdbId = Number(show.id);
     if (!Number.isInteger(tmdbId) || tmdbId <= 0) {
+      setNexStreamSearchMode('tv');
       setNexStreamError('This TV catalogue entry has no valid TMDB series ID.');
       return;
     }
+
+    // The episode picker is rendered inside the NexStream panel, which is
+    // hidden unless a NexStream search mode is active. Activate the TV panel
+    // before opening the picker so catalogue buttons work without title search.
+    setNexStreamSearchMode('tv');
+    setNexStreamResults([]);
+    setNexStreamLoading(false);
+    setNexStreamLoadingTitle('');
+    setNexStreamError('');
     void playWithNexStream({
       id: tmdbId,
       title: show.title,
