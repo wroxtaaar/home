@@ -3102,7 +3102,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               </button>
               {openRegionalTvMenu === group && (
                 <div className="absolute left-0 top-full z-40 mt-1 min-w-[170px] overflow-hidden rounded-lg border border-slate-700 bg-slate-950 shadow-xl">
-                  {(['popular', 'trending', 'latest'] as const).map(mode => (
+                  {(['trending', 'latest'] as const).map(mode => (
                     <button key={mode} type="button" onClick={() => void openRegionalTvCatalogue(group, mode)}
                       className={'block w-full px-3 py-2.5 text-left text-xs font-semibold hover:bg-slate-800 hover:text-cyan-300 ' + (regionalTvModes[group] === mode ? 'text-cyan-300' : 'text-slate-200')}>
                       {mode.charAt(0).toUpperCase() + mode.slice(1)}{regionalTvModes[group] === mode ? ' ✓' : ''}
