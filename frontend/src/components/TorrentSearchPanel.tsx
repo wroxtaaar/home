@@ -4191,6 +4191,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               )}
             </div>
           ) : (
+          <>
           {Boolean(/^(popular|trending|latest)-(bollywood|hollywood)$/.test(String(movieCatalogue.catalogue)) && movieTorrentPreviewGroup) && (
             <section className="mb-3 overflow-hidden rounded-2xl border border-cyan-500/40 bg-slate-950 shadow-lg">
               <div className="flex items-start justify-between gap-3 border-b border-slate-800 px-4 py-3">
@@ -4772,6 +4773,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               );
             })}
           </div>
+          </>
           )}
         </div>
       )}
