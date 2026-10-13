@@ -4739,7 +4739,7 @@ MARVEL_CATALOGUE_PATH = Path(os.getenv("MARVEL_CATALOGUE_PATH", "/app/data/marve
 # Sony, Universal, etc.). Excludes TV films, specials, documentaries, and animated
 # feature films so the persistent torrent catalogue stays focused on live-action movies.
 MARVEL_MOVIE_SEARCHES: tuple[tuple[str, int], ...] = (
-    # Released MCU theatrical films, newest first.
+    # MCU theatrical films, newest first.
     ("Spider-Man: Brand New Day", 2026),
     ("The Fantastic Four: First Steps", 2025),
     ("Thunderbolts", 2025),
@@ -4778,6 +4778,47 @@ MARVEL_MOVIE_SEARCHES: tuple[tuple[str, int], ...] = (
     ("Iron Man 2", 2010),
     ("The Incredible Hulk", 2008),
     ("Iron Man", 2008),
+
+    # Non-MCU live-action theatrical films from Sony, Fox, and other studios.
+    ("Kraven the Hunter", 2024),
+    ("Madame Web", 2024),
+    ("Venom: The Last Dance", 2024),
+    ("Deadpool 2", 2018),
+    ("Venom", 2018),
+    ("Logan", 2017),
+    ("Dark Phoenix", 2019),
+    ("X-Men: Apocalypse", 2016),
+    ("Deadpool", 2016),
+    ("The Amazing Spider-Man 2", 2014),
+    ("X-Men: Days of Future Past", 2014),
+    ("The Wolverine", 2013),
+    ("The Amazing Spider-Man", 2012),
+    ("Ghost Rider: Spirit of Vengeance", 2011),
+    ("X-Men: First Class", 2011),
+    ("X-Men Origins: Wolverine", 2009),
+    ("Punisher: War Zone", 2008),
+    ("The Incredible Hulk", 2008),
+    ("Fantastic Four: Rise of the Silver Surfer", 2007),
+    ("Spider-Man 3", 2007),
+    ("Ghost Rider", 2007),
+    ("X-Men: The Last Stand", 2006),
+    ("Elektra", 2005),
+    ("Fantastic Four", 2005),
+    ("Blade: Trinity", 2004),
+    ("The Punisher", 2004),
+    ("Spider-Man 2", 2004),
+    ("X2: X-Men United", 2003),
+    ("Daredevil", 2003),
+    ("Hulk", 2003),
+    ("Blade II", 2002),
+    ("Spider-Man", 2002),
+    ("X-Men", 2000),
+    ("Blade", 1998),
+    ("Howard the Duck", 1986),
+
+    # Explicitly retained animated exception: the two released Spider-Verse films.
+    ("Spider-Man: Across the Spider-Verse", 2023),
+    ("Spider-Man: Into the Spider-Verse", 2018),
 )
 _MARVEL_CATALOGUE_CONCURRENCY = 2
 _marvel_catalogue_task: asyncio.Task | None = None
