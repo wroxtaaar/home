@@ -194,7 +194,7 @@ TMDB_SEARCH_METADATA_CACHE_FILE = Path(os.getenv("TMDB_SEARCH_METADATA_CACHE_FIL
 TMDB_SEARCH_METADATA_QUERY_TTL_SECONDS = max(3600, int(os.getenv("TMDB_SEARCH_METADATA_QUERY_TTL_SECONDS", str(30 * 24 * 60 * 60))))
 IMDB_RATING_CACHE_FILE = Path(os.getenv("IMDB_RATING_CACHE_FILE", "/app/data/imdb_rating_cache.json"))
 IMDB_RATING_CACHE_TTL_SECONDS = max(86400, int(os.getenv("IMDB_RATING_CACHE_TTL_SECONDS", str(30 * 24 * 60 * 60))))
-IMDB_RATING_LOOKUP_VERSION = 3
+IMDB_RATING_LOOKUP_VERSION = 4
 _OMDB_HTTP_CLIENT: httpx.AsyncClient | None = None
 _OMDB_REQUEST_SEMAPHORE = asyncio.Semaphore(4)
 _OMDB_RATE_LIMITED_UNTIL = 0.0
@@ -8257,7 +8257,7 @@ async def api_tmdb_movie_catalogue(
         # Final eligible display pages have their own durable cache namespace;
         # source-page caches remain separate and are reused while assembling them.
         is_trending = catalogue_key.startswith("trending-")
-        eligible_cache_key = (catalogue_key + ("|eligible-trending-v3" if is_trending else "|eligible-v1"), page)
+        eligible_cache_key = (catalogue_key + ("|eligible-trending-v4" if is_trending else "|eligible-v2"), page)
         eligible_cached = _tmdb_movie_catalogue_cache.get(eligible_cache_key)
         if eligible_cached and (
             not is_trending or time.monotonic() - eligible_cached[0] < 900
@@ -8280,7 +8280,7 @@ async def api_tmdb_movie_catalogue(
     # Keep released-only and include-upcoming responses in separate cache slots.
     is_trending_catalogue = catalogue_key.startswith("trending-")
     cache_key = (catalogue_key + (
-        ("|trending-v3" if is_trending_catalogue else "|released-v5")
+        ("|trending-v4" if is_trending_catalogue else "|released-v6")
         if released_only else "|upcoming-v3"
     ), page)
     now = time.monotonic()
