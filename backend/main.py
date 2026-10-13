@@ -7734,7 +7734,7 @@ def _read_regional_tv_prebuilt_page(catalogue_key: str, page: int) -> dict[str, 
         if not REGIONAL_TV_PREBUILT_CACHE_FILE.exists():
             return None
         payload = json.loads(REGIONAL_TV_PREBUILT_CACHE_FILE.read_text(encoding="utf-8"))
-        if int(payload.get("schemaVersion") or 0) < 2:
+        if int(payload.get("schemaVersion") or 0) < 3:
             return None
         catalogue = (payload.get("catalogues") or {}).get(catalogue_key) or {}
         if not catalogue.get("verifiedWebSeries"):
@@ -7760,7 +7760,7 @@ def _save_regional_tv_prebuilt_pages(catalogue_key: str, rows: list[dict[str, An
     """Store three 18-item pages in the persistent VPS TV catalogue."""
     try:
         REGIONAL_TV_PREBUILT_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"schemaVersion": 2, "catalogues": {}}
+        payload = {"schemaVersion": 3, "catalogues": {}}
         if REGIONAL_TV_PREBUILT_CACHE_FILE.exists():
             try:
                 existing = json.loads(REGIONAL_TV_PREBUILT_CACHE_FILE.read_text(encoding="utf-8"))
@@ -7768,7 +7768,7 @@ def _save_regional_tv_prebuilt_pages(catalogue_key: str, rows: list[dict[str, An
                     payload = existing
             except Exception:
                 logger.warning("Regional TV cache unreadable; rebuilding its document")
-        payload["schemaVersion"] = 2
+        payload["schemaVersion"] = 3
         catalogues = payload.setdefault("catalogues", {})
         if not isinstance(catalogues, dict):
             catalogues = {}
@@ -8004,7 +8004,7 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
                     re.sub(r"[^a-z0-9]+", "", str(title or "").casefold())
                     for title in title_candidates
                 }
-                if catalogue_key.startswith("indian-") and title_keys.intersection({"gangaa", "dearishq"}):
+                if catalogue_key.startswith("indian-") and title_keys.intersection({"gangaa", "dearishq", "mastram"}):
                     continue
                 if exclude_indian_broadcast_networks:
                     if has_soap_genre(genres) or is_known_indian_soap(*title_candidates):
@@ -8197,7 +8197,7 @@ async def _fetch_paginated_regional_movie_catalogue(catalogue_key: str, page: in
             title_key = re.sub(r"[^a-z0-9]+", "", str(row.get("title") or row.get("name") or "").casefold())
             # Filter known catalogue contamination before pagination, allowing
             # later source candidates to backfill the page to 18 cards.
-            excluded_regional_titles = {"tantesiska", "kunwaridulhan"}
+            excluded_regional_titles = {"tantesiska", "kunwaridulhan", "mastram"}
             if catalogue_key == "popular-bollywood" and title_key in excluded_regional_titles:
                 continue
             identity = str(row.get("id") or row.get("tmdbId") or row.get("title") or "").strip()
