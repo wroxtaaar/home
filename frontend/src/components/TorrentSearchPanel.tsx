@@ -728,6 +728,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   // The selected inline card must keep using that same source, even while the
   // catalogue list re-renders or torrent metadata is substituted.
   const [movieTorrentPreviewPosterUrl, setMovieTorrentPreviewPosterUrl] = useState('');
+  // Capture the URL of the poster that actually loaded in the original catalogue card.
+  const cataloguePosterUrlsRef = useRef<Record<string, string>>({});
   const [movieTorrentPickerGroups, setMovieTorrentPickerGroups] = useState<TorrentQualityGroup[] | null>(null);
   const [movieTorrentSearchLoading, setMovieTorrentSearchLoading] = useState(false);
   const [movieTorrentSearchTitle, setMovieTorrentSearchTitle] = useState('');
@@ -2309,7 +2311,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
     setMovieTorrentSearchTitle(titleQuery);
     setMovieTorrentPreviewCatalogueId(String(movie.id));
-    setMovieTorrentPreviewPosterUrl(String(movie.posterUrl || '').trim());
+    setMovieTorrentPreviewPosterUrl(
+      cataloguePosterUrlsRef.current[String(movie.id)] || String(movie.posterUrl || '').trim()
+    );
     setMovieTorrentSearchLoading(true);
     setMovieTorrentSearchError('');
     setMovieTorrentPreviewGroup(null);
@@ -3751,6 +3755,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
                       {movie.posterUrl ? (
                         <img src={lowQualityPosterUrl(movie.posterUrl)} alt={movie.title} loading="lazy" className="h-full w-full object-cover"
+                          onLoad={event => {
+                            // Preserve the exact URL that made this catalogue poster visible.
+                            cataloguePosterUrlsRef.current[String(movie.id)] = event.currentTarget.currentSrc || event.currentTarget.src;
+                          }}
                           onError={event => {
                             const image = event.currentTarget;
                             const originalUrl = String(movie.posterUrl || '').trim();
