@@ -7766,7 +7766,7 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
 
     def has_soap_genre(genres: Any) -> bool:
         return isinstance(genres, list) and any(
-            isinstance(genre, dict) and int(genre.get("id") or 0) == 10766
+            isinstance(genre, dict) and str(genre.get("id") or "").strip() == "10766"
             for genre in genres
         )
 
