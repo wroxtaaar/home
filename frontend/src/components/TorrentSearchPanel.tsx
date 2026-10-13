@@ -2356,7 +2356,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         setSelectedMovieTorrentQualityByGroup({ [selectedGroup.key]: torrentResultKey(selectedGroup.variants[0]) });
         setMovieTorrentPreviewGroup(selectedGroup);
         setMovieTorrentPreviewCatalogueId(String(movie.id));
-        startPosterBackgroundSearch(selectedGroup.variants);
+        if (!/^(popular|trending|latest)-(bollywood|hollywood)$/.test(String(movieCatalogue?.catalogue || ''))) {
+          startPosterBackgroundSearch(selectedGroup.variants);
+        }
       } else {
         setMovieTorrentSearchError('No usable torrent releases were found for ' + titleQuery + '. Try again later or use a shorter title.');
       }
@@ -2473,7 +2475,11 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         return;
       }
 
-      startPosterBackgroundSearch(groups.flatMap(group => group.variants));
+      // Regional catalogue posters are authoritative; avoid separate torrent-title poster lookups.
+      const isRegionalMovieCatalogue = /^(popular|trending|latest)-(bollywood|hollywood)$/.test(String(movieCatalogue?.catalogue || ''));
+      if (!isRegionalMovieCatalogue) {
+        startPosterBackgroundSearch(groups.flatMap(group => group.variants));
+      }
       if (groups.length > 0) {
         // Open the normal Prepare card immediately instead of showing a
         // separate release-selection modal. Prefer an exact movie title/year
@@ -2523,7 +2529,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     setMovieTorrentPreviewCatalogueId(null);
     setMovieTorrentPickerGroups(null);
     setMovieTorrentSearchError('');
-    startPosterBackgroundSearch(group.variants);
+    if (!/^(popular|trending|latest)-(bollywood|hollywood)$/.test(String(movieCatalogue?.catalogue || ''))) {
+      startPosterBackgroundSearch(group.variants);
+    }
   };
 
   const prepareMovieTorrent = async (result: TorrentSearchResult) => {
@@ -3554,12 +3562,13 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 // Keep the catalogue poster as the source of truth for the
                 // inline Prepare card; torrent-result poster metadata is often absent
                 // or delayed and must not replace the movie's known poster.
+                const isRegionalMoviePreview = /^(popular|trending|latest)-(bollywood|hollywood)$/.test(String(movieCatalogue?.catalogue || ''));
+                const cataloguePosterUrl = movieTorrentPreviewPosterUrl ||
+                  cataloguePosterUrlsRef.current[String(movie.id)] ||
+                  String(movie.posterUrl || '').trim();
                 const posterUrl = lowQualityPosterUrl(
-                  movieTorrentPreviewPosterUrl ||
-                  movie.posterUrl ||
-                  posterUrlFor(previewGroup.posterResult) ||
-                  previewGroup.posterResult?.posterUrl ||
-                  ''
+                  cataloguePosterUrl ||
+                  (isRegionalMoviePreview ? '' : posterUrlFor(previewGroup.posterResult) || previewGroup.posterResult?.posterUrl || '')
                 );
                 return (
                   <MovieCatalogueCard
@@ -3595,9 +3604,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             const image = event.currentTarget;
                             const originalUrl = String(
                               movieTorrentPreviewPosterUrl ||
+                              cataloguePosterUrlsRef.current[String(movie.id)] ||
                               movie.posterUrl ||
-                              previewGroup.posterResult?.posterUrl ||
-                              ''
+                              (isRegionalMoviePreview ? '' : previewGroup.posterResult?.posterUrl || '')
                             ).trim();
                             // The normal catalogue card retries the unmodified poster
                             // when the resized URL fails. Do the same for the Prepare card
