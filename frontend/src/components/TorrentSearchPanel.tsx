@@ -3564,7 +3564,17 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 return (
                   <MovieCatalogueCard
                     key={'movie-prepare-' + String(movie.id)}
-                    className="relative h-full border-slate-800 transition hover:border-slate-700"
+                    className="relative h-full cursor-pointer border-slate-800 transition hover:border-slate-700"
+                    onClick={() => {
+                      // Clicking the selected card again returns it to the normal catalogue card.
+                      movieTorrentSearchControllerRef.current?.abort();
+                      movieTorrentSearchGenerationRef.current += 1;
+                      setMovieTorrentSearchLoading(false);
+                      setMovieTorrentPreviewGroup(null);
+                      setMovieTorrentPreviewCatalogueId(null);
+                      setMovieTorrentPreviewPosterUrl('');
+                      setMovieTorrentSearchError('');
+                    }}
                   >
                     <div className="relative aspect-[2/3] w-full overflow-hidden rounded-t-xl bg-slate-950">
                       {posterUrl ? (
@@ -3637,10 +3647,13 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                         <div className="min-w-0 flex-1">
                           <button
                             type="button"
-                            onClick={() => showFullTorrentTitleBubble({
-                              ...result,
-                              title: fullTorrentTitleFor(result) || result.title
-                            })}
+                            onClick={event => {
+                              event.stopPropagation();
+                              showFullTorrentTitleBubble({
+                                ...result,
+                                title: fullTorrentTitleFor(result) || result.title
+                              });
+                            }}
                             className="w-full text-left text-sm font-semibold leading-snug text-slate-100 line-clamp-2 hover:text-cyan-300"
                             title="Click to view full torrent name"
                           >
@@ -3650,24 +3663,13 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                             <span className="text-slate-500">{movie.year || previewGroup.year || 'Release year unknown'}</span>
                           </div>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setMovieTorrentPreviewGroup(null);
-                            setMovieTorrentPreviewCatalogueId(null);
-                            setMovieTorrentSearchError('');
-                          }}
-                          className="shrink-0 rounded-md px-1.5 py-0.5 text-xs text-slate-500 hover:bg-slate-800 hover:text-white"
-                          title="Back to movie details"
-                          aria-label="Back to movie details"
-                        >
-                          ✕
-                        </button>
+
                       </div>
                       {previewGroup.variants.length > 1 ? (
                         <select
                           aria-label={'Choose quality for ' + previewGroup.title}
                           value={torrentResultKey(result)}
+                          onClick={event => event.stopPropagation()}
                           onChange={event => setSelectedMovieTorrentQualityByGroup(previous => ({
                             ...previous,
                             [previewGroup.key]: event.target.value
@@ -3696,7 +3698,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                         <button
                           type="button"
                           disabled={!Number(movie.tmdbId || movie.id) || nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id)}
-                          onClick={() => {
+                          onClick={event => {
+                            event.stopPropagation();
                             const tmdbId = Number(movie.tmdbId || movie.id);
                             if (!Number.isInteger(tmdbId) || tmdbId <= 0) {
                               setNexStreamError('This catalogue card has no valid TMDB ID for NexStream.');
@@ -3731,7 +3734,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                         ) : (
                           <button
                             type="button"
-                            onClick={() => void prepareMovieTorrent(result)}
+                            onClick={event => { event.stopPropagation(); void prepareMovieTorrent(result); }}
                             disabled={!source || isPreparing}
                             className="shrink-0 whitespace-nowrap rounded-lg bg-cyan-500 px-3 py-1.5 text-[11px] leading-4 font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-50"
                           >
