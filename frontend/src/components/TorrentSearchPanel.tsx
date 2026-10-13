@@ -2001,7 +2001,53 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           throw new Error(catalogue.error || ('Could not load the ' + (labels[searchMode] || 'movie') + ' catalogue.'));
         }
         data = catalogue.results;
-        setCatalogueBuildProgress(catalogue.refreshing ? 'Showing cached results while the monthly refresh runs in the background.' : '');
+        setCatalogueBuildProgress(catalogue.refreshing ? 'Showing cached results while the catalogue refresh runs in the background.' : '');
+
+        // Keep existing cached cards visible, then swap in the enriched MCU cache
+        // as soon as the server-side background rebuild completes.
+        if (searchMode === 'marvel' && catalogue.refreshing) {
+          void (async () => {
+            let refreshedCatalogue = catalogue;
+            while (
+              refreshedCatalogue.refreshing &&
+              generation === searchGenerationRef.current &&
+              !controller.signal.aborted
+            ) {
+              await new Promise<void>(resolve => window.setTimeout(resolve, 2500));
+              if (generation !== searchGenerationRef.current || controller.signal.aborted) return;
+              refreshedCatalogue = await api.getMarvelCatalogue(controller.signal);
+            }
+            if (
+              generation !== searchGenerationRef.current ||
+              controller.signal.aborted ||
+              refreshedCatalogue.status !== 'ready' ||
+              refreshedCatalogue.refreshing
+            ) return;
+
+            const refreshedRows = [...refreshedCatalogue.results].sort((a, b) => {
+              const aIdentity = torrentMediaIdentity(a);
+              const bIdentity = torrentMediaIdentity(b);
+              const aYear = Number.parseInt(aIdentity.year, 10) || 0;
+              const bYear = Number.parseInt(bIdentity.year, 10) || 0;
+              if (aYear !== bYear) return bYear - aYear;
+              const titleOrder = aIdentity.normalized.localeCompare(
+                bIdentity.normalized,
+                undefined,
+                { numeric: true },
+              );
+              if (titleOrder !== 0) return titleOrder;
+              return (Number(b.seeders) || 0) - (Number(a.seeders) || 0);
+            });
+            setResults(refreshedRows);
+            setSearched(true);
+            startPosterBackgroundSearch(refreshedRows);
+            setCatalogueBuildProgress('');
+          })().catch(error => {
+            if (generation === searchGenerationRef.current && !controller.signal.aborted) {
+              setCatalogueBuildProgress('Showing the existing cached catalogue; refresh will retry on a later visit.');
+            }
+          });
+        }
       } else {
         const livePromise = api.searchTorrents(trimmed, 50, controller.signal);
         // Do not make live torrent results wait for the seven catalogue lookups.
