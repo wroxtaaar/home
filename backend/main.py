@@ -4733,87 +4733,51 @@ async def resolve_search_magnet(body: dict[str, Any]):
 # One-time Marvel catalogue. Results are shared by every visitor to this Home
 # instance and never expire; the deployment mounts /app/data on persistent VPS
 # storage so a container replacement does not force another provider crawl.
-MARVEL_CATALOGUE_VERSION = 4
+MARVEL_CATALOGUE_VERSION = 5
 MARVEL_CATALOGUE_PATH = Path(os.getenv("MARVEL_CATALOGUE_PATH", "/app/data/marvel_catalogue.json"))
 # Curated live-action theatrical Marvel films across studios (Marvel Studios, Fox,
 # Sony, Universal, etc.). Excludes TV films, specials, documentaries, and animated
 # feature films so the persistent torrent catalogue stays focused on live-action movies.
 MARVEL_MOVIE_SEARCHES: tuple[tuple[str, int], ...] = (
+    # Released MCU theatrical films, newest first.
     ("Spider-Man: Brand New Day", 2026),
     ("The Fantastic Four: First Steps", 2025),
     ("Thunderbolts", 2025),
     ("Captain America: Brave New World", 2025),
     ("Deadpool & Wolverine", 2024),
-    ("Venom: The Last Dance", 2024),
-    ("Kraven the Hunter", 2024),
-    ("Madame Web", 2024),
     ("The Marvels", 2023),
     ("Guardians of the Galaxy Vol. 3", 2023),
     ("Ant-Man and the Wasp: Quantumania", 2023),
     ("Black Panther: Wakanda Forever", 2022),
     ("Thor: Love and Thunder", 2022),
     ("Doctor Strange in the Multiverse of Madness", 2022),
-    ("Morbius", 2022),
     ("Spider-Man: No Way Home", 2021),
-    ("Venom: Let There Be Carnage", 2021),
     ("Eternals", 2021),
     ("Shang-Chi and the Legend of the Ten Rings", 2021),
     ("Black Widow", 2021),
-    ("The New Mutants", 2020),
-    ("Dark Phoenix", 2019),
     ("Spider-Man: Far From Home", 2019),
     ("Avengers: Endgame", 2019),
     ("Captain Marvel", 2019),
-    ("Venom", 2018),
     ("Ant-Man and the Wasp", 2018),
-    ("Deadpool 2", 2018),
     ("Avengers: Infinity War", 2018),
     ("Black Panther", 2018),
     ("Thor: Ragnarok", 2017),
-    ("Logan", 2017),
     ("Spider-Man: Homecoming", 2017),
     ("Guardians of the Galaxy Vol. 2", 2017),
     ("Doctor Strange", 2016),
-    ("X-Men: Apocalypse", 2016),
-    ("Deadpool", 2016),
     ("Captain America: Civil War", 2016),
-    ("Fantastic Four", 2015),
     ("Ant-Man", 2015),
     ("Avengers: Age of Ultron", 2015),
-    ("X-Men: Days of Future Past", 2014),
-    ("The Amazing Spider-Man 2", 2014),
-    ("Captain America: The Winter Soldier", 2014),
     ("Guardians of the Galaxy", 2014),
-    ("The Wolverine", 2013),
+    ("Captain America: The Winter Soldier", 2014),
+    ("Thor: The Dark World", 2013),
     ("Iron Man 3", 2013),
-    ("The Amazing Spider-Man", 2012),
     ("The Avengers", 2012),
-    ("Ghost Rider: Spirit of Vengeance", 2011),
-    ("X-Men: First Class", 2011),
     ("Captain America: The First Avenger", 2011),
     ("Thor", 2011),
     ("Iron Man 2", 2010),
-    ("X-Men Origins: Wolverine", 2009),
-    ("Punisher: War Zone", 2008),
     ("The Incredible Hulk", 2008),
     ("Iron Man", 2008),
-    ("Spider-Man 3", 2007),
-    ("Ghost Rider", 2007),
-    ("Fantastic Four: Rise of the Silver Surfer", 2007),
-    ("X-Men: The Last Stand", 2006),
-    ("Elektra", 2005),
-    ("Fantastic Four", 2005),
-    ("Spider-Man 2", 2004),
-    ("The Punisher", 2004),
-    ("Blade: Trinity", 2004),
-    ("X2: X-Men United", 2003),
-    ("Daredevil", 2003),
-    ("Hulk", 2003),
-    ("Spider-Man", 2002),
-    ("Blade II", 2002),
-    ("X-Men", 2000),
-    ("Blade", 1998),
-    ("Howard the Duck", 1986),
 )
 _MARVEL_CATALOGUE_CONCURRENCY = 2
 _marvel_catalogue_task: asyncio.Task | None = None
@@ -5121,6 +5085,41 @@ async def _build_marvel_catalogue() -> None:
             _marvel_catalogue_state["resultCount"] = len(rows_by_hash)
             _marvel_catalogue_state["movieCount"] = len(found_movies)
 
+        # Preserve valid variants for current MCU titles if a provider misses them
+        # during this rebuild; new search hits are merged into the existing cache.
+        previous_payload = _read_marvel_catalogue()
+        current_titles = {
+            (re.sub(r"[^a-z0-9]+", "", title.casefold()), year): title
+            for title, year in MARVEL_MOVIE_SEARCHES
+        }
+        if previous_payload:
+            for old_item in previous_payload.get("results") or []:
+                if not isinstance(old_item, dict):
+                    continue
+                old_title = str(old_item.get("marvelCatalogueTitle") or old_item.get("mediaTitle") or "").strip()
+                try:
+                    old_year = int(old_item.get("year") or 0)
+                except (TypeError, ValueError):
+                    old_year = 0
+                canonical = current_titles.get((re.sub(r"[^a-z0-9]+", "", old_title.casefold()), old_year))
+                if not canonical or _catalogue_row_has_3d_quality(old_item) or _catalogue_row_is_excluded_franchise_title(old_item):
+                    continue
+                preserved = dict(old_item)
+                preserved["mediaTitle"] = canonical
+                preserved["marvelCatalogueTitle"] = canonical
+                preserved["year"] = old_year
+                digest = str(preserved.get("infoHash") or "").strip().lower()
+                if not re.fullmatch(r"[0-9a-f]{40}", digest):
+                    digest = info_hash(str(preserved.get("magnetUrl") or preserved.get("downloadUrl") or ""))
+                dedupe_key = "hash:" + digest if re.fullmatch(r"[0-9a-f]{40}", digest, re.I) else (
+                    f"title-size:{_normalize_title(str(preserved.get('title') or ''))}|{int(preserved.get('size') or 0)}"
+                )
+                existing = rows_by_hash.get(dedupe_key)
+                score = (int(preserved.get("seeders") or 0), int(preserved.get("leechers") or 0))
+                existing_score = (int(existing.get("seeders") or 0), int(existing.get("leechers") or 0)) if existing else (-1, -1)
+                if existing is None or score > existing_score:
+                    rows_by_hash[dedupe_key] = preserved
+
         results = list(rows_by_hash.values())
         movie_count = len({
             f"{_normalize_title(str(item.get('mediaTitle') or item.get('title') or ''))}|{item.get('year') or ''}"
@@ -5221,33 +5220,69 @@ _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
         ],
     },
     "dc-animated": {
-        "file": "dc_animated_catalogue.json", "version": 1, "refresh_days": 36500,
+        "file": "dc_animated_catalogue.json", "version": 2, "refresh_days": 36500,
         "minimum_movies": 5, "mode": "fixed",
         "titles": [
-            ("Justice League: Crisis on Infinite Earths Part One", 2024),
-            ("Justice League: Crisis on Infinite Earths Part Two", 2024),
-            ("Justice League: Crisis on Infinite Earths Part Three", 2024),
-            ("Justice League: Warworld", 2023), ("Legion of Super-Heroes", 2023),
-            ("Batman: The Doom That Came to Gotham", 2023), ("Green Lantern: Beware My Power", 2022),
-            ("Battle of the Super Sons", 2022), ("Catwoman: Hunted", 2022),
-            ("Injustice", 2021), ("Batman: The Long Halloween Part Two", 2021),
-            ("Batman: The Long Halloween Part One", 2021), ("Justice Society: World War II", 2021),
-            ("Superman: Man of Tomorrow", 2020), ("Justice League Dark: Apokolips War", 2020),
-            ("Wonder Woman: Bloodlines", 2019), ("Batman: Hush", 2019),
-            ("Reign of the Supermen", 2019), ("The Death of Superman", 2018),
-            ("Suicide Squad: Hell to Pay", 2018), ("Batman: Gotham by Gaslight", 2018),
-            ("Justice League Dark", 2017), ("Teen Titans: The Judas Contract", 2017),
-            ("Batman and Harley Quinn", 2017), ("Justice League vs. Teen Titans", 2016),
-            ("Batman: Bad Blood", 2016), ("Justice League: Gods and Monsters", 2015),
-            ("Batman: The Killing Joke", 2016), ("Justice League: Throne of Atlantis", 2015),
-            ("Batman: Assault on Arkham", 2014), ("Son of Batman", 2014),
-            ("Justice League: The Flashpoint Paradox", 2013), ("Batman: Under the Red Hood", 2010),
-            ("Superman/Batman: Public Enemies", 2009), ("Wonder Woman", 2009),
-            ("Justice League: The New Frontier", 2008), ("Batman: Mask of the Phantasm", 1993),
-            ("Batman Beyond: Return of the Joker", 2000), ("Superman: Doomsday", 2007),
-            ("All-Star Superman", 2011), ("Batman: Year One", 2011),
-            ("Batman: The Dark Knight Returns Part 1", 2012), ("Batman: The Dark Knight Returns Part 2", 2013),
-            ("Justice League: Doom", 2012), ("Superman vs. The Elite", 2012),
+            ("Batman: Knightfall - Part 1: Knightfall", 2026),
+            ("Aztec Batman: Clash of Empires", 2025),
+            ("Watchmen Chapter II", 2024),
+            ("Watchmen Chapter I", 2024),
+            ("Justice League: Crisis on Infinite Earths - Part Three", 2024),
+            ("Justice League: Crisis on Infinite Earths - Part Two", 2024),
+            ("Justice League: Crisis on Infinite Earths - Part One", 2024),
+            ("Justice League: Warworld", 2023),
+            ("Batman: The Doom That Came to Gotham", 2023),
+            ("Legion of Super-Heroes", 2023),
+            ("Batman and Superman: Battle of the Super Sons", 2022),
+            ("Green Lantern: Beware My Power", 2022),
+            ("Catwoman: Hunted", 2022),
+            ("Injustice", 2021),
+            ("Batman: The Long Halloween, Part Two", 2021),
+            ("Batman: The Long Halloween, Part One", 2021),
+            ("Justice Society: World War II", 2021),
+            ("Batman: Soul of the Dragon", 2021),
+            ("Superman: Man of Tomorrow", 2020),
+            ("Deathstroke: Knights & Dragons", 2020),
+            ("Justice League Dark: Apokolips War", 2020),
+            ("Superman: Red Son", 2020),
+            ("Wonder Woman: Bloodlines", 2019),
+            ("Batman: Hush", 2019),
+            ("Justice League vs. the Fatal Five", 2019),
+            ("Reign of the Supermen", 2019),
+            ("Constantine: City of Demons", 2019),
+            ("The Death of Superman", 2018),
+            ("Suicide Squad: Hell to Pay", 2018),
+            ("Batman: Gotham by Gaslight", 2018),
+            ("Batman and Harley Quinn", 2017),
+            ("Teen Titans: The Judas Contract", 2017),
+            ("Justice League Dark", 2017),
+            ("Batman: The Killing Joke", 2016),
+            ("Justice League vs. Teen Titans", 2016),
+            ("Batman: Bad Blood", 2016),
+            ("Justice League: Gods and Monsters", 2015),
+            ("Batman vs. Robin", 2015),
+            ("Justice League: Throne of Atlantis", 2015),
+            ("Justice League: War", 2014),
+            ("Batman: Assault on Arkham", 2014),
+            ("Son of Batman", 2014),
+            ("Justice League: The Flashpoint Paradox", 2013),
+            ("Superman: Unbound", 2013),
+            ("Batman: The Dark Knight Returns - Part 2", 2013),
+            ("Batman: The Dark Knight Returns - Part 1", 2012),
+            ("Superman vs. The Elite", 2012),
+            ("Justice League: Doom", 2012),
+            ("Batman: Year One", 2011),
+            ("All-Star Superman", 2011),
+            ("Green Lantern: Emerald Knights", 2011),
+            ("Superman/Batman: Apocalypse", 2010),
+            ("Batman: Under the Red Hood", 2010),
+            ("Justice League: Crisis on Two Earths", 2010),
+            ("Superman/Batman: Public Enemies", 2009),
+            ("Green Lantern: First Flight", 2009),
+            ("Wonder Woman", 2009),
+            ("Justice League: The New Frontier", 2008),
+            ("Batman: Gotham Knight", 2008),
+            ("Superman: Doomsday", 2007),
         ],
     },
 }
@@ -5337,7 +5372,7 @@ _EXTRA_CATALOGUES["classics"] = {
 }
 _EXTRA_CATALOGUES["marvel-hindi"] = {
     "file": "marvel_hindi_catalogue.json",
-    "version": 2,
+    "version": 3,
     "refresh_days": 36500,
     "minimum_movies": 5,
     "mode": "fixed",
@@ -6488,6 +6523,46 @@ async def _build_extra_catalogue(key: str) -> None:
                     rows[dedupe] = item
             state["resultCount"] = len(rows)
             state["movieCount"] = len(found_movies)
+
+        # Keep cached torrent variants for titles still in the refreshed catalogue
+        # when providers return a temporary miss; normalize older title aliases.
+        previous_payload = _read_extra_catalogue(key)
+        canonical_titles = {
+            (re.sub(r"[^a-z0-9]+", "", title.casefold()), year): title
+            for title, year in jobs
+        }
+        title_aliases = {
+            ("battleofthesupersons", 2022): "Batman and Superman: Battle of the Super Sons",
+        }
+        if previous_payload:
+            for old_item in previous_payload.get("results") or []:
+                if not isinstance(old_item, dict):
+                    continue
+                old_title = str(old_item.get("catalogueTitle") or old_item.get("mediaTitle") or old_item.get("title") or "").strip()
+                try:
+                    old_year = int(old_item.get("year") or 0)
+                except (TypeError, ValueError):
+                    old_year = 0
+                old_key = (re.sub(r"[^a-z0-9]+", "", old_title.casefold()), old_year)
+                canonical = canonical_titles.get(old_key) or title_aliases.get(old_key)
+                if not canonical or _catalogue_row_has_3d_quality(old_item) or _catalogue_row_is_excluded_franchise_title(old_item):
+                    continue
+                preserved = dict(old_item)
+                preserved["mediaTitle"] = canonical
+                preserved["catalogueTitle"] = canonical
+                preserved["catalogueKey"] = key
+                preserved["year"] = old_year
+                digest = str(preserved.get("infoHash") or "").strip().lower()
+                if not re.fullmatch(r"[0-9a-f]{40}", digest):
+                    digest = info_hash(str(preserved.get("magnetUrl") or preserved.get("downloadUrl") or ""))
+                dedupe_key = "hash:" + digest if re.fullmatch(r"[0-9a-f]{40}", digest, re.I) else (
+                    "title-size:" + _normalize_title(str(preserved.get("title") or "")) + "|" + str(preserved.get("size") or 0)
+                )
+                existing = rows.get(dedupe_key)
+                score = (int(preserved.get("seeders") or 0), int(preserved.get("leechers") or 0))
+                existing_score = (int(existing.get("seeders") or 0), int(existing.get("leechers") or 0)) if existing else (-1, -1)
+                if existing is None or score > existing_score:
+                    rows[dedupe_key] = preserved
 
         results = list(rows.values())
         movie_count = len({ _normalize_title(str(item.get("mediaTitle") or item.get("title") or "")) + "|" + str(item.get("year") or "") for item in results })
@@ -8764,10 +8839,23 @@ async def api_search_saved_ott(titles: list[str] = Query(..., min_length=1, max_
 
 @app.get("/api/catalogue/marvel")
 async def api_marvel_catalogue():
-    # A completed catalogue is served straight from the persistent shared file:
-    # no provider calls and no per-visitor refreshes.
+    global _marvel_catalogue_task
     cached = _read_marvel_catalogue()
     if cached:
+        # Keep the current cache available immediately while rebuilding it once
+        # when its version predates the updated MCU film list.
+        if int(cached.get("version") or 0) < MARVEL_CATALOGUE_VERSION:
+            if _marvel_catalogue_task is None or _marvel_catalogue_task.done():
+                if not (_marvel_catalogue_state.get("status") == "failed" and time.time() < _marvel_catalogue_retry_after):
+                    _marvel_catalogue_state.update({
+                        "status": "building",
+                        "completed": 0,
+                        "total": len(MARVEL_MOVIE_SEARCHES),
+                        "resultCount": int(cached.get("resultCount") or len(cached["results"])),
+                        "movieCount": int(cached.get("movieCount") or 0),
+                        "error": "",
+                    })
+                    _marvel_catalogue_task = asyncio.create_task(_build_marvel_catalogue())
         return {
             "status": "ready",
             "builtAt": cached.get("builtAt"),
@@ -8776,9 +8864,9 @@ async def api_marvel_catalogue():
             "resultCount": int(cached.get("resultCount") or len(cached["results"])),
             "movieCount": int(cached.get("movieCount") or 0),
             "results": cached["results"],
+            "refreshing": int(cached.get("version") or 0) < MARVEL_CATALOGUE_VERSION,
         }
 
-    global _marvel_catalogue_task
     if _marvel_catalogue_task is None or _marvel_catalogue_task.done():
         if _marvel_catalogue_state.get("status") == "failed" and time.time() < _marvel_catalogue_retry_after:
             return {**_marvel_catalogue_state, "results": []}
@@ -8796,7 +8884,6 @@ async def api_marvel_catalogue():
         "total": len(MARVEL_MOVIE_SEARCHES),
         "results": [],
     }
-
 
 
 async def _warm_marvel_catalogue_on_startup() -> None:
