@@ -8041,8 +8041,18 @@ async def _apply_movie_release_eligibility(payload: dict[str, Any], *, enabled: 
     semaphore = asyncio.Semaphore(4)
 
     async def eligible(row: dict[str, Any]) -> bool:
-        # Verified subscription/free/ad-supported OTT availability always qualifies.
-        # Release date is checked only when no OTT streaming listing is available.
+        # Older releases qualify without an OTT lookup. This avoids spending
+        # provider quota on films that already pass the 30-day rule.
+        raw_date = str(row.get("releaseDate") or row.get("release_date") or "").strip()
+        try:
+            release_date = datetime.strptime(raw_date[:10], "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            release_date = None
+        if release_date is not None and release_date <= today and (today - release_date).days >= 30:
+            return True
+
+        # Recent releases qualify only with verified subscription/free/ad-supported
+        # streaming in India; rent/buy listings do not satisfy this rule.
         try:
             movie_id = int(row.get("tmdbId") or row.get("id") or 0)
         except (TypeError, ValueError):
@@ -8076,13 +8086,9 @@ async def _apply_movie_release_eligibility(payload: dict[str, Any], *, enabled: 
                 except Exception as exc:
                     logger.info("OTT eligibility lookup failed for movie %s: %s", movie_id, type(exc).__name__)
 
-        # Without OTT streaming, require a valid release date at least 30 days ago.
-        raw_date = str(row.get("releaseDate") or row.get("release_date") or "").strip()
-        try:
-            release_date = datetime.strptime(raw_date[:10], "%Y-%m-%d").date()
-        except (TypeError, ValueError):
-            return False
-        return release_date <= today and (today - release_date).days >= 30
+        # Missing, future, or too-recent release dates do not qualify unless
+        # verified Indian OTT streaming was confirmed above.
+        return False
 
     flags = await asyncio.gather(*(eligible(row) for row in rows))
     filtered = [row for row, keep in zip(rows, flags) if keep]
@@ -8161,7 +8167,7 @@ async def _fetch_paginated_regional_movie_catalogue(catalogue_key: str, page: in
         "totalResults": len(eligible_rows) if exhausted else max(len(eligible_rows), (page + 1) * page_size),
         "pageSize": page_size,
         "results": page_rows,
-        "releaseEligibility": "streaming-in-india-or-seven-days",
+        "releaseEligibility": "streaming-in-india-or-30-days",
         "attribution": "This product uses the TMDB API but is not endorsed or certified by TMDB.",
     }
 
