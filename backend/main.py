@@ -5457,7 +5457,7 @@ _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
         "exclude_titles": [
             "The Old Guard", "The Old Guard 2", "RED 2", "The Kitchen", "RED",
             "The Losers", "Stardust", "A History of Violence", "The League of Extraordinary Gentlemen",
-            "Road to Perdition", "Steel", "The Spirit",
+            "Road to Perdition", "Steel", "The Spirit", "Batman: Mask of the Phantasm",
         ],
         "titles": [
             ("Superman", 2025), ("Supergirl", 2026), ("The Batman Part II", 2027),
