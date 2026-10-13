@@ -7734,6 +7734,8 @@ def _read_regional_tv_prebuilt_page(catalogue_key: str, page: int) -> dict[str, 
         if not REGIONAL_TV_PREBUILT_CACHE_FILE.exists():
             return None
         payload = json.loads(REGIONAL_TV_PREBUILT_CACHE_FILE.read_text(encoding="utf-8"))
+        if int(payload.get("schemaVersion") or 0) < 2:
+            return None
         catalogue = (payload.get("catalogues") or {}).get(catalogue_key) or {}
         if not catalogue.get("verifiedWebSeries"):
             return None
@@ -7758,7 +7760,7 @@ def _save_regional_tv_prebuilt_pages(catalogue_key: str, rows: list[dict[str, An
     """Store three 18-item pages in the persistent VPS TV catalogue."""
     try:
         REGIONAL_TV_PREBUILT_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"catalogues": {}}
+        payload = {"schemaVersion": 2, "catalogues": {}}
         if REGIONAL_TV_PREBUILT_CACHE_FILE.exists():
             try:
                 existing = json.loads(REGIONAL_TV_PREBUILT_CACHE_FILE.read_text(encoding="utf-8"))
@@ -7766,6 +7768,7 @@ def _save_regional_tv_prebuilt_pages(catalogue_key: str, rows: list[dict[str, An
                     payload = existing
             except Exception:
                 logger.warning("Regional TV cache unreadable; rebuilding its document")
+        payload["schemaVersion"] = 2
         catalogues = payload.setdefault("catalogues", {})
         if not isinstance(catalogues, dict):
             catalogues = {}
@@ -7944,7 +7947,7 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
         eligible_rows: list[dict[str, Any]] = []
         seen_ids: set[int] = set()
         # Keep three full UI pages in the durable VPS catalogue cache.
-        required_count = 54
+        required_count = max(54, page * 18 + 1)
 
         while source_page <= source_total_pages and len(eligible_rows) < required_count:
             payload = await _tmdb_get_json("discover/tv", {
