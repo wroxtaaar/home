@@ -7788,11 +7788,15 @@ def _save_regional_tv_prebuilt_pages(catalogue_key: str, rows: list[dict[str, An
         if not isinstance(catalogues, dict):
             catalogues = {}
             payload["catalogues"] = catalogues
-        pages = [{"page": n + 1, "results": rows[n * 18:(n + 1) * 18]} for n in range(3)]
+        # Persist every discovered page, not only the first three. Page 4+
+        # requires more discovery/enrichment on its first request; saving all
+        # verified rows prevents repeating that expensive work on every visit.
+        page_count = max(3, (len(rows) + 17) // 18)
+        pages = [{"page": n + 1, "results": rows[n * 18:(n + 1) * 18]} for n in range(page_count)]
         catalogues[catalogue_key] = {
             "verifiedWebSeries": True,
-            "totalResults": len(rows[:54]),
-            "seriesCount": len(rows[:54]),
+            "totalResults": len(rows),
+            "seriesCount": len(rows),
             "pages": pages,
         }
         temporary = REGIONAL_TV_PREBUILT_CACHE_FILE.with_suffix(".json.tmp")
@@ -7961,8 +7965,9 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
         source_total_pages = 1
         eligible_rows: list[dict[str, Any]] = []
         seen_ids: set[int] = set()
-        # Keep three full UI pages in the durable VPS catalogue cache.
-        required_count = max(54, page * 18 + 1)
+        # Build enough verified rows to fill the requested page, then persist
+        # every verified row so later visits to deeper pages can use disk cache.
+        required_count = max(54, page * 18)
 
         while source_page <= source_total_pages and len(eligible_rows) < required_count:
             payload = await _tmdb_get_json("discover/tv", {
@@ -8062,7 +8067,7 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
     except HTTPException:
         raise
 
-    _save_regional_tv_prebuilt_pages(catalogue_key, eligible_rows[:54])
+    _save_regional_tv_prebuilt_pages(catalogue_key, eligible_rows)
     start_index = (page - 1) * 18
     results = eligible_rows[start_index:start_index + 18]
     # UI pages are 18 filtered titles each. Estimate the number of pages from
