@@ -1074,15 +1074,29 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           case 'sony': return isSony(title);
           case 'old-marvel': {
             const normalized = title.replace(/[^a-z0-9]+/g, ' ').trim();
-            return /^(?:the punisher|the trial of the incredible hulk|the incredible hulk returns|howard the duck|captain america ii death too soon|dr strange)(?:\\s|$)/i.test(normalized);
+            return /^(?:the punisher|the trial of the incredible hulk|the incredible hulk returns|howard the duck|captain america ii death too soon|dr strange)(?:\s|$)/i.test(normalized);
           }
           default: return true;
         }
       });
     }
+    if (isDcLiveActionEnglishResults) {
+      movies = movies.filter(movie => !/batman\s*:\s*mask of the phantasm/i.test(String(movie.title || '')));
+    }
+    if (releaseYearSort) {
+      movies = [...movies].sort((a, b) => {
+        const yearA = Number(a.year) || Number(String(a.title || '').match(/\b(?:19|20)\d{2}\b/)?.[0]) || 0;
+        const yearB = Number(b.year) || Number(String(b.title || '').match(/\b(?:19|20)\d{2}\b/)?.[0]) || 0;
+        if (!yearA && !yearB) return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true });
+        if (!yearA) return 1;
+        if (!yearB) return -1;
+        if (yearA !== yearB) return releaseYearSort === 'oldest' ? yearA - yearB : yearB - yearA;
+        return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true });
+      });
+    }
     if (streamingOnly) movies = movies.filter(movie => ottAvailability[String(movie.id)]?.status === 'streaming');
     return movies;
-  }, [movieCatalogue, streamingOnly, ottAvailability, isMarvelEnglishResults, showMarvelWebSeries, marvelFilmFilter]);
+  }, [movieCatalogue, streamingOnly, ottAvailability, isMarvelEnglishResults, showMarvelWebSeries, marvelFilmFilter, isDcLiveActionEnglishResults, releaseYearSort]);
 
   const ottPendingCount = movieCatalogue?.results.filter(movie => {
     const status = ottAvailability[String(movie.id)]?.status;
@@ -2915,7 +2929,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           case 'sony': return isSony(title);
           case 'old-marvel': {
             const normalized = title.replace(/[^a-z0-9]+/g, ' ').trim();
-            return /^(?:the punisher|the trial of the incredible hulk|the incredible hulk returns|howard the duck|captain america ii death too soon|dr strange)(?:\\s|$)/i.test(normalized);
+            return /^(?:the punisher|the trial of the incredible hulk|the incredible hulk returns|howard the duck|captain america ii death too soon|dr strange)(?:\s|$)/i.test(normalized);
           }
           default: return true;
         }
