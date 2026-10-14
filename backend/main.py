@@ -5705,6 +5705,10 @@ _RUNTIME_CACHE_SEED_FILES = {
     "tmdb_ott_availability_cache.json": TMDB_OTT_CACHE_FILE,
     "marvel_tv_catalogue_cache.json": MARVEL_TV_CATALOGUE_CACHE_FILE,
     "dc_tv_catalogue_cache.json": DC_TV_CATALOGUE_CACHE_FILE,
+    "regional_movie_prebuilt_cache.json": Path(os.getenv(
+        "REGIONAL_MOVIE_PREBUILT_CACHE_PATH",
+        str(Path(os.getenv("APP_DATA_DIR", "/app/data")) / "regional_movie_prebuilt_cache.json"),
+    )),
 }
 
 
