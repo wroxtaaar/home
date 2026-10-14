@@ -3458,7 +3458,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           <button type="button" onClick={() => { setActiveTopSection('dc'); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">🦇 DC</button>
           <button type="button" onClick={() => { setActiveTopSection('hollywood'); setRegionalContentTabs(previous => ({ ...previous, hollywood: null })); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">🎥 Hollywood</button>
           <button type="button" onClick={() => { setActiveTopSection('bollywood'); setRegionalContentTabs(previous => ({ ...previous, bollywood: null })); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">🎬 Bollywood</button>
-          <button type="button" onClick={() => { setActiveTopSection('classics'); setClassicsContentTab('movies'); setResolutionFilter(null); setSizeSort(null); setTimeSort(null); void runSearch(undefined, 'Classics', 'classics'); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">🎬 Classics</button>
+          <button type="button" onClick={() => { setActiveTopSection('classics'); setClassicsContentTab('movies'); setResolutionFilter(null); setSizeSort(null); setTimeSort(null); void runSearch(undefined, 'Classics', 'classics'); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">⭐ Favourites</button>
         </div>
         {activeTopSection !== null && <>
           <div className="mt-2 flex flex-wrap gap-2 rounded-lg border border-slate-800 bg-slate-900 px-2.5 py-2.5" aria-label={activeTopSection + ' subsections'}>
@@ -4141,37 +4141,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           <span className="absolute bottom-2 right-2 rounded-md border border-violet-300/50 bg-slate-950/90 px-2 py-1 text-[10px] font-bold text-violet-200">▶ NexStream</span>
                         </button>
                         <div className="flex flex-1 flex-col gap-2 p-2.5">
-                          <div className="min-h-[3.2rem]">
-                            <h3 className="line-clamp-2 text-sm font-bold leading-snug text-slate-100">{show.title}</h3>
-                            <div className="mt-0.5 text-xs text-slate-500">{show.year || 'Year unknown'} · {classicsContentTab === 'anime' ? 'Anime' : 'TV Series'}</div>
-                          </div>
-                          <div className="min-h-[3.75rem]">{show.overview && <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{show.overview}</p>}</div>
-                          <div className="min-h-[2.5rem]">
-                            {show.streamingProviders?.length ? (
-                              <div className="space-y-1.5">
-                                {(['subscription', 'free', 'ads', 'rent', 'buy'] as const).map(kind => {
-                                  const providers = (show.streamingProviders || []).filter(provider => provider.type === kind);
-                                  if (!providers.length) return null;
-                                  const label = kind === 'subscription' ? 'Stream' : kind === 'ads' ? 'Free with ads' : kind === 'free' ? 'Free' : kind === 'rent' ? 'Rent' : 'Buy';
-                                  return (
-                                    <div key={kind} className="flex flex-wrap items-center gap-1">
-                                      <span className="mr-0.5 text-[10px] text-slate-500">{label}:</span>
-                                      {providers.map((provider, index) => (
-                                        <a key={String(provider.providerId ?? provider.name) + '-' + index} href={provider.webUrl || show.tmdbUrl || ('https://www.themoviedb.org/tv/' + show.id)} target="_blank" rel="noreferrer" title={provider.name} onClick={event => event.stopPropagation()} className="inline-flex items-center rounded-full border border-cyan-500/25 bg-cyan-500/5 px-2 py-0.5 text-[10px] text-cyan-200 hover:border-cyan-400/60">
-                                          <span>{provider.name}</span>
-                                        </a>
-                                      ))}
-                                    </div>
-                                  );
-                                })}
-                                <div className="text-[9px] text-slate-600">Availability in India · TMDB / JustWatch</div>
-                              </div>
-                            ) : <p className="text-[10px] text-slate-500">Streaming availability in India not confirmed</p>}
-                          </div>
-                          <div className="mt-auto grid grid-cols-1 gap-2">
-                            <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} className="rounded-lg border border-violet-400/50 bg-violet-500/10 px-2 py-2 text-center text-[11px] font-bold text-violet-200 hover:bg-violet-500/20">Find on NexStream</button>
-                            <a href={show.tmdbUrl || ('https://www.themoviedb.org/tv/' + show.id)} target="_blank" rel="noreferrer" className="block rounded-lg border border-slate-700 px-2 py-2 text-center text-[11px] font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">View on TMDB</a>
-                          </div>
+                          <div><h3 className="line-clamp-2 text-sm font-bold leading-snug text-slate-100">{show.title}</h3>
+                            <div className="mt-0.5 text-xs text-slate-500">{show.year || 'Year unknown'} · OTT Web Series</div></div>
+                          {show.overview && <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{show.overview}</p>}
+                          {show.streamingProviders?.length ? <div className="flex flex-wrap gap-1">{uniqueOttProviders(show.streamingProviders.filter(provider => ['subscription','free','ads'].includes(provider.type))).map(provider => <span key={normalizeOttProviderName(provider.name)} className="rounded bg-slate-800 px-1.5 py-1 text-[10px] text-cyan-200">{displayOttProviderName(provider.name)}</span>)}</div> : null}
                         </div>
                       </article>
                     ))}
@@ -4288,38 +4261,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                           {show.rating ? <span className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow">⭐ {show.rating.toFixed(1)}/10</span> : null}
                         </button>
                         <div className="flex flex-1 flex-col gap-2 p-2.5">
-                          <div className="min-h-[3.2rem]">
-                            <h3 className="line-clamp-2 text-sm font-bold leading-snug text-slate-100">{show.title}</h3>
-                            <div className="mt-0.5 text-xs text-slate-500">{show.year || 'Year unknown'} · TV Series</div>
-                          </div>
-                          <div className="min-h-[3.75rem]">{show.overview && <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{show.overview}</p>}</div>
-                          <div className="min-h-[2.5rem]">
-                            {show.streamingProviders?.length ? (
-                              <div className="space-y-1.5">
-                                {(['subscription', 'free', 'ads', 'rent', 'buy'] as const).map(kind => {
-                                  const providers = (show.streamingProviders || []).filter(provider => provider.type === kind);
-                                  if (!providers.length) return null;
-                                  const label = kind === 'subscription' ? 'Stream' : kind === 'ads' ? 'Free with ads' : kind === 'free' ? 'Free' : kind === 'rent' ? 'Rent' : 'Buy';
-                                  return (
-                                    <div key={kind} className="flex flex-wrap items-center gap-1">
-                                      <span className="mr-0.5 text-[10px] text-slate-500">{label}:</span>
-                                      {providers.map((provider, index) => (
-                                        <a key={String(provider.providerId ?? provider.name) + '-' + index} href={provider.webUrl || show.tmdbUrl || ('https://www.themoviedb.org/tv/' + show.id)} target="_blank" rel="noreferrer" title={provider.name} onClick={event => event.stopPropagation()} className="inline-flex items-center rounded-full border border-cyan-500/25 bg-cyan-500/5 px-2 py-0.5 text-[10px] text-cyan-200 hover:border-cyan-400/60">
-                                          <span>{provider.name}</span>
-                                        </a>
-                                      ))}
-                                    </div>
-                                  );
-                                })}
-                                <div className="text-[9px] text-slate-600">Availability in India · TMDB / JustWatch</div>
-                              </div>
-                            ) : (
-                              <p className="text-[10px] text-slate-500">Streaming availability in India not confirmed</p>
-                            )}
-                          </div>
-                          <div className="mt-auto grid grid-cols-1 gap-2">
-                            <a href={show.tmdbUrl || ('https://www.themoviedb.org/tv/' + show.id)} target="_blank" rel="noreferrer" className="block rounded-lg border border-slate-700 px-2 py-2 text-center text-[11px] font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">View on TMDB</a>
-                          </div>
+                          <div><h3 className="line-clamp-2 text-sm font-bold leading-snug text-slate-100">{show.title}</h3>
+                            <div className="mt-0.5 text-xs text-slate-500">{show.year || 'Year unknown'} · OTT Web Series</div></div>
+                          {show.overview && <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{show.overview}</p>}
+                          {show.streamingProviders?.length ? <div className="flex flex-wrap gap-1">{uniqueOttProviders(show.streamingProviders.filter(provider => ['subscription','free','ads'].includes(provider.type))).map(provider => <span key={normalizeOttProviderName(provider.name)} className="rounded bg-slate-800 px-1.5 py-1 text-[10px] text-cyan-200">{displayOttProviderName(provider.name)}</span>)}</div> : null}
                         </div>
                       </article>
                     ))}
