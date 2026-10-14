@@ -107,6 +107,22 @@ jobs:
             sync_remote_file "$DATA_DIR/$name" "backend/cache-seed/runtime/$name"
           done
 
+          # Do not silently publish an empty OTT snapshot: Render runs cache-only
+          # and would otherwise have no bundled availability data to serve.
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("backend/cache-seed/runtime/tmdb_ott_availability_cache.json")
+          if not path.is_file() or path.stat().st_size == 0:
+              raise SystemExit("OTT cache snapshot is missing/empty; check VPS path and SSH permissions.")
+          payload = json.loads(path.read_text(encoding="utf-8"))
+          items = payload.get("items") if isinstance(payload, dict) else None
+          if not isinstance(items, dict) or not items:
+              raise SystemExit("OTT cache snapshot contains no items; refusing to publish an empty cache.")
+          print(f"Validated OTT cache snapshot: {len(items)} entries")
+          PY
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A -- backend/cache-seed/
