@@ -2766,7 +2766,17 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     setMarvelWebSeriesLoading(true);
     setMarvelWebSeriesError('');
     try {
-      setMarvelWebSeriesCatalogue(await api.getTvCatalogue('marvel'));
+      // Fetch every page up front so the Marvel section is complete rather than
+      // silently showing only the first page until the user finds Load more.
+      const firstPage = await api.getTvCatalogue('marvel', 1);
+      const allResults = [...firstPage.results];
+      for (let page = 2; page <= Math.min(firstPage.totalPages, 500); page += 1) {
+        const nextPage = await api.getTvCatalogue('marvel', page);
+        for (const show of nextPage.results) {
+          if (!allResults.some(existing => String(existing.id) === String(show.id))) allResults.push(show);
+        }
+      }
+      setMarvelWebSeriesCatalogue({ ...firstPage, page: firstPage.totalPages, results: allResults });
     } catch (error: any) {
       setMarvelWebSeriesError(String(error?.message || 'Could not load Marvel web series.'));
     } finally {
@@ -4288,7 +4298,17 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 <>
                   <div className="px-1 text-xs text-slate-400">{marvelWebSeriesCatalogue.totalResults.toLocaleString()} Marvel web series · Page {marvelWebSeriesCatalogue.page} of {marvelWebSeriesCatalogue.totalPages.toLocaleString()} · Metadata by TMDB</div>
                   <div className="grid grid-cols-2 items-stretch gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
-                    {marvelWebSeriesCatalogue.results.map(show => (
+                    {[...marvelWebSeriesCatalogue.results]
+                      .sort((a, b) => {
+                        const yearA = Number(a.year) || Number(String(a.releaseDate || '').slice(0, 4)) || 0;
+                        const yearB = Number(b.year) || Number(String(b.releaseDate || '').slice(0, 4)) || 0;
+                        if (!yearA && !yearB) return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true });
+                        if (!yearA) return 1;
+                        if (!yearB) return -1;
+                        if (yearA !== yearB) return releaseYearSort === 'oldest' ? yearA - yearB : yearB - yearA;
+                        return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true });
+                      })
+                      .map(show => (
                       <article key={String(show.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-cyan-500/40 hover:bg-slate-900/95 flex flex-col">
                         <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} aria-label={`Find ${show.title} on NexStream`} className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950 text-left cursor-pointer">
                           {show.posterUrl ? <img src={lowQualityPosterUrl(show.posterUrl)} alt={show.title} loading="eager" onLoad={event => {
@@ -4345,7 +4365,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       </article>
                     ))}
                   </div>
-                  {marvelWebSeriesCatalogue.page < marvelWebSeriesCatalogue.totalPages && <button type="button" disabled={marvelWebSeriesLoading} onClick={async () => { setMarvelWebSeriesLoading(true); setMarvelWebSeriesError(''); try { const nextPage = await api.getTvCatalogue('marvel', marvelWebSeriesCatalogue.page + 1); setMarvelWebSeriesCatalogue(current => current ? { ...nextPage, results: [...current.results, ...nextPage.results.filter(item => !current.results.some(existing => String(existing.id) === String(item.id)))] } : nextPage); } catch (error: any) { setMarvelWebSeriesError(String(error?.message || 'Could not load more series.')); } finally { setMarvelWebSeriesLoading(false); } }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-semibold text-slate-200 hover:border-cyan-500 disabled:opacity-50">Load more</button>}
+                  {marvelWebSeriesCatalogue.page < marvelWebSeriesCatalogue.totalPages && <button type="button" disabled={marvelWebSeriesLoading} onClick={async () => { setMarvelWebSeriesLoading(true); setMarvelWebSeriesError(''); try { const nextPage = await api.getTvCatalogue('marvel', marvelWebSeriesCatalogue.page + 1); setMarvelWebSeriesCatalogue(current => current ? { ...nextPage, page: nextPage.page, results: [...current.results, ...nextPage.results.filter(item => !current.results.some(existing => String(existing.id) === String(item.id)))].sort((a, b) => { const yearA = Number(a.year) || Number(String(a.releaseDate || '').slice(0, 4)) || 0; const yearB = Number(b.year) || Number(String(b.releaseDate || '').slice(0, 4)) || 0; if (!yearA && !yearB) return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true }); if (!yearA) return 1; if (!yearB) return -1; if (yearA !== yearB) return releaseYearSort === 'oldest' ? yearA - yearB : yearB - yearA; return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true }); }) } : nextPage); } catch (error: any) { setMarvelWebSeriesError(String(error?.message || 'Could not load more series.')); } finally { setMarvelWebSeriesLoading(false); } }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-semibold text-slate-200 hover:border-cyan-500 disabled:opacity-50">Load more</button>}
                 </>
               )}
             </div>
