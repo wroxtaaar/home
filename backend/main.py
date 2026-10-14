@@ -9152,6 +9152,33 @@ async def api_tmdb_movie_ott_availability(
         if stale_payload is None:
             stale_payload = persistent_payload
 
+    # Serve expired-but-usable data immediately. Refresh in the background so
+    # slow or rate-limited providers cannot block catalogue cards.
+    if stale_payload is not None and not force:
+        task = _tmdb_ott_inflight.get(cache_key)
+        if task is None or task.done():
+            async def refresh_stale_ott_cache():
+                try:
+                    payload = await _tmdb_fetch_movie_ott_availability(movie_id, region)
+                    _tmdb_ott_cache[cache_key] = (time.monotonic(), payload)
+                    _write_tmdb_ott_persistent_cache(cache_key, payload)
+                except Exception:
+                    logger.warning(
+                        "Background OTT refresh failed for movie %s in %s; keeping stale cache",
+                        movie_id, region, exc_info=True,
+                    )
+                finally:
+                    current = asyncio.current_task()
+                    if _tmdb_ott_inflight.get(cache_key) is current:
+                        _tmdb_ott_inflight.pop(cache_key, None)
+
+            task = asyncio.create_task(refresh_stale_ott_cache())
+            _tmdb_ott_inflight[cache_key] = task
+        stale_response = dict(stale_payload)
+        stale_response["stale"] = True
+        stale_response["cacheWarning"] = "Showing cached OTT availability while it refreshes."
+        return stale_response
+
     # force=true bypasses both caches for a fresh provider lookup.
     task = _tmdb_ott_inflight.get(cache_key)
     owns_inflight_task = False
