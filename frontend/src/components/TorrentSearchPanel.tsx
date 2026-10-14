@@ -3466,8 +3466,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           </div>
 
           {([
-            ['bollywood', '🎬 Bollywood'],
             ['hollywood', '🎥 Hollywood'],
+            ['bollywood', '🎬 Bollywood'],
           ] as const).map(([group, label]) => (
             <div key={group} data-main-catalogue-menu="true" className="relative">
               <button type="button" aria-expanded={openMainCatalogueMenu === group}
