@@ -9271,6 +9271,8 @@ async def api_extra_catalogue(catalogue_key: str):
     if catalogue_key not in _EXTRA_CATALOGUES:
         raise HTTPException(404, "Unknown catalogue")
     cached = _read_extra_catalogue(catalogue_key)
+    if catalogue_key == "classics" and cached:
+        _schedule_classics_movie_ott_enrichment()
     await _ensure_extra_catalogue_refresh(catalogue_key)
     state = _extra_catalogue_states[catalogue_key]
     # For monthly catalogues, stale-but-useful data is returned immediately while
@@ -9282,6 +9284,80 @@ async def api_extra_catalogue(catalogue_key: str):
                 "movieCount": int(cached.get("movieCount") or 0), "refreshing": bool(_extra_catalogue_tasks.get(catalogue_key) and not _extra_catalogue_tasks[catalogue_key].done()),
                 "results": cached["results"]}
     return {**state, "results": []}
+
+
+_classics_ott_enrichment_task: asyncio.Task | None = None
+
+async def _enrich_classics_movie_ott_cache() -> None:
+    """Backfill India OTT metadata for existing Favourites movie cache rows."""
+    key = "classics"
+    path = _EXTRA_CATALOGUE_PATHS[key]
+    try:
+        payload = _read_extra_catalogue(key)
+        if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+            return
+        rows = payload["results"]
+        semaphore = asyncio.Semaphore(3)
+        changed = False
+
+        async def enrich(row: dict[str, Any]) -> None:
+            nonlocal changed
+            existing = row.get("ottAvailability")
+            if isinstance(existing, dict):
+                checked_at = str(existing.get("checkedAt") or "").strip()
+                status = str(existing.get("status") or "").casefold()
+                try:
+                    checked = datetime.fromisoformat(checked_at.replace("Z", "+00:00"))
+                    if checked.tzinfo is None:
+                        checked = checked.replace(tzinfo=timezone.utc)
+                    fresh = 0 <= (datetime.now(timezone.utc) - checked).total_seconds() < TMDB_OTT_CACHE_SECONDS
+                except (TypeError, ValueError):
+                    fresh = False
+                if fresh and status not in {"unknown", "error", "pending"}:
+                    return
+
+            title = str(row.get("catalogueTitle") or row.get("mediaTitle") or row.get("title") or "").strip()
+            if not title:
+                return
+            try:
+                year = int(row.get("year") or _extra_item_year(row))
+            except (TypeError, ValueError):
+                year = 0
+            tmdb_id = int(row.get("tmdbId") or 0) if str(row.get("tmdbId") or "").isdigit() else 0
+            async with semaphore:
+                try:
+                    metadata = await asyncio.wait_for(_lookup_catalogue_synopsis(title, year, tmdb_id), timeout=15)
+                    resolved_id = int((metadata or {}).get("tmdbId") or (metadata or {}).get("id") or tmdb_id)
+                    if resolved_id <= 0:
+                        return
+                    availability = await asyncio.wait_for(_tmdb_fetch_movie_ott_availability(resolved_id, "IN"), timeout=18)
+                    if not isinstance(availability, dict) or str(availability.get("status") or "").casefold() in {"unknown", "error", "pending"}:
+                        return
+                    row["tmdbId"] = resolved_id
+                    row["ottAvailability"] = availability
+                    row["ottEnrichedAt"] = datetime.now(timezone.utc).isoformat()
+                    if metadata:
+                        for field in ("tmdbUrl", "releaseDate", "rating", "posterUrl", "backdropUrl", "overview", "genres"):
+                            if not row.get(field) and metadata.get(field):
+                                row[field] = metadata[field]
+                    changed = True
+                except Exception as exc:
+                    logger.info("Favourites OTT enrichment failed for %s: %s", title, type(exc).__name__)
+
+        await asyncio.gather(*(enrich(row) for row in rows if isinstance(row, dict)))
+        if changed:
+            payload["results"] = rows
+            payload["ottEnrichedAt"] = datetime.now(timezone.utc).isoformat()
+            _write_extra_catalogue(key, payload)
+            logger.info("Enriched Favourites movie cache with India OTT data")
+    except Exception:
+        logger.exception("Favourites movie OTT cache enrichment failed")
+
+
+def _schedule_classics_movie_ott_enrichment() -> None:
+    global _classics_ott_enrichment_task
+    if _classics_ott_enrichment_task is None or _classics_ott_enrichment_task.done():
+        _classics_ott_enrichment_task = asyncio.create_task(_enrich_classics_movie_ott_cache())
 
 
 async def _warm_extra_catalogues_on_startup() -> None:
