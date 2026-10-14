@@ -8389,6 +8389,20 @@ async def _get_classics_tv_catalogue(catalogue_key: str) -> dict[str, Any]:
         "totalResults": len(results), "provider": "TMDB + curated Classics list", "results": results,
     }
     _CLASSICS_TV_CATALOGUE_CACHE[catalogue_key] = result
+
+    # Persist the resolved catalogue so the manual GitHub snapshot workflow can
+    # copy it from APP_DATA_DIR and seed ephemeral deployments with a warm cache.
+    filename = _CLASSICS_TV_CACHE_FILES[catalogue_key]
+    cache_path = Path(os.getenv("APP_DATA_DIR", "/app/data")) / filename
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+        temporary_path.write_text(json.dumps(result, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        temporary_path.replace(cache_path)
+        logger.info("Persisted Classics TV catalogue cache %s (%s titles)", filename, len(results))
+    except OSError as exc:
+        logger.warning("Could not persist Classics TV catalogue cache %s: %s", filename, exc)
+
     return result
 
 
