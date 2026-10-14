@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
+from cache_diagnostics import _InstrumentedAsyncClient, _record_cache_event
 from fastapi import APIRouter, HTTPException, Query
 
 router = APIRouter()
@@ -99,15 +100,26 @@ def _read_nexstream_cache() -> dict[str, dict]:
 
 
 def _get_nexstream_cache(key: str, ttl: int):
+    store = "nexstream_search" if key.startswith("search:") else "nexstream_resolve"
     with _NEXSTREAM_CACHE_LOCK:
         entry = _read_nexstream_cache().get(key)
     if not isinstance(entry, dict):
+        _record_cache_event(store, "miss")
         return None
     cached_at = entry.get("cachedAt")
     if not isinstance(cached_at, (int, float)) or time.time() - cached_at >= ttl:
+        _record_cache_event(store, "expired_miss")
         return None
     value = entry.get("value")
-    return value if isinstance(value, dict) else None
+    if not isinstance(value, dict):
+        _record_cache_event(store, "invalid_miss")
+        return None
+    _record_cache_event(store, "persistent_hit")
+    if key.startswith("search:"):
+        _record_cache_event(store, "result_rows_served", len(value.get("results") or []))
+    else:
+        _record_cache_event(store, "source_rows_served", len(value.get("sources") or []))
+    return value
 
 
 def _set_nexstream_cache(key: str, value: dict) -> None:
@@ -184,7 +196,7 @@ async def search_titles(
     last_status = None
     connection_errors = 0
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(12.0), follow_redirects=True) as client:
+    async with _InstrumentedAsyncClient(timeout=httpx.Timeout(12.0), follow_redirects=True) as client:
         # A broken connection for one credential must not prevent trying the others.
         for key in api_keys:
             try:
@@ -258,14 +270,19 @@ def _read_episode_cache(tmdb_id: int, season: int):
     try:
         with _NEXSTREAM_EPISODE_CACHE_LOCK:
             if not _NEXSTREAM_EPISODE_CACHE_PATH.is_file():
+                _record_cache_event("nexstream_episode_metadata", "miss")
                 return None
             data = json.loads(_NEXSTREAM_EPISODE_CACHE_PATH.read_text(encoding="utf-8"))
         show = (data.get("shows") or {}).get(str(tmdb_id)) or {}
         episodes = (show.get("episodesBySeason") or {}).get(str(season))
         if episodes is None:
+            _record_cache_event("nexstream_episode_metadata", "miss")
             return None
+        _record_cache_event("nexstream_episode_metadata", "persistent_hit")
+        _record_cache_event("nexstream_episode_metadata", "episode_rows_served", len(episodes))
         return {"success": True, "tmdbId": tmdb_id, "seasons": show.get("seasons") or [], "selectedSeason": season, "episodes": episodes, "cached": True}
     except Exception:
+        _record_cache_event("nexstream_episode_metadata", "read_error_miss")
         return None
 
 
@@ -306,7 +323,7 @@ async def get_tv_episodes(
     if not api_keys and not bearer_tokens:
         raise HTTPException(status_code=503, detail="TMDB credentials are not configured on the test server.")
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(12.0), follow_redirects=True) as client:
+    async with _InstrumentedAsyncClient(timeout=httpx.Timeout(12.0), follow_redirects=True) as client:
         async def tmdb_get(path: str):
             last_status = None
             connection_errors = 0
@@ -392,7 +409,7 @@ async def resolve_nexstream(
         path = f"/api/movie/{tmdb_id}"
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+        async with _InstrumentedAsyncClient(timeout=httpx.Timeout(15.0)) as client:
             response = await client.get(
                 f"{NEXSTREAM_API_BASE}{path}",
                 params={"apikey": api_key},
