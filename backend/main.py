@@ -8277,6 +8277,8 @@ _CLASSICS_TV_CATALOGUES: dict[str, list[tuple[str, int]]] = {
         ("Dragon Ball GT", 1996), ("Dragon Ball Z Kai", 2009), ("Super Dragon Ball Heroes", 2018), ("Dragon Ball Super", 2015),
         ("Dragon Ball Daima", 2024), ("Naruto", 2002),
         ("Naruto: Shippuden", 2007), ("Bleach", 2004), ("One Piece", 1999),
+        ("One-Punch Man", 2015), ("Terror in Resonance", 2014),
+        ("My Hero Academia", 2016),
     ],
 }
 _CLASSICS_TV_CATALOGUE_CACHE: dict[str, dict[str, Any]] = {}
