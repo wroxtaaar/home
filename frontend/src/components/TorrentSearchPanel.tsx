@@ -718,6 +718,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [searchMetadataStatus, setSearchMetadataStatus] = useState<'idle' | 'loading' | 'ready' | 'not_found' | 'unavailable'>('idle');
   const [imdbRatingsByKey, setImdbRatingsByKey] = useState<Record<string, ImdbRatingResult>>({});
   const imdbRatingRequestedRef = useRef(new Set<string>());
+  const [imdbRetryTick, setImdbRetryTick] = useState(0);
+  const imdbRetryCountRef = useRef(0);
   const tvMetadataRequestedRef = useRef(new Set<string>());
   const [searchAvailabilityByGroup, setSearchAvailabilityByGroup] = useState<Record<string, {
     status: 'ready' | 'not_found' | 'not_confirmed' | 'unavailable' | 'loading';
@@ -3121,14 +3123,27 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     requests.forEach(([key]) => imdbRatingRequestedRef.current.add(key));
 
     const requestItems = requests.map(([, item]) => item);
+    const scheduleImdbRetry = () => {
+      // Bounded so a missing OMDb key doesn't poll forever.
+      if (imdbRetryCountRef.current >= 5) return;
+      imdbRetryCountRef.current += 1;
+      window.setTimeout(() => setImdbRetryTick(tick => tick + 1), 20000);
+    };
     void api.getImdbRatings(
       requestItems.map(item => item.title),
       requestItems.map(item => item.mediaType),
     ).then(response => {
       const ratings = Array.isArray(response.results) ? response.results : [];
+      let needsRetry = false;
       setImdbRatingsByKey(previous => {
         const next = { ...previous };
         for (const rating of ratings) {
+          // Transient failures (rate limit / upstream error) are not answers:
+          // don't store them and let the lookup be retried below.
+          if (rating.status === 'rate_limited' || rating.status === 'unavailable') {
+            needsRetry = true;
+            continue;
+          }
           const mediaType = rating.mediaType === 'tv' ? 'tv' : 'movie';
           const queryKey = imdbRatingKey(rating.query || rating.title, undefined, mediaType);
           const canonicalKey = imdbRatingKey(rating.title, rating.year, mediaType);
@@ -3137,11 +3152,24 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         }
         return next;
       });
+      if (needsRetry) {
+        // Forget keys that never got a real answer, then re-run this effect later.
+        requests.forEach(([key]) => {
+          const done = ratings.some(rating => {
+            if (rating.status === 'rate_limited' || rating.status === 'unavailable') return false;
+            const mediaType = rating.mediaType === 'tv' ? 'tv' : 'movie';
+            return imdbRatingKey(rating.query || rating.title, undefined, mediaType) === key;
+          });
+          if (!done) imdbRatingRequestedRef.current.delete(key);
+        });
+        scheduleImdbRetry();
+      }
     }).catch(() => {
       // Ratings are optional metadata; don't interrupt torrent/catalogue rendering.
       requests.forEach(([key]) => imdbRatingRequestedRef.current.delete(key));
+      scheduleImdbRetry();
     });
-  }, [movieCatalogue?.results, searchMetadata]);
+  }, [movieCatalogue?.results, searchMetadata, imdbRetryTick]);
 
   const clearTmdbCacheAndReload = async () => {
     const currentCatalogue = movieCatalogue;

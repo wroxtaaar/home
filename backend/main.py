@@ -195,6 +195,8 @@ TMDB_SEARCH_METADATA_QUERY_TTL_SECONDS = max(3600, int(os.getenv("TMDB_SEARCH_ME
 IMDB_RATING_CACHE_FILE = Path(os.getenv("IMDB_RATING_CACHE_FILE", "/app/data/imdb_rating_cache.json"))
 IMDB_RATING_CACHE_TTL_SECONDS = max(86400, int(os.getenv("IMDB_RATING_CACHE_TTL_SECONDS", str(30 * 24 * 60 * 60))))
 IMDB_RATING_LOOKUP_VERSION = 4
+# Misses are re-checked sooner than hits: OMDb data and title matching improve over time.
+IMDB_RATING_NOT_FOUND_TTL_SECONDS = max(3600, int(os.getenv("IMDB_RATING_NOT_FOUND_TTL_SECONDS", str(24 * 60 * 60))))
 _OMDB_HTTP_CLIENT: httpx.AsyncClient | None = None
 _OMDB_REQUEST_SEMAPHORE = asyncio.Semaphore(4)
 _OMDB_RATE_LIMITED_UNTIL = 0.0
@@ -10338,7 +10340,11 @@ async def _get_imdb_rating_record(title: str, year: int, media_type: str = "movi
         if (
             lookup_version >= IMDB_RATING_LOOKUP_VERSION
             and checked_at
-            and now - checked_at < IMDB_RATING_CACHE_TTL_SECONDS
+            and now - checked_at < (
+                IMDB_RATING_NOT_FOUND_TTL_SECONDS
+                if cached.get("status") != "found" or cached.get("imdbRating") is None
+                else IMDB_RATING_CACHE_TTL_SECONDS
+            )
         ):
             return cached
 
