@@ -8168,14 +8168,14 @@ async def api_tmdb_marvel_tv_catalogue(page: int = Query(1, ge=1, le=500)):
             target = _normalize_title(title)
             candidates = [row for row in (payload.get("results") or []) if isinstance(row, dict) and row.get("id")]
             candidates.sort(key=lambda row: (
-                _normalize_title(str(row.get("name") or "")) == target,
-                str(row.get("first_air_date") or "").startswith(str(year)),
+                _normalize_title(str(row.get("title") if is_anime_film else row.get("name") or "")) == target,
+                str(row.get("release_date" if is_anime_film else "first_air_date") or "").startswith(str(year)),
                 float(row.get("popularity") or 0),
             ), reverse=True)
             if not candidates:
                 return fallback
             item = candidates[0]
-            air_date = str(item.get("first_air_date") or "").strip()
+            air_date = str(item.get("release_date" if is_anime_film else "first_air_date") or "").strip()
             year_match = re.match(r"^(\d{4})", air_date)
             poster_path = str(item.get("poster_path") or "").strip()
             backdrop_path = str(item.get("backdrop_path") or "").strip()
@@ -8279,6 +8279,10 @@ _CLASSICS_TV_CATALOGUES: dict[str, list[tuple[str, int]]] = {
         ("Naruto: Shippuden", 2007), ("Bleach", 2004), ("One Piece", 1999),
         ("One-Punch Man", 2015), ("Terror in Resonance", 2014),
         ("My Hero Academia", 2016), ("Fullmetal Alchemist: Brotherhood", 2009),
+        ("Demon Slayer: Kimetsu no Yaiba", 2019), ("Vinland Saga", 2019),
+        ("Cowboy Bebop", 1998), ("Jujutsu Kaisen", 2020), ("Hunter x Hunter", 2011),
+        ("Hajime no Ippo", 2000), ("Chainsaw Man", 2022), ("Berserk", 1997),
+        ("Parasyte: The Maxim", 2014),
     ],
 }
 _CLASSICS_TV_CATALOGUE_CACHE: dict[str, dict[str, Any]] = {}
@@ -8304,9 +8308,11 @@ async def _get_classics_tv_catalogue(catalogue_key: str) -> dict[str, Any]:
         }
         async with semaphore:
             try:
-                payload = await _tmdb_get_json("search/tv", {
-                    "query": title, "first_air_date_year": year, "include_adult": "false",
-                    "language": "en-US", "page": 1,
+                is_anime_film = title == "Akira"
+                payload = await _tmdb_get_json("search/movie" if is_anime_film else "search/tv", {
+                    "query": title,
+                    ("year" if is_anime_film else "first_air_date_year"): year,
+                    "include_adult": "false", "language": "en-US", "page": 1,
                 })
             except HTTPException as exc:
                 logger.info("TMDB Classics TV lookup failed for %s (%s): %s", title, year, exc.detail)
@@ -8333,8 +8339,8 @@ async def _get_classics_tv_catalogue(catalogue_key: str) -> dict[str, Any]:
                 "posterUrl": TMDB_IMAGE_BASE + poster_path if poster_path else "",
                 "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop_path if backdrop_path else "",
                 "rating": float(item.get("vote_average") or 0),
-                "tmdbUrl": f"https://www.themoviedb.org/tv/{tmdb_id}",
-                "streamingProviders": await _tv_streaming_providers(tmdb_id),
+                "tmdbUrl": f"https://www.themoviedb.org/{'movie' if is_anime_film else 'tv'}/{tmdb_id}",
+                "streamingProviders": [] if is_anime_film else await _tv_streaming_providers(tmdb_id),
                 "providerLink": "", "source": "TMDB",
             }
 
