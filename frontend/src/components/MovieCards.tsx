@@ -25,6 +25,37 @@ export interface MovieCardProvider {
   webUrl?: string | null;
 }
 
+/**
+ * Staged poster loading shared by every movie card: cards first show the small (w342)
+ * poster; the large (w780) version is only requested once the page's streaming, IMDb
+ * and other info has settled, so the user sees complete cards before heavy downloads.
+ */
+let highQualityPostersReady = false;
+const pendingHighQualityPosters = new Set<HTMLImageElement>();
+
+function upgradeToHighQualityPoster(image: HTMLImageElement): void {
+  if (!image.isConnected || image.dataset.highQualityTried) return;
+  const current = image.currentSrc || image.src;
+  if (!current.includes('/t/p/w342/')) return;
+  image.dataset.highQualityTried = 'true';
+  image.src = current.replace('/t/p/w342/', '/t/p/w780/');
+}
+
+export function requestHighQualityPoster(image: HTMLImageElement): void {
+  if (highQualityPostersReady) upgradeToHighQualityPoster(image);
+  else pendingHighQualityPosters.add(image);
+}
+
+/** Call with false while a page is still loading info, true once it has settled. */
+export function setHighQualityPostersReady(ready: boolean): void {
+  highQualityPostersReady = ready;
+  if (!ready) return;
+  const images = [...pendingHighQualityPosters];
+  pendingHighQualityPosters.clear();
+  // Stagger so the upgrades don't all hit the network at once.
+  images.forEach((image, index) => window.setTimeout(() => upgradeToHighQualityPoster(image), index * 120));
+}
+
 type PosterEventHandler = (event: React.SyntheticEvent<HTMLImageElement>) => void;
 
 const hasImdbRating = (imdb: MovieCardImdb): imdb is NonNullable<MovieCardImdb> & { imdbRating: number } =>
@@ -95,10 +126,7 @@ export const MovieCompactCard: React.FC<MovieCompactCardProps> = ({
               onLoad={event => {
                       const image = event.currentTarget;
                       onPosterLoad(event);
-                      if (!image.dataset.highQualityTried && image.currentSrc.includes('/t/p/w342/')) {
-                        image.dataset.highQualityTried = 'true';
-                        image.src = image.currentSrc.replace('/t/p/w342/', '/t/p/w780/');
-                      }
+                      requestHighQualityPoster(image);
                     }}
                     onError={event => {
                       const image = event.currentTarget;
@@ -268,10 +296,7 @@ export const MoviePrepareCard: React.FC<MoviePrepareCardProps> = ({
                     onLoad={event => {
                       const image = event.currentTarget;
                       onPosterLoad(event);
-                      if (!image.dataset.highQualityTried && image.currentSrc.includes('/t/p/w342/')) {
-                        image.dataset.highQualityTried = 'true';
-                        image.src = image.currentSrc.replace('/t/p/w342/', '/t/p/w780/');
-                      }
+                      requestHighQualityPoster(image);
                     }}
                     onError={event => {
                       const image = event.currentTarget;

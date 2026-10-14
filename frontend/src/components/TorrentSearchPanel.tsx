@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import { api, API_BASE, ImdbRatingResult, MovieCatalogueItem, MovieCatalogueKey, MovieCataloguePage, MovieOttAvailability, MovieOttProvider, SearchMediaMetadata, TorrentSearchResult, TvCataloguePage } from '../api/client.ts';
 import { formatBytes } from '../utils/formatters.ts';
-import { MovieCompactCard, MoviePrepareCard, imdbTitleLink, type MovieCardProvider } from './MovieCards.tsx';
+import { MovieCompactCard, MoviePrepareCard, imdbTitleLink, setHighQualityPostersReady, type MovieCardProvider } from './MovieCards.tsx';
 import searchLimits from '../../search_limits.json';
 
 const CROW_2024_POSTER_URL = 'https://m.media-amazon.com/images/M/MV5BNjYyZjJjMzQtNmNlMS00NmE4LTljZTEtZDI5ZjIxYjE1MzI2XkEyXkFqcGc%40._V1_.jpg';
@@ -789,6 +789,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [imdbRatingsByKey, setImdbRatingsByKey] = useState<Record<string, ImdbRatingResult>>({});
   const imdbRatingRequestedRef = useRef(new Set<string>());
   const [imdbRetryTick, setImdbRetryTick] = useState(0);
+  const imdbInFlightRef = useRef(0);
   const imdbRetryCountRef = useRef(0);
   const tvMetadataRequestedRef = useRef(new Set<string>());
   const [searchAvailabilityByGroup, setSearchAvailabilityByGroup] = useState<Record<string, {
@@ -3285,6 +3286,26 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     return () => controller.abort();
   }, [groupedResults]);
 
+  // Staged loading: when a new set of cards arrives, hold the large (w780) poster downloads
+  // until streaming info, IMDb ratings and the small posters are done (or a time cap passes).
+  useEffect(() => {
+    setHighQualityPostersReady(false);
+    const cap = window.setTimeout(() => setHighQualityPostersReady(true), 15000);
+    return () => window.clearTimeout(cap);
+  }, [movieCatalogue, groupedResults]);
+
+  useEffect(() => {
+    const quiet = window.setTimeout(() => {
+      const availabilityBusy = Object.values(searchAvailabilityByGroup).some(item => item?.status === 'loading');
+      const ottBusy = ottQueueRef.current.length > 0 || ottActiveWorkersRef.current > 0 ||
+        Object.values(ottAvailability).some(item => item?.status === 'loading');
+      if (!availabilityBusy && !ottBusy && imdbInFlightRef.current === 0) {
+        setHighQualityPostersReady(true);
+      }
+    }, 1500);
+    return () => window.clearTimeout(quiet);
+  }, [ottAvailability, imdbRatingsByKey, searchAvailabilityByGroup, searchMetadata, movieCatalogue, groupedResults]);
+
   // IMDb ratings are fetched independently after cards have rendered.
   // Movies use OMDb's movie type; show metadata uses OMDb's series type.
   useEffect(() => {
@@ -3346,6 +3367,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       imdbRetryCountRef.current += 1;
       window.setTimeout(() => setImdbRetryTick(tick => tick + 1), 20000);
     };
+    imdbInFlightRef.current += 1;
     void api.getImdbRatings(
       requestItems.map(item => item.title),
       requestItems.map(item => item.mediaType),
@@ -3388,6 +3410,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       // Ratings are optional metadata; don't interrupt torrent/catalogue rendering.
       requests.forEach(([key]) => imdbRatingRequestedRef.current.delete(key));
       scheduleImdbRetry();
+    }).finally(() => {
+      imdbInFlightRef.current = Math.max(0, imdbInFlightRef.current - 1);
     });
   }, [movieCatalogue?.results, searchMetadata, groupedResults, imdbRetryTick]);
 
