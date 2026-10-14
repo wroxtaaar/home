@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import { api, API_BASE, ImdbRatingResult, MovieCatalogueItem, MovieCatalogueKey, MovieCataloguePage, MovieOttAvailability, MovieOttProvider, SearchMediaMetadata, TorrentSearchResult, TvCataloguePage } from '../api/client.ts';
 import { formatBytes } from '../utils/formatters.ts';
-import { MovieCatalogueCard } from './MovieCatalogueCard.tsx';
+import { MovieCompactCard, MoviePrepareCard, imdbTitleLink, type MovieCardProvider } from './MovieCards.tsx';
 import searchLimits from '../../search_limits.json';
 
 type MovieOttCardState = MovieOttAvailability | { status: 'loading' | 'error'; message?: string };
@@ -507,6 +507,22 @@ function uniqueOttProviders<T extends { name: string; type?: string; webUrl?: st
   const preferred = all.filter(([key]) => PREFERRED_OTT_PROVIDERS.includes(key));
   return (preferred.length ? preferred : all).map(([, provider]) => provider);
 }
+
+/** Maps provider objects to the shape the shared movie cards render. */
+function toCardProviders(
+  providers: Array<{ name: string; webUrl?: string; providerId?: number | string }>,
+): MovieCardProvider[] {
+  return providers.map((provider, index) => {
+    const name = displayOttProviderName(provider.name);
+    return {
+      key: String(provider.providerId ?? name ?? index).toLowerCase(),
+      name,
+      webUrl: provider.webUrl,
+    };
+  });
+}
+
+const PLAYABLE_FILE_PATTERN = /\.(mkv|mp4|m4v|webm|mov|avi|m3u8|ts|mp3|wav|flac|aac|ogg|m4a)$/i;
 
 function normalizeSavedOttProviders(
   items: unknown,
@@ -2679,6 +2695,54 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     }
   };
 
+  // Everything the shared movie cards need to know about one torrent result.
+  // Used by every movie section so Prepare / Play / Download / Copy behave the same.
+  const prepareStateFor = (result: TorrentSearchResult) => {
+    const source = result.magnetUrl || result.downloadUrl || result.sourceUrl;
+    const torrentKey = result.infoHash || source || result.title;
+    const preparedFiles = preparedForResult(result);
+    const primaryFile = preparedFiles.find(file => PLAYABLE_FILE_PATTERN.test(file.name)) || preparedFiles[0];
+    return { source, torrentKey, isPreparing: preparingTorrentKey === torrentKey, primaryFile };
+  };
+
+  const preparedActionsFor = (torrentKey: string, primaryFile: SeedrSearchFile) => ({
+    isPlaying: playingTorrentKey === torrentKey,
+    isCopied: copiedTorrentKey === torrentKey,
+    onPlay: async () => {
+      if (playingTorrentKey === torrentKey) return;
+      setPlayingTorrentKey(torrentKey);
+      try {
+        await onPlaySeedrFile?.(primaryFile);
+      } finally {
+        setPlayingTorrentKey(current => current === torrentKey ? null : current);
+      }
+    },
+    onDownload: () => api.openSeedrFileDownload(primaryFile.id, primaryFile.name),
+    onCopy: async () => {
+      try {
+        const data = await api.getSeedrFileDownload(primaryFile.id);
+        await navigator.clipboard.writeText(data.url);
+        setCopiedTorrentKey(torrentKey);
+        window.setTimeout(() => {
+          setCopiedTorrentKey(current => current === torrentKey ? null : current);
+        }, 2000);
+      } catch {
+        setPrepareError('Could not copy the download link.');
+      }
+    },
+  });
+
+  // Returns a selected catalogue card from its prepare card back to the compact card.
+  const closeMoviePrepareCard = () => {
+    movieTorrentSearchControllerRef.current?.abort();
+    movieTorrentSearchGenerationRef.current += 1;
+    setMovieTorrentSearchLoading(false);
+    setMovieTorrentPreviewGroup(null);
+    setMovieTorrentPreviewCatalogueId(null);
+    setMovieTorrentPreviewPosterUrl('');
+    setMovieTorrentSearchError('');
+  };
+
   const loadDcWebSeries = async () => {
     setShowDcWebSeries(true);
     setShowMarvelWebSeries(false);
@@ -3725,14 +3789,13 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 movieTorrentPreviewCatalogueId === String(movie.id) ||
                 movieTorrentSearchTitle === movie.title + (movie.year ? ' ' + movie.year : '');
               const previewGroup = previewMatchesMovie ? movieTorrentPreviewGroup : null;
+              const movieImdb = imdbRatingsByKey[imdbRatingKey(movie.title, movie.year)];
+              const movieTitleHref = imdbTitleLink(movieImdb, movie.title, movie.year);
+
               if (previewGroup) {
                 const selectedKey = selectedMovieTorrentQualityByGroup[previewGroup.key] || torrentResultKey(previewGroup.variants[0]);
                 const result = previewGroup.variants.find(variant => torrentResultKey(variant) === selectedKey) || previewGroup.variants[0];
-                const source = result.magnetUrl || result.downloadUrl || result.sourceUrl;
-                const torrentKey = result.infoHash || source || result.title;
-                const isPreparing = preparingTorrentKey === torrentKey;
-                const preparedFiles = preparedForResult(result);
-                const primaryFile = preparedFiles.find(file => /\.(mkv|mp4|m4v|webm|mov|avi|m3u8|ts|mp3|wav|flac|aac|ogg|m4a)$/i.test(file.name)) || preparedFiles[0];
+                const prepareState = prepareStateFor(result);
                 // Keep the catalogue poster as the source of truth for the
                 // inline Prepare card; torrent-result poster metadata is often absent
                 // or delayed and must not replace the movie's known poster.
@@ -3740,543 +3803,151 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 const cataloguePosterUrl = movieTorrentPreviewPosterUrl ||
                   cataloguePosterUrlsRef.current[String(movie.id)] ||
                   String(movie.posterUrl || '').trim();
-                const posterUrl = lowQualityPosterUrl(
+                const posterSrc = lowQualityPosterUrl(
                   cataloguePosterUrl ||
                   (isRegionalMoviePreview ? '' : posterUrlFor(previewGroup.posterResult) || previewGroup.posterResult?.posterUrl || '')
                 );
-                // Same details as the Marvel/DC prepare card: IMDb badge and link,
-                // seeders badge, close button, and Play / Download / Copy once prepared.
-                const prepareImdb = imdbRatingsByKey[imdbRatingKey(movie.title, movie.year)];
-                const prepareHasRating = Boolean(
-                  (prepareImdb?.imdbRating != null && prepareImdb.imdbRating > 0) ||
-                  (movie.rating != null && movie.rating > 0)
-                );
-                const prepareImdbHref = prepareImdb?.imdbUrl ||
-                  (prepareImdb?.imdbId
-                    ? 'https://www.imdb.com/title/' + prepareImdb.imdbId + '/'
-                    : 'https://www.imdb.com/find/?q=' + encodeURIComponent([movie.title, movie.year].filter(Boolean).join(' ')));
-                const isPrepared = preparedFiles.length > 0 && Boolean(primaryFile);
-                const closePrepareCard = () => {
-                  // Returns the selected card to the normal catalogue card.
-                  movieTorrentSearchControllerRef.current?.abort();
-                  movieTorrentSearchGenerationRef.current += 1;
-                  setMovieTorrentSearchLoading(false);
-                  setMovieTorrentPreviewGroup(null);
-                  setMovieTorrentPreviewCatalogueId(null);
-                  setMovieTorrentPreviewPosterUrl('');
-                  setMovieTorrentSearchError('');
-                };
+                const nexStreamMovieId = 'movie:' + String(movie.tmdbId || movie.id);
                 return (
-                  <MovieCatalogueCard
-                    key={'movie-prepare-' + String(movie.id)}
-                    className="relative h-full cursor-pointer border-slate-800 transition hover:border-slate-700"
-                    onClick={closePrepareCard}
-                  >
-                    <div className="relative aspect-[2/3] w-full overflow-hidden rounded-t-xl bg-slate-950">
-                      {posterUrl ? (
-                        <img
-                          key={'prepare-poster-' + String(movie.id) + '-' + posterUrl}
-                          src={posterUrl}
-                          alt={previewGroup.title}
-                          loading="eager"
-                          style={{ display: 'block' }}
-                          className="h-full w-full object-cover"
-                          onLoad={(event) => {
-                            const key = posterKeyFor(previewGroup.posterResult);
-                            posterLoadedRef.current.add(key);
-                            event.currentTarget.style.display = '';
-                            event.currentTarget.parentElement?.querySelector('[data-catalogue-torrent-poster-placeholder="true"]')?.classList.add('hidden');
-                          }}
-                          onError={(event) => {
-                            const image = event.currentTarget;
-                            const originalUrl = String(
-                              movieTorrentPreviewPosterUrl ||
-                              cataloguePosterUrlsRef.current[String(movie.id)] ||
-                              movie.posterUrl ||
-                              (isRegionalMoviePreview ? '' : previewGroup.posterResult?.posterUrl || '')
-                            ).trim();
-                            // The normal catalogue card retries the unmodified poster
-                            // when the resized URL fails. Do the same for the Prepare card
-                            // so it displays the exact same artwork.
-                            if (originalUrl && image.dataset.originalFallbackTried !== 'true') {
-                              const fallbackUrl = originalUrl.startsWith('/') ? API_BASE + originalUrl : originalUrl;
-                              image.dataset.originalFallbackTried = 'true';
-                              if (image.src !== new URL(fallbackUrl, window.location.origin).toString()) {
-                                image.src = fallbackUrl;
-                                return;
-                              }
-                            }
-                            const key = posterKeyFor(previewGroup.posterResult);
-                            posterLoadedRef.current.delete(key);
-                            image.style.display = 'none';
-                            image.parentElement?.querySelector('[data-catalogue-torrent-poster-placeholder="true"]')?.classList.remove('hidden');
-                            if (!posterBackgroundQueuedRef.current.has(key) && !posterOverrides[key]) {
-                              posterBackgroundQueuedRef.current.add(key);
-                              posterBackgroundQueueRef.current.unshift({ key, result: previewGroup.posterResult });
-                              startPosterBackgroundWorkers();
-                            }
-                          }}
-                        />
-                      ) : null}
-                      <div
-                        data-catalogue-torrent-poster-placeholder="true"
-                        className={(posterUrl && posterLoadedRef.current.has(posterKeyFor(previewGroup.posterResult)) ? "hidden " : "") + "absolute inset-0 flex items-center justify-center bg-slate-950 text-slate-600"}
-                      >
-                        <Film className="h-8 w-8" />
-                      </div>
-                      {isRegionalMoviePreview && (prepareImdb?.imdbRating != null && prepareImdb.imdbRating > 0 ? (
-                        <a
-                          href={prepareImdbHref} target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()}
-                          title={'IMDb rating' + (prepareImdb.imdbVotes ? ' · ' + prepareImdb.imdbVotes + ' votes' : '')}
-                          className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow"
-                        >
-                          ⭐ {prepareImdb.imdbRating.toFixed(1)}/10
-                        </a>
-                      ) : movie.rating != null && movie.rating > 0 ? (
-                        <span title="TMDB rating" className="absolute left-2 top-2 rounded-md border border-amber-300/40 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow">
-                          ⭐ TMDB {movie.rating.toFixed(1)}
-                        </span>
-                      ) : null)}
-                      {isRegionalMoviePreview && Number(result.seeders) > 0 && (
-                        <div className={'absolute left-2 inline-flex items-center gap-1 rounded-md bg-black/80 px-2 py-1 text-[10px] font-bold text-emerald-400 ' + (prepareHasRating ? 'top-10' : 'top-2')}>
-                          <Users className="h-3 w-3" />
-                          {result.seeders}
-                        </div>
-                      )}
-                      {result.indexer && (
-                        <div
-                          className="absolute right-2 top-2 max-w-[70%] truncate rounded-md bg-black/75 px-2 py-1 text-[10px] font-medium text-slate-300"
-                          title={result.indexer}
-                        >
-                          {result.indexer}
-                        </div>
-                      )}
-                      {extractedQuality(result) && (
-                        <div title={result.title} className="absolute bottom-2 left-2 rounded-md border border-cyan-400/30 bg-slate-950/85 px-2 py-1 text-[10px] font-bold text-cyan-300">
-                          {extractedQuality(result)}
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex flex-1 flex-col gap-2 p-2.5">
-                      <div className="flex min-h-[3.2rem] items-start gap-1.5">
-                        <div className="min-w-0 flex-1">
-                          {isRegionalMoviePreview ? (
-                            <a
-                              href={prepareImdbHref} target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()}
-                              className="block w-full text-left text-sm font-semibold leading-snug text-slate-100 line-clamp-2 hover:text-cyan-300"
-                              title="Open on IMDb"
-                            >
-                              {movie.title}
-                            </a>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={event => {
-                                event.stopPropagation();
-                                showFullTorrentTitleBubble({
-                                  ...result,
-                                  title: fullTorrentTitleFor(result) || result.title
-                                });
-                              }}
-                              className="w-full text-left text-sm font-semibold leading-snug text-slate-100 line-clamp-2 hover:text-cyan-300"
-                              title="Click to view full torrent name"
-                            >
-                              {movie.title}
-                            </button>
-                          )}
-                          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-                            <span className="text-slate-500">{movie.year || previewGroup.year || 'Release year unknown'}</span>
-                          </div>
-                        </div>
-                        {isRegionalMoviePreview && (
-                          <button
-                            type="button"
-                            onClick={event => { event.stopPropagation(); closePrepareCard(); }}
-                            className="shrink-0 rounded-md p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-100"
-                            title="Back to movie details"
-                            aria-label="Back to movie details"
-                          >
-                            <X className="h-3.5 w-3.5" />
-                          </button>
-                        )}
-                      </div>
-                      {previewGroup.variants.length > 1 ? (
-                        <select
-                          aria-label={'Choose quality for ' + previewGroup.title}
-                          value={torrentResultKey(result)}
-                          onClick={event => event.stopPropagation()}
-                          onChange={event => setSelectedMovieTorrentQualityByGroup(previous => ({
-                            ...previous,
-                            [previewGroup.key]: event.target.value
-                          }))}
-                          className="w-full min-w-0 rounded-lg border border-slate-800 bg-slate-950 px-2 py-2 text-[10px] sm:text-xs font-medium text-slate-200 outline-none focus:border-cyan-500"
-                          title="Choose quality and torrent source"
-                        >
-                          {previewGroup.variants.map(variant => {
-                            const quality = torrentQualityDetails(variant);
-                            const size = formatBytes(Number(variant.size) || 0);
-                            const seeds = Number(variant.seeders) || 0;
-                            const provider = String(variant.indexer || '').trim();
-                            return (
-                              <option key={torrentResultKey(variant)} value={torrentResultKey(variant)}>
-                                {quality.label} · {size} · ▲{seeds}{provider ? ' · ' + provider : ''}
-                              </option>
-                            );
-                          })}
-                        </select>
-                      ) : (
-                        <div className="w-full rounded-lg border border-slate-800 bg-slate-950 px-2 py-2 text-[10px] sm:text-xs font-medium text-slate-200">
-                          {torrentQualityDetails(result).label} · {formatBytes(Number(result.size) || 0)}
-                        </div>
-                      )}
-                      <div className="flex min-w-0 items-center gap-1.5">
-                        <button
-                          type="button"
-                          disabled={!Number(movie.tmdbId || movie.id) || nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id)}
-                          onClick={event => {
-                            event.stopPropagation();
-                            const tmdbId = Number(movie.tmdbId || movie.id);
-                            if (!Number.isInteger(tmdbId) || tmdbId <= 0) {
-                              setNexStreamError('This catalogue card has no valid TMDB ID for NexStream.');
-                              return;
-                            }
-                            void playWithNexStream({
-                              id: tmdbId,
-                              title: movie.title,
-                              date: movie.releaseDate || (movie.year ? String(movie.year) : ''),
-                              overview: movie.overview || '',
-                              poster: movie.posterUrl || movieTorrentPreviewPosterUrl || null,
-                              type: 'movie',
-                            });
-                          }}
-                          className={(isRegionalMoviePreview && isPrepared ? 'hidden ' : '') + 'min-w-0 flex-1 whitespace-nowrap rounded-lg border border-violet-400/50 bg-violet-500/15 px-1.5 py-1.5 text-[10px] leading-4 font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-50'}
-                        >
-                          {nexStreamResolvingId === 'movie:' + String(movie.tmdbId || movie.id) ? 'Resolving…' : 'Direct Stream'}
-                        </button>
-                        {preparedFiles.length > 0 && primaryFile ? (
-                          <>
-                          <button
-                            type="button"
-                            onClick={async event => {
-                              event.stopPropagation();
-                              setPlayingTorrentKey(torrentKey);
-                              try { await onPlaySeedrFile?.(primaryFile); }
-                              finally { setPlayingTorrentKey(current => current === torrentKey ? null : current); }
-                            }}
-                            disabled={playingTorrentKey === torrentKey}
-                            className="shrink-0 whitespace-nowrap rounded-lg bg-emerald-400 px-2 py-1.5 text-[11px] leading-4 font-bold text-slate-950 disabled:opacity-60"
-                          >
-                            {playingTorrentKey === torrentKey ? 'Opening…' : 'Play'}
-                          </button>
-                          {isRegionalMoviePreview && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={event => { event.stopPropagation(); api.openSeedrFileDownload(primaryFile.id, primaryFile.name); }}
-                                className="shrink-0 rounded-lg bg-slate-800 p-2 text-slate-300 transition hover:bg-slate-700 hover:text-white"
-                                title="Download file"
-                                aria-label="Download file"
-                              >
-                                <Download className="h-3.5 w-3.5" />
-                              </button>
-                              <button
-                                type="button"
-                                disabled={copiedTorrentKey === torrentKey}
-                                onClick={async event => {
-                                  event.stopPropagation();
-                                  try {
-                                    const data = await api.getSeedrFileDownload(primaryFile.id);
-                                    await navigator.clipboard.writeText(data.url);
-                                    setCopiedTorrentKey(torrentKey);
-                                    window.setTimeout(() => {
-                                      setCopiedTorrentKey(current => current === torrentKey ? null : current);
-                                    }, 2000);
-                                  } catch {
-                                    setPrepareError('Could not copy the download link.');
-                                  }
-                                }}
-                                className="shrink-0 rounded-lg bg-slate-800 p-2 text-slate-300 transition hover:bg-slate-700 hover:text-cyan-400 disabled:opacity-60"
-                                title="Copy download link"
-                                aria-label="Copy download link"
-                              >
-                                {copiedTorrentKey === torrentKey
-                                  ? <Check className="h-3.5 w-3.5 text-emerald-400" />
-                                  : <Copy className="h-3.5 w-3.5" />}
-                              </button>
-                            </>
-                          )}
-                          </>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={event => { event.stopPropagation(); void prepareMovieTorrent(result); }}
-                            disabled={!source || isPreparing}
-                            className="shrink-0 whitespace-nowrap rounded-lg bg-cyan-500 px-3 py-1.5 text-[11px] leading-4 font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-50"
-                          >
-                            {isPreparing ? 'Preparing…' : 'Prepare'}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </MovieCatalogueCard>
-                );
-              }
-              const isRegionalCatalogue = /^(popular|trending|latest)-(bollywood|hollywood)$/.test(String(movieCatalogue.catalogue));
-              if (isRegionalCatalogue) {
-                const imdb = imdbRatingsByKey[imdbRatingKey(movie.title, movie.year)];
-                const ott = ottAvailability[String(movie.id)];
-                const providers = ott && ott.status !== 'loading' && ott.status !== 'error'
-                  ? uniqueOttProviders([
-                      ...(ott.streamingProviders || []),
-                      ...(ott.rentProviders || []),
-                      ...(ott.buyProviders || []),
-                    ].map(provider => ({ ...provider, name: displayOttProviderName(provider.name) })))
-                  : [];
-                return (
-                  <MovieCatalogueCard
-                    key={String(movie.id)}
-                    className="cursor-pointer border-slate-800 transition hover:border-slate-700 hover:bg-slate-900/95"
-                    onClick={() => { if (!isSearching && !movieTorrentSearchLoading) void searchMovieTorrents(movie); }}
-                  >
-                    <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
-                      {movie.posterUrl ? (
-                        <img src={lowQualityPosterUrl(movie.posterUrl)} alt={movie.title} loading="lazy" className="h-full w-full object-cover"
-                          onLoad={event => {
-                            // Preserve the exact URL that made this catalogue poster visible.
-                            cataloguePosterUrlsRef.current[String(movie.id)] = event.currentTarget.currentSrc || event.currentTarget.src;
-                          }}
-                          onError={event => {
-                            const image = event.currentTarget;
-                            const originalUrl = String(movie.posterUrl || '').trim();
-                            // If the optimized w500 URL fails, retry the catalogue's
-                            // original poster URL once before showing the placeholder.
-                            if (originalUrl && image.dataset.originalFallbackTried !== 'true' && image.src !== new URL(originalUrl, window.location.origin).toString()) {
-                              image.dataset.originalFallbackTried = 'true';
-                              image.src = originalUrl.startsWith('/') ? API_BASE + originalUrl : originalUrl;
-                              return;
-                            }
-                            image.style.display = 'none';
-                            image.parentElement?.querySelector('[data-regional-poster-placeholder="true"]')?.classList.remove('hidden');
-                          }}
-                        />
-                      ) : null}
-                      <div data-regional-poster-placeholder="true" className={(movie.posterUrl ? 'hidden ' : '') + 'absolute inset-0 flex items-center justify-center bg-slate-950 text-slate-600'}>
-                        <Film className="h-8 w-8" />
-                      </div>
-                      {imdb?.imdbRating != null && imdb.imdbRating > 0 ? (
-                        <a href={imdb.imdbUrl || (imdb.imdbId ? 'https://www.imdb.com/title/' + imdb.imdbId + '/' : '#')} target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()}
-                          title={'IMDb rating' + (imdb.imdbVotes ? ' · ' + imdb.imdbVotes + ' votes' : '')}
-                          className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow">
-                          ⭐ {imdb.imdbRating.toFixed(1)}/10
-                        </a>
-                      ) : movie.rating != null && movie.rating > 0 ? (
-                        <span title="TMDB rating" className="absolute left-2 top-2 rounded-md border border-amber-300/40 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow">
-                          ⭐ TMDB {movie.rating.toFixed(1)}
-                        </span>
-                      ) : null}
-                    </div>
-                    <div className="flex flex-1 flex-col gap-2 p-2.5">
-                      <div>
-                        <h3 className="line-clamp-2 text-sm font-bold leading-snug text-slate-100">
-                          <a
-                            href={imdb?.imdbUrl || (imdb?.imdbId ? 'https://www.imdb.com/title/' + imdb.imdbId + '/' : 'https://www.imdb.com/find/?q=' + encodeURIComponent([movie.title, movie.year].filter(Boolean).join(' ')))}
-                            target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()}
-                            className="hover:text-cyan-300" title="Open on IMDb"
-                          >
-                            {movie.title}
-                          </a>
-                        </h3>
-                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] sm:text-xs">
-                          {movie.year && <span className="text-slate-400">{movie.year}</span>}
-                          {imdb?.imdbRating != null && imdb.imdbRating > 0 ? (
-                            <a href={imdb.imdbUrl || (imdb.imdbId ? 'https://www.imdb.com/title/' + imdb.imdbId + '/' : '#')} target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()} className="font-semibold text-amber-300 hover:text-amber-200">IMDb {imdb.imdbRating.toFixed(1)}</a>
-                          ) : movie.rating != null && movie.rating > 0 ? (
-                            <span className="font-semibold text-amber-300">TMDB {movie.rating.toFixed(1)}</span>
-                          ) : null}
-                        </div>
-                      </div>
-                      {movie.overview ? <p className="line-clamp-3 text-[10px] leading-relaxed text-slate-400 sm:text-[11px]">{movie.overview}</p> : <p className="line-clamp-3 text-[10px] leading-relaxed text-slate-500">Synopsis unavailable.</p>}
-                      {providers.length > 0 ? (
-                        <div className="mt-auto flex flex-wrap gap-1" aria-label={'Streaming services for ' + movie.title}>
-                          {providers.slice(0, 5).map((provider, providerIndex) => (
-                            <a key={String(provider.providerId ?? provider.name ?? providerIndex).toLowerCase()} href={provider.webUrl || undefined}
-                              target={provider.webUrl ? '_blank' : undefined} rel={provider.webUrl ? 'noreferrer' : undefined}
-                              onClick={event => event.stopPropagation()} title={provider.name}
-                              className="rounded-full border border-cyan-900/70 bg-cyan-950/40 px-2 py-0.5 text-[10px] leading-4 text-cyan-200 hover:border-cyan-600">
-                              {provider.name}
-                            </a>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="mt-auto text-[10px] leading-relaxed text-slate-500">
-                          {!ott || ott.status === 'loading'
-                            ? 'Checking streaming services…'
-                            : ott.status === 'error'
-                              ? 'Streaming availability temporarily unavailable'
-                              : ott.status === 'not_confirmed'
-                                ? 'Streaming providers not confirmed'
-                                : 'No streaming providers reported'}
-                        </p>
-                      )}
-                    </div>
-                  </MovieCatalogueCard>
-                );
-              }
-              return (
-                <MovieCatalogueCard key={String(movie.id)} className="border-slate-800 transition hover:border-cyan-500/40 hover:bg-slate-900/95">
-                <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
-                  {movie.posterUrl ? (
-                    <img
-                      src={movie.posterUrl}
-                      alt={movie.title}
-                      loading="lazy"
-                      className="h-full w-full object-cover"
-                      onError={(event) => {
-                        event.currentTarget.style.display = 'none';
-                        event.currentTarget.parentElement?.querySelector('[data-movie-poster-placeholder="true"]')?.classList.remove('hidden');
-                      }}
-                    />
-                  ) : null}
-                  <div data-movie-poster-placeholder="true" className={(movie.posterUrl ? 'hidden ' : '') + 'absolute inset-0 flex items-center justify-center bg-slate-950 text-slate-600'}>
-                    <Film className="h-8 w-8" />
-                  </div>
-                  {(() => {
-                    const imdb = imdbRatingsByKey[imdbRatingKey(movie.title, movie.year)];
-                    if (imdb?.imdbRating != null && imdb.imdbRating > 0) {
-                      return (
-                        <a
-                          href={imdb.imdbUrl || (imdb.imdbId ? 'https://www.imdb.com/title/' + imdb.imdbId + '/' : '#')}
-                          target="_blank"
-                          rel="noreferrer"
-                          title={'IMDb rating' + (imdb.imdbVotes ? ' · ' + imdb.imdbVotes + ' votes' : '')}
-                          className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow"
-                        >
-                          ⭐ {imdb.imdbRating.toFixed(1)}/10
-                        </a>
-                      );
-                    }
-                    return movie.rating != null && movie.rating > 0 ? (
-                      <span className="absolute left-2 top-2 rounded-md bg-slate-950/90 px-2 py-1 text-[10px] font-bold text-emerald-300">
-                        TMDB {movie.rating.toFixed(1)}
-                      </span>
-                    ) : null;
-                  })()}
-                </div>
-                <div className="flex flex-1 flex-col gap-2 p-2.5">
-                  <div className="min-h-[3.2rem]">
-                    <h3 className="line-clamp-2 text-sm font-bold leading-snug text-slate-100">{movie.title}</h3>
-                    <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-                      <span className="text-slate-500">{movie.year || 'Release year unknown'}</span>
-                      {(() => {
-                        const imdb = imdbRatingsByKey[imdbRatingKey(movie.title, movie.year)];
-                        if (imdb?.imdbRating != null && imdb.imdbRating > 0) {
-                          return <a href={imdb.imdbUrl || (imdb.imdbId ? 'https://www.imdb.com/title/' + imdb.imdbId + '/' : '#')} target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()} className="font-semibold text-amber-300 hover:text-amber-200">IMDb {imdb.imdbRating.toFixed(1)}</a>;
+                  <MoviePrepareCard
+                    key={'movie-prepare-' + String(movie.id) + '-' + posterSrc}
+                    posterSrc={posterSrc}
+                    posterAlt={previewGroup.title}
+                    onPosterClick={closeMoviePrepareCard}
+                    onPosterLoad={event => {
+                      posterLoadedRef.current.add(posterKeyFor(previewGroup.posterResult));
+                      event.currentTarget.style.display = '';
+                      event.currentTarget.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.add('hidden');
+                    }}
+                    onPosterError={event => {
+                      const image = event.currentTarget;
+                      const originalUrl = String(
+                        movieTorrentPreviewPosterUrl ||
+                        cataloguePosterUrlsRef.current[String(movie.id)] ||
+                        movie.posterUrl ||
+                        (isRegionalMoviePreview ? '' : previewGroup.posterResult?.posterUrl || '')
+                      ).trim();
+                      // The compact card retries the unmodified poster when the resized
+                      // URL fails. Do the same here so both cards show the same artwork.
+                      if (originalUrl && image.dataset.originalFallbackTried !== 'true') {
+                        const fallbackUrl = originalUrl.startsWith('/') ? API_BASE + originalUrl : originalUrl;
+                        image.dataset.originalFallbackTried = 'true';
+                        if (image.src !== new URL(fallbackUrl, window.location.origin).toString()) {
+                          image.src = fallbackUrl;
+                          return;
                         }
-                        return movie.rating != null && movie.rating > 0 ? <span className="font-semibold text-amber-300">TMDB {movie.rating.toFixed(1)}</span> : null;
-                      })()}
-                    </div>
-                    {(() => {
-                      const ott = ottAvailability[String(movie.id)];
-                      if (!ott || ott.status === 'loading') {
-                        return <p className="mt-2 text-[10px] text-slate-500">Checking OTT availability in India…</p>;
                       }
-                      if (ott.status === 'error') {
-                        return (
-                          <button
-                            type="button"
-                            onClick={() => queueOttLookups([movie], true)}
-                            title={ott.message}
-                            className="mt-2 text-left text-[10px] font-semibold text-amber-300 underline underline-offset-2"
-                          >
-                            OTT check failed · Retry
-                          </button>
-                        );
+                      const key = posterKeyFor(previewGroup.posterResult);
+                      posterLoadedRef.current.delete(key);
+                      image.style.display = 'none';
+                      image.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.remove('hidden');
+                      if (!posterBackgroundQueuedRef.current.has(key) && !posterOverrides[key]) {
+                        posterBackgroundQueuedRef.current.add(key);
+                        posterBackgroundQueueRef.current.unshift({ key, result: previewGroup.posterResult });
+                        startPosterBackgroundWorkers();
                       }
-                      const label = ott.status === 'streaming'
-                        ? 'Streaming in India'
-                        : ott.status === 'rent_buy'
-                          ? 'Rent / Buy'
-                          : ott.status === 'digital_scheduled'
-                            ? 'Digital release scheduled'
-                            : ott.status === 'digital_release_known'
-                              ? 'Digital date recorded'
-                              : 'OTT not confirmed';
-                      const badgeClass = ott.status === 'streaming'
-                        ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
-                        : ott.status === 'rent_buy'
-                          ? 'border-sky-500/30 bg-sky-500/10 text-sky-300'
-                          : ott.status === 'digital_scheduled'
-                            ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
-                            : 'border-slate-700 bg-slate-800 text-slate-300';
-                      return (
-                        <div className="mt-2 space-y-1.5">
-                          <span className={'inline-flex rounded-md border px-1.5 py-1 text-[10px] font-semibold ' + badgeClass}>
-                            {label}
-                          </span>
-                          {ott.theatricalReleaseDate && (
-                            <p className="text-[10px] text-slate-400">India theatrical release: {formatPublished(ott.theatricalReleaseDate)}</p>
-                          )}
-                          {ott.digitalReleaseDate && (
-                            <p className="text-[10px] text-slate-400">Digital release: {formatPublished(ott.digitalReleaseDate)}</p>
-                          )}
-                          {ott.streamingProviders.length > 0 && (
-                            <p className="text-[10px] leading-relaxed text-slate-400">
-                              <span className="text-slate-300">Stream:</span> {providerNames(ott.streamingProviders)}
-                            </p>
-                          )}
-                          {ott.rentProviders.length > 0 && (
-                            <p className="text-[10px] leading-relaxed text-slate-400">
-                              <span className="text-slate-300">Rent:</span> {providerNames(ott.rentProviders)}
-                            </p>
-                          )}
-                          {ott.buyProviders.length > 0 && (
-                            <p className="text-[10px] leading-relaxed text-slate-400">
-                              <span className="text-slate-300">Buy:</span> {providerNames(ott.buyProviders)}
-                            </p>
-                          )}
-                          <a
-                            href={ott.providerLink}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 text-[10px] text-cyan-300 hover:text-cyan-200"
-                          >
-                            Provider details <ExternalLink className="h-3 w-3" />
-                          </a>
-                          {ott.stale && <p className="text-[10px] text-amber-300">Showing cached availability.</p>}
-                        </div>
-                      );
-                    })()}
-                  </div>
-                  <div className="min-h-[3.75rem]">
-                    {movie.overview && <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{movie.overview}</p>}
-                  </div>
-                  <div className="mt-auto space-y-2">
-                    <div className="grid grid-cols-2 gap-2">
-                      <a
-                        href={'https://www.themoviedb.org/movie/' + String(movie.tmdbId || movie.id)}
-                        target="_blank"
-                        rel="noreferrer"
-                        onClick={event => event.stopPropagation()}
-                        className="block w-full rounded-lg border border-slate-700 px-2 py-2 text-center text-[11px] font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
-                      >
-                        View on TMDB
-                      </a>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={isSearching || movieTorrentSearchLoading}
-                      onClick={() => {
-                        void searchMovieTorrents(movie);
-                      }}
-                      className={'w-full rounded-lg bg-cyan-500 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-50'}
-                    >
-                      {movieTorrentSearchLoading && movieTorrentSearchTitle === movie.title + (movie.year ? ' ' + movie.year : '')
-                          ? <><Loader2 className="mr-1.5 inline h-3.5 w-3.5 animate-spin" />Searching…</>
-                          : <><Download className="mr-1.5 inline h-3.5 w-3.5" />Prepare</>}
-                    </button>
-                  </div>
-                </div>
-              </MovieCatalogueCard>
+                    }}
+                    imdb={movieImdb}
+                    seeders={result.seeders}
+                    indexer={result.indexer}
+                    quality={extractedQuality(result)}
+                    title={movie.title}
+                    titleHref={movieTitleHref}
+                    year={movie.year || previewGroup.year}
+                    onClose={closeMoviePrepareCard}
+                    variants={previewGroup.variants.map(variant => {
+                      const quality = torrentQualityDetails(variant);
+                      const provider = String(variant.indexer || '').trim();
+                      const size = formatBytes(Number(variant.size) || 0);
+                      const seeds = Number(variant.seeders) || 0;
+                      return {
+                        key: torrentResultKey(variant),
+                        label: `${quality.label} · ${size} · ▲${seeds}${provider ? ` · ${provider}` : ''}`,
+                      };
+                    })}
+                    selectedVariantKey={torrentResultKey(result)}
+                    onSelectVariant={key => setSelectedMovieTorrentQualityByGroup(previous => ({ ...previous, [previewGroup.key]: key }))}
+                    variantsAriaLabel={`Choose quality for ${previewGroup.title}`}
+                    prepared={prepareState.primaryFile ? preparedActionsFor(prepareState.torrentKey, prepareState.primaryFile) : null}
+                    directStream={{
+                      disabled: !Number(movie.tmdbId || movie.id) || nexStreamResolvingId === nexStreamMovieId,
+                      label: nexStreamResolvingId === nexStreamMovieId ? 'Resolving…' : 'Direct Stream',
+                      onClick: () => {
+                        const tmdbId = Number(movie.tmdbId || movie.id);
+                        if (!Number.isInteger(tmdbId) || tmdbId <= 0) {
+                          setNexStreamError('This catalogue card has no valid TMDB ID for NexStream.');
+                          return;
+                        }
+                        void playWithNexStream({
+                          id: tmdbId,
+                          title: movie.title,
+                          date: movie.releaseDate || (movie.year ? String(movie.year) : ''),
+                          overview: movie.overview || '',
+                          poster: movie.posterUrl || movieTorrentPreviewPosterUrl || null,
+                          type: 'movie',
+                        });
+                      },
+                    }}
+                    prepare={{
+                      isPreparing: prepareState.isPreparing,
+                      disabled: !prepareState.source || prepareState.isPreparing,
+                      onClick: () => void prepareMovieTorrent(result),
+                    }}
+                  />
+                );
+              }
+
+              const ott = ottAvailability[String(movie.id)];
+              const ottProviders = ott && ott.status !== 'loading' && ott.status !== 'error'
+                ? toCardProviders(uniqueOttProviders([
+                    ...(ott.streamingProviders || []),
+                    ...(ott.rentProviders || []),
+                    ...(ott.buyProviders || []),
+                  ]))
+                : [];
+              return (
+                <MovieCompactCard
+                  key={String(movie.id)}
+                  title={movie.title}
+                  titleHref={movieTitleHref}
+                  year={movie.year}
+                  imdb={movieImdb}
+                  tmdbRating={movie.rating}
+                  overview={movie.overview || 'No synopsis available from TMDB for this title.'}
+                  posterSrc={lowQualityPosterUrl(movie.posterUrl)}
+                  posterAlt={movie.title}
+                  onPosterClick={() => { if (!isSearching && !movieTorrentSearchLoading) void searchMovieTorrents(movie); }}
+                  onPosterLoad={event => {
+                    // Preserve the exact URL that made this catalogue poster visible.
+                    cataloguePosterUrlsRef.current[String(movie.id)] = event.currentTarget.currentSrc || event.currentTarget.src;
+                    event.currentTarget.style.display = '';
+                    event.currentTarget.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.add('hidden');
+                  }}
+                  onPosterError={event => {
+                    const image = event.currentTarget;
+                    const originalUrl = String(movie.posterUrl || '').trim();
+                    // If the optimized w500 URL fails, retry the catalogue's
+                    // original poster URL once before showing the placeholder.
+                    if (originalUrl && image.dataset.originalFallbackTried !== 'true' && image.src !== new URL(originalUrl, window.location.origin).toString()) {
+                      image.dataset.originalFallbackTried = 'true';
+                      image.src = originalUrl.startsWith('/') ? API_BASE + originalUrl : originalUrl;
+                      return;
+                    }
+                    image.style.display = 'none';
+                    image.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.remove('hidden');
+                  }}
+                  providers={ottProviders}
+                  providersAriaLabel={'Streaming services for ' + movie.title}
+                  providersFallbackText={
+                    !ott || ott.status === 'loading'
+                      ? 'Checking streaming services…'
+                      : ott.status === 'error'
+                        ? 'Streaming availability temporarily unavailable'
+                        : ott.status === 'not_confirmed'
+                          ? 'Streaming providers not confirmed'
+                          : 'No streaming providers reported'
+                  }
+                />
               );
             })}
           </div>
@@ -4676,10 +4347,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 imdbRatingsByKey[imdbRatingKey(imdbDisplayTitle, imdbDisplayYear, imdbDisplayType)] ||
                 imdbRatingsByKey[imdbRatingKey(mediaMetadata?.title || imdbDisplayTitle, mediaMetadata?.year || imdbDisplayYear, imdbDisplayType)] ||
                 imdbRatingsByKey[imdbRatingKey(group.title, group.year, imdbDisplayType)];
-              const imdbTitleHref = displayImdbRating?.imdbUrl ||
-                ('https://www.imdb.com/find/?q=' + encodeURIComponent(
-                  [imdbDisplayTitle || mediaDisplayTitle, imdbDisplayYear].filter(Boolean).join(' ')
-                ));
+              const imdbTitleHref = imdbTitleLink(displayImdbRating, imdbDisplayTitle || mediaDisplayTitle, imdbDisplayYear);
               const groupPosterKey = posterKeyFor(posterResult);
               // Never trust an unrelated catalogue/indexer poster. Use only the
               // title-and-year resolver result, which validates exact title matches.
@@ -4708,474 +4376,151 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 const compactPosterUrl = resolvedPosterUrl;
 
                 return (
-                  <article
+                  <MovieCompactCard
                     key={group.key || (group.title + '-' + index)}
-                    className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-slate-700 hover:bg-slate-900/95 flex flex-col"
-                  >
-                    <div className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950">
-                      {compactPosterUrl ? (
-                        <>
-                          <img
-                            src={lowQualityPosterUrl(compactPosterUrl)}
-                            alt={mediaDisplayTitle}
-                            loading="lazy"
-                            className="h-full w-full object-cover cursor-pointer"
-                            onClick={() => setExpandedSearchGroupKey(group.key)}
-                            onLoad={event => {
-                              const key = posterKeyFor(posterResult);
-                              posterLoadedRef.current.add(key);
-                              event.currentTarget.style.display = '';
-                              event.currentTarget.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.add('hidden');
-                            }}
-                            onError={event => {
-                              const image = event.currentTarget;
-                              // Do not fall back to catalogue artwork here: metadata sources can
-                              // attach a poster for a different title/remake. Retry the strict
-                              // title-and-year resolver instead.
-                              const key = posterKeyFor(posterResult);
-                              posterLoadedRef.current.delete(key);
-                              image.style.display = 'none';
-                              image.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.remove('hidden');
+                    title={mediaDisplayTitle}
+                    titleHref={imdbTitleHref}
+                    year={mediaDisplayYear}
+                    imdb={displayImdbRating}
+                    tmdbRating={mediaMetadata?.rating}
+                    overview={
+                      mediaMetadata?.overview ||
+                      (searchMetadataStatus === 'loading'
+                        ? 'Loading synopsis from TMDB…'
+                        : searchMetadataStatus === 'unavailable'
+                          ? 'TMDB synopsis is temporarily unavailable.'
+                          : 'No synopsis available from TMDB for this title.')
+                    }
+                    posterSrc={lowQualityPosterUrl(compactPosterUrl)}
+                    posterAlt={mediaDisplayTitle}
+                    onPosterClick={() => setExpandedSearchGroupKey(group.key)}
+                    onPosterLoad={event => {
+                      const key = posterKeyFor(posterResult);
+                      posterLoadedRef.current.add(key);
+                      event.currentTarget.style.display = '';
+                      event.currentTarget.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.add('hidden');
+                    }}
+                    onPosterError={event => {
+                      const image = event.currentTarget;
+                      // Do not fall back to catalogue artwork here: metadata sources can
+                      // attach a poster for a different title/remake. Retry the strict
+                      // title-and-year resolver instead.
+                      const key = posterKeyFor(posterResult);
+                      posterLoadedRef.current.delete(key);
+                      image.style.display = 'none';
+                      image.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.remove('hidden');
 
-                              // Match the expanded card's retry path; do not leave a blank black poster
-                              // slot just because the first image request failed.
-                              if (!posterBackgroundQueuedRef.current.has(key)) {
-                                posterBackgroundQueuedRef.current.add(key);
-                                posterBackgroundQueueRef.current.unshift({ key, result: posterResult });
-                                startPosterBackgroundWorkers();
-                              }
-                            }}
-                          />
-                          <div data-poster-placeholder="true" className="hidden absolute inset-0 flex items-center justify-center text-slate-600">
-                            <Film className="h-8 w-8" />
-                          </div>
-                        </>
-                      ) : (
-                        <div className="absolute inset-0 flex items-center justify-center text-slate-600">
-                          <Film className="h-8 w-8" />
-                        </div>
-                      )}
-                      {displayImdbRating?.imdbRating != null && displayImdbRating.imdbRating > 0 ? (
-                        <a
-                          href={displayImdbRating.imdbUrl || (displayImdbRating.imdbId ? 'https://www.imdb.com/title/' + displayImdbRating.imdbId + '/' : '#')}
-                          target="_blank"
-                          rel="noreferrer"
-                          title={'IMDb rating' + (displayImdbRating.imdbVotes ? ' · ' + displayImdbRating.imdbVotes + ' votes' : '')}
-                          className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow"
-                        >
-                          ⭐ {displayImdbRating.imdbRating.toFixed(1)}/10
-                        </a>
-                      ) : mediaMetadata?.rating != null && mediaMetadata.rating > 0 ? (
-                        <span title="TMDB rating" className="absolute left-2 top-2 rounded-md border border-amber-300/40 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow">
-                          ⭐ TMDB {mediaMetadata.rating.toFixed(1)}
-                        </span>
-                      ) : null}
-                    </div>
-
-                    <div className="flex flex-1 flex-col gap-2 p-2.5">
-                      <div>
-                        <h3 className="line-clamp-2 text-sm font-bold leading-snug text-slate-100">
-                          <a href={imdbTitleHref} target="_blank" rel="noreferrer" className="hover:text-cyan-300" title="Open on IMDb">
-                            {mediaDisplayTitle}
-                          </a>
-                        </h3>
-                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] sm:text-xs">
-                          {mediaDisplayYear && <span className="text-slate-400">{mediaDisplayYear}</span>}
-                          {displayImdbRating?.imdbRating != null && displayImdbRating.imdbRating > 0 ? (
-                            <a
-                              href={displayImdbRating.imdbUrl || (displayImdbRating.imdbId ? 'https://www.imdb.com/title/' + displayImdbRating.imdbId + '/' : '#')}
-                              target="_blank"
-                              rel="noreferrer"
-                              title={'IMDb rating' + (displayImdbRating.imdbVotes ? ' · ' + displayImdbRating.imdbVotes + ' votes' : '')}
-                              className="font-semibold text-amber-300 hover:text-amber-200"
-                            >
-                              IMDb {displayImdbRating.imdbRating.toFixed(1)}
-                            </a>
-                          ) : mediaMetadata?.rating ? (
-                            <span className="text-amber-300">TMDB {mediaMetadata.rating.toFixed(1)}</span>
-                          ) : null}
-
-                        </div>
-                      </div>
-
-                      <p className="line-clamp-3 text-[10px] leading-relaxed text-slate-400">
-                        {mediaMetadata?.overview ||
-                          (searchMetadataStatus === 'loading'
-                            ? 'Loading synopsis from TMDB…'
-                            : searchMetadataStatus === 'unavailable'
-                              ? 'TMDB synopsis is temporarily unavailable.'
-                              : 'No synopsis available from TMDB for this title.')}
-                      </p>
-
-                      {compactProviders.length > 0 ? (
-                        <div className="flex flex-wrap gap-1" aria-label={'Streaming services for ' + group.title}>
-                          {compactProviders.slice(0, 5).map((provider, providerIndex) => {
-                            const name = displayOttProviderName(provider.name);
-                            return (
-                              <a
-                                key={String(provider.providerId ?? name ?? providerIndex).toLowerCase()}
-                                href={provider.webUrl || undefined}
-                                target={provider.webUrl ? '_blank' : undefined}
-                                rel={provider.webUrl ? 'noreferrer' : undefined}
-                                title={name}
-                                className="rounded-full border border-cyan-900/70 bg-cyan-950/40 px-1.5 py-0.5 text-[10px] leading-4 text-cyan-200 hover:border-cyan-600"
-                              >
-                                {name}
-                              </a>
-                            );
-                          })}
-                        </div>
-                      ) : (
-                        <div className="text-[10px] leading-relaxed text-slate-500">
-                          {availability?.status === 'loading'
-                            ? 'Checking streaming services…'
-                            : availability?.status === 'unavailable'
-                              ? 'Streaming availability temporarily unavailable'
-                              : availability?.status === 'not_confirmed'
-                                ? 'Streaming providers not confirmed'
-                                : availability?.status === 'ready'
-                                  ? 'No streaming providers reported'
-                                  : searchMetadataStatus === 'loading'
-                                    ? 'Checking streaming availability…'
-                                    : 'Streaming providers not listed'}
-                        </div>
-                      )}
-
-                    </div>
-                  </article>
+                      // Match the expanded card's retry path; do not leave a blank black poster
+                      // slot just because the first image request failed.
+                      if (!posterBackgroundQueuedRef.current.has(key)) {
+                        posterBackgroundQueuedRef.current.add(key);
+                        posterBackgroundQueueRef.current.unshift({ key, result: posterResult });
+                        startPosterBackgroundWorkers();
+                      }
+                    }}
+                    providers={toCardProviders(compactProviders)}
+                    providersAriaLabel={'Streaming services for ' + group.title}
+                    providersFallbackText={
+                      availability?.status === 'loading'
+                        ? 'Checking streaming services…'
+                        : availability?.status === 'unavailable'
+                          ? 'Streaming availability temporarily unavailable'
+                          : availability?.status === 'not_confirmed'
+                            ? 'Streaming providers not confirmed'
+                            : availability?.status === 'ready'
+                              ? 'No streaming providers reported'
+                              : searchMetadataStatus === 'loading'
+                                ? 'Checking streaming availability…'
+                                : 'Streaming providers not listed'
+                    }
+                  />
                 );
               }
 
+              const prepareState = prepareStateFor(result);
               return (
-              <div
-                key={group.key || (group.title + '-' + index)}
-                className={[
-                  'relative min-w-0 rounded-xl border border-slate-800 bg-slate-900 p-2 hover:bg-slate-800/80 transition sm:rounded-none sm:border-0 sm:bg-transparent sm:p-2 sm:px-4 sm:py-4 lg:flex lg:flex-col lg:self-start lg:h-fit lg:rounded-[14px] lg:border lg:border-slate-800 lg:bg-slate-900 lg:p-0 lg:hover:-translate-y-1 lg:hover:border-slate-700',
-                  fullTorrentTitleKey === posterKeyFor(result) ? 'z-50' : 'z-0'
-                ].join(' ')}
-              >
-                <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 lg:flex-col lg:items-stretch lg:gap-0">
-                  <div className="min-w-0 flex-1 lg:w-full">
-                    <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-2 sm:gap-3 lg:flex-col lg:gap-0">
-                      <div className="relative w-full sm:w-24 shrink-0 aspect-[2/3] rounded-lg overflow-hidden border border-slate-800 bg-slate-950 shadow-md lg:w-full lg:rounded-none lg:border-0 lg:shadow-none">
-                        {resolvedPosterUrl ? (
-                          <>
-                            <img
-                              src={lowQualityPosterUrl(resolvedPosterUrl)}
-                              alt={group.title}
-                              loading="lazy"
-                              className="w-full h-full object-cover cursor-pointer"
-                              onClick={() => setExpandedSearchGroupKey(null)}
-                              onLoad={(event) => {
-                                const key = posterKeyFor(posterResult);
-                                posterLoadedRef.current.add(key);
-                                event.currentTarget.style.display = '';
-                                event.currentTarget.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.add('hidden');
-                              }}
-                              onError={(event) => {
-                                const key = posterKeyFor(posterResult);
-                                posterLoadedRef.current.delete(key);
-                                event.currentTarget.style.display = 'none';
-                                event.currentTarget.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.remove('hidden');
+                <MoviePrepareCard
+                  key={group.key || (group.title + '-' + index)}
+                  className="z-0"
+                  posterSrc={lowQualityPosterUrl(resolvedPosterUrl)}
+                  posterAlt={group.title}
+                  onPosterClick={() => setExpandedSearchGroupKey(null)}
+                  onPosterLoad={event => {
+                    const key = posterKeyFor(posterResult);
+                    posterLoadedRef.current.add(key);
+                    event.currentTarget.style.display = '';
+                    event.currentTarget.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.add('hidden');
+                  }}
+                  onPosterError={event => {
+                    const key = posterKeyFor(posterResult);
+                    posterLoadedRef.current.delete(key);
+                    event.currentTarget.style.display = 'none';
+                    event.currentTarget.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.remove('hidden');
 
-                                if (
-                                  !posterBackgroundQueuedRef.current.has(key) &&
-                                  !posterOverrides[key]
-                                ) {
-                                  posterBackgroundQueuedRef.current.add(key);
-                                  posterBackgroundQueueRef.current.unshift({ key, result: posterResult });
-                                  startPosterBackgroundWorkers();
-                                }
-                              }}
-                            />
-                            <div data-poster-placeholder="true" className="hidden absolute inset-0 flex items-center justify-center bg-slate-950 text-slate-500">
-                              <Film className="w-7 h-7" />
-                            </div>
-                          </>
-                        ) : (
-                          <div className="absolute inset-0 flex items-center justify-center bg-slate-950 text-slate-700">
-                            <Film className="w-7 h-7" />
-                          </div>
-                        )}
-
-                        {displayImdbRating?.imdbRating != null && displayImdbRating.imdbRating > 0 && (
-                          <a
-                            href={displayImdbRating.imdbUrl || (displayImdbRating.imdbId ? 'https://www.imdb.com/title/' + displayImdbRating.imdbId + '/' : '#')}
-                            target="_blank"
-                            rel="noreferrer"
-                            title={'IMDb rating' + (displayImdbRating.imdbVotes ? ' · ' + displayImdbRating.imdbVotes + ' votes' : '')}
-                            className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow"
-                          >
-                            ⭐ {displayImdbRating.imdbRating.toFixed(1)}/10
-                          </a>
-                        )}
-                        {result.seeders > 0 && (
-                          <div className={'absolute left-2 inline-flex items-center gap-1 rounded-md bg-black/80 px-2 py-1 text-[10px] font-bold text-emerald-400 ' + (displayImdbRating?.imdbRating != null && displayImdbRating.imdbRating > 0 ? 'top-10' : 'top-2')}>
-                            <Users className="w-3 h-3" />
-                            {result.seeders}
-                          </div>
-                        )}
-
-                        {result.indexer && (
-                          <div
-                            className="absolute right-2 top-2 max-w-[70%] truncate rounded-md bg-black/75 px-2 py-1 text-[10px] font-medium text-slate-300"
-                            title={result.indexer}
-                          >
-                            {result.indexer}
-                          </div>
-                        )}
-
-                        {extractedQuality(result) && (
-                          <div className="absolute left-2 bottom-2 rounded-md border border-cyan-400/30 bg-slate-950/85 px-2 py-1 text-[10px] font-bold text-cyan-300">
-                            {extractedQuality(result)}
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="min-w-0 flex-1 lg:w-full lg:flex-none lg:p-3">
-                        <div className="flex items-start gap-2">
-                          <div className="hidden sm:flex lg:hidden p-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20 shrink-0">
-                            <Database className="w-3.5 h-3.5 text-cyan-400" />
-                          </div>
-                          <div className="relative min-w-0 flex-1 z-10">
-                            <div className="flex items-start gap-1.5">
-                              <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-1.5">
-                                <a
-                                  href={imdbTitleHref}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="min-w-0 text-left text-[11px] leading-4 sm:text-sm font-semibold text-slate-100 hover:text-cyan-300 transition"
-                                  title="Open on IMDb"
-                                >
-                                  {mediaDisplayTitle}
-                                </a>
-                                {(mediaMetadata?.year || group.year) && (
-                                  <span className="shrink-0 text-[10px] sm:text-xs text-slate-500">{mediaMetadata?.year || group.year}</span>
-                                )}
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => setExpandedSearchGroupKey(null)}
-                                className="shrink-0 rounded-md p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-100"
-                                title="Back to search cards"
-                                aria-label="Back to search cards"
-                              >
-                                <X className="h-3.5 w-3.5" />
-                              </button>
-                            </div>
-
-                            
-
-                            
-                            {group.variants.length > 1 && (
-                              <select
-                                aria-label={`Choose quality for ${group.title}`}
-                                value={torrentResultKey(result)}
-                                onChange={(event) => setSelectedQualityByGroup(previous => ({
-                                  ...previous,
-                                  [group.key]: event.target.value
-                                }))}
-                                className="mt-2 w-full min-w-0 rounded-lg border border-slate-800 bg-slate-950 px-2 py-2 text-[10px] sm:text-xs font-medium text-slate-200 outline-none focus:border-cyan-500"
-                                title="Choose quality and torrent source"
-                              >
-                                {group.variants.map(variant => {
-                                  const quality = torrentQualityDetails(variant);
-                                  const provider = String(variant.indexer || '').trim();
-                                  const size = formatBytes(Number(variant.size) || 0);
-                                  const seeds = Number(variant.seeders) || 0;
-                                  return (
-                                    <option key={torrentResultKey(variant)} value={torrentResultKey(variant)}>
-                                      {quality.label} · {size} · ▲{seeds}{provider ? ` · ${provider}` : ''}
-                                    </option>
-                                  );
-                                })}
-                              </select>
-                            )}
-
-                            {fullTorrentTitleKey === posterKeyFor(result) && fullTorrentTitle && (
-                              <div
-                                role="status"
-                                aria-live="polite"
-                                className={[
-                                  'absolute bottom-full left-0 mb-1.5 z-50 w-max max-w-[min(460px,calc(100vw-24px))] rounded-xl border border-cyan-400/25 bg-slate-950/95 px-3 py-2 text-[11px] leading-4 font-medium text-slate-100 shadow-xl transition-all duration-[450ms] ease-out whitespace-normal break-all',
-                                  fullTorrentTitleFading
-                                    ? 'translate-y-1 opacity-0'
-                                    : 'translate-y-0 opacity-100'
-                                ].join(' ')}
-                              >
-                                {fullTorrentTitle}
-                                <span className="absolute left-4 top-full h-2.5 w-2.5 -translate-y-1 rotate-45 border-r border-b border-cyan-400/25 bg-slate-950/95" />
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                        <div className="mt-2 flex items-center justify-between gap-2">
-                          {(() => {
-                      const source = result.magnetUrl || result.downloadUrl || result.sourceUrl;
-                      const torrentKey = result.infoHash || source || result.title;
-                      const isPreparing = preparingTorrentKey === torrentKey;
-                      const preparedFiles = preparedForResult(result);
-                      const primaryFile = preparedFiles.find(file =>
-                        /\.(mkv|mp4|m4v|webm|mov|avi|m3u8|ts|mp3|wav|flac|aac|ogg|m4a)$/i.test(file.name)
-                      ) || preparedFiles[0];
-
-                      if (preparedFiles.length > 0 && primaryFile) {
-                        const isPlaying = playingTorrentKey === torrentKey;
-                        return (
-                          <div className="min-w-0 max-w-full flex flex-wrap items-center justify-end gap-1.5">
-                            <button
-                              type="button"
-                              disabled={isPlaying}
-                              onClick={async () => {
-                                if (isPlaying) return;
-                                setPlayingTorrentKey(torrentKey);
-                                try {
-                                  await onPlaySeedrFile?.(primaryFile);
-                                } finally {
-                                  setPlayingTorrentKey(current => current === torrentKey ? null : current);
-                                }
-                              }}
-                              className="shrink-0 px-2 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold text-xs hover:bg-emerald-300 transition flex items-center gap-1 disabled:opacity-70 disabled:cursor-wait whitespace-nowrap"
-                              title={isPlaying ? "Opening stream…" : "Play from Seedr"}
-                            >
-                              {isPlaying
-                                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                : <Play className="w-3.5 h-3.5" />}
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => api.openSeedrFileDownload(primaryFile.id, primaryFile.name)}
-                              className="shrink-0 p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition"
-                              title="Download file"
-                              aria-label="Download file"
-                            >
-                              <Download className="w-3.5 h-3.5" />
-                            </button>
-
-                            <button
-                              type="button"
-                              disabled={copiedTorrentKey === torrentKey}
-                              onClick={async () => {
-                                try {
-                                  const data = await api.getSeedrFileDownload(primaryFile.id);
-                                  await navigator.clipboard.writeText(data.url);
-                                  setCopiedTorrentKey(torrentKey);
-                                  window.setTimeout(() => {
-                                    setCopiedTorrentKey(current => current === torrentKey ? null : current);
-                                  }, 2000);
-                                } catch {
-                                  setPrepareError('Could not copy the download link.');
-                                }
-                              }}
-                              className="shrink-0 p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-cyan-400 transition disabled:opacity-60"
-                              title="Copy download link"
-                              aria-label="Copy download link"
-                            >
-                              {copiedTorrentKey === torrentKey
-                                ? <Check className="w-3.5 h-3.5 text-emerald-400" />
-                                : <Copy className="w-3.5 h-3.5" />}
-                            </button>
-                          </div>
-                        );
+                    if (
+                      !posterBackgroundQueuedRef.current.has(key) &&
+                      !posterOverrides[key]
+                    ) {
+                      posterBackgroundQueuedRef.current.add(key);
+                      posterBackgroundQueueRef.current.unshift({ key, result: posterResult });
+                      startPosterBackgroundWorkers();
+                    }
+                  }}
+                  imdb={displayImdbRating}
+                  seeders={result.seeders}
+                  indexer={result.indexer}
+                  quality={extractedQuality(result)}
+                  title={mediaDisplayTitle}
+                  titleHref={imdbTitleHref}
+                  year={mediaMetadata?.year || group.year}
+                  onClose={() => setExpandedSearchGroupKey(null)}
+                  variants={group.variants.map(variant => {
+                    const quality = torrentQualityDetails(variant);
+                    const provider = String(variant.indexer || '').trim();
+                    const size = formatBytes(Number(variant.size) || 0);
+                    const seeds = Number(variant.seeders) || 0;
+                    return {
+                      key: torrentResultKey(variant),
+                      label: `${quality.label} · ${size} · ▲${seeds}${provider ? ` · ${provider}` : ''}`,
+                    };
+                  })}
+                  selectedVariantKey={torrentResultKey(result)}
+                  onSelectVariant={key => setSelectedQualityByGroup(previous => ({ ...previous, [group.key]: key }))}
+                  variantsAriaLabel={`Choose quality for ${group.title}`}
+                  prepared={prepareState.primaryFile ? preparedActionsFor(prepareState.torrentKey, prepareState.primaryFile) : null}
+                  directStream={{
+                    disabled: nexStreamResolvingId !== null || (nexStreamLoading && normalizeGroupTitle(nexStreamLoadingTitle) === normalizeGroupTitle(mediaDisplayTitle || group.title)),
+                    label: nexStreamResolvingId !== null
+                      ? 'Resolving…'
+                      : nexStreamLoading && normalizeGroupTitle(nexStreamLoadingTitle) === normalizeGroupTitle(mediaDisplayTitle || group.title)
+                        ? 'Searching…'
+                        : 'Direct Stream',
+                    onClick: () => {
+                      if (titleMatches.length > 0) {
+                        void playWithNexStream(titleMatches[0]);
+                        return;
                       }
-
-                      return (
-                        <div className="min-w-0 max-w-full">
-                          <div className="flex w-full items-center justify-between gap-2">
-                          <button
-                            type="button"
-                            disabled={nexStreamResolvingId !== null || (nexStreamLoading && normalizeGroupTitle(nexStreamLoadingTitle) === normalizeGroupTitle(mediaDisplayTitle || group.title))}
-                            onClick={() => {
-                              if (titleMatches.length > 0) {
-                                void playWithNexStream(titleMatches[0]);
-                                return;
-                              }
-                              const tmdbId = Number(mediaMetadata?.tmdbId || mediaMetadata?.id);
-                              if (Number.isInteger(tmdbId) && tmdbId > 0) {
-                                void playWithNexStream({
-                                  id: tmdbId,
-                                  title: mediaDisplayTitle || group.title,
-                                  date: mediaMetadata?.year || group.year,
-                                  overview: mediaMetadata?.overview || '',
-                                  poster: mediaMetadata?.posterUrl || null,
-                                  type: 'movie',
-                                });
-                              } else {
-                                void searchNexStreamTitles(mediaDisplayTitle || group.title, 'movie');
-                              }
-                            }}
-                            className="min-w-0 flex-1 whitespace-nowrap rounded-lg border border-violet-400/40 bg-violet-500/15 px-1.5 py-1.5 text-[10px] font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-60"
-                          >
-                            {nexStreamResolvingId !== null
-                              ? 'Resolving…'
-                              : nexStreamLoading && normalizeGroupTitle(nexStreamLoadingTitle) === normalizeGroupTitle(mediaDisplayTitle || group.title)
-                                ? 'Searching…'
-                                : 'Direct Stream'}
-                          </button>
-                          <div className="shrink-0">
-                            <button
-                              type="button"
-                              disabled={!source || isPreparing}
-                            onClick={async () => {
-                              if (!source || isPreparing) return;
-
-                              setPrepareError('');
-                              setPreparingTorrentKey(torrentKey);
-                              setPrepareWaitTitle(result.title);
-                              setPrepareWaitOpen(false);
-                              const longWaitTimer = window.setTimeout(() => setPrepareWaitOpen(true), 30000);
-
-                              try {
-                                const metadata = metadataCacheRef.current.get(torrentKey);
-                                const prepared = await onPrepare(result, metadata);
-                                const deletedFolderIds = new Set(
-                                  (prepared?.deletedFolderIds || []).map(id => String(id).trim()).filter(Boolean)
-                                );
-
-                                // A new Prepare may have triggered automatic Seedr cleanup.
-                                // Remove the deleted folders from the local "prepared" map first,
-                                // otherwise stale Play/Download/Copy buttons would remain visible
-                                // even after the Seedr files themselves disappear.
-                                if (deletedFolderIds.size > 0) {
-                                  for (const [key, entry] of preparedByKeyRef.current.entries()) {
-                                    if (entry.files.some(file => deletedFolderIds.has(String(file.folderId)))) {
-                                      preparedByKeyRef.current.delete(key);
-                                    }
-                                  }
-                                }
-
-                                if (prepared?.files?.length) {
-                                  preparedByKeyRef.current.set(torrentKey, { files: prepared.files });
-                                }
-                                setPrepareWaitOpen(false);
-                              } catch (error: any) {
-                                const message = String(error?.message || 'Could not prepare this torrent.');
-                                // Replacing an in-progress Seedr torrent intentionally rejects
-                                // the previous waiter; don't show that as a failure for the new pick.
-                                if (!message.toLowerCase().includes('cancelled by another selection')) {
-                                  setPrepareError(message);
-                                }
-                              } finally {
-                                window.clearTimeout(longWaitTimer);
-                                setPreparingTorrentKey(current => current === torrentKey ? null : current);
-                              }
-                            }}
-                            className="shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 disabled:opacity-60 disabled:cursor-not-allowed text-slate-950 text-[11px] font-bold transition"
-                          >
-                            {isPreparing ? 'Preparing…' : 'Prepare'}
-                          </button>
-                          </div>
-                          </div>
-                        </div>
-                      );
-                    })()}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
+                      const tmdbId = Number(mediaMetadata?.tmdbId || mediaMetadata?.id);
+                      if (Number.isInteger(tmdbId) && tmdbId > 0) {
+                        void playWithNexStream({
+                          id: tmdbId,
+                          title: mediaDisplayTitle || group.title,
+                          date: mediaMetadata?.year || group.year,
+                          overview: mediaMetadata?.overview || '',
+                          poster: mediaMetadata?.posterUrl || null,
+                          type: 'movie',
+                        });
+                      } else {
+                        void searchNexStreamTitles(mediaDisplayTitle || group.title, 'movie');
+                      }
+                    },
+                  }}
+                  prepare={{
+                    isPreparing: prepareState.isPreparing,
+                    disabled: !prepareState.source || prepareState.isPreparing,
+                    onClick: () => void prepareMovieTorrent(result),
+                  }}
+                />
               );
             })}
           </div>
