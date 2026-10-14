@@ -10526,6 +10526,7 @@ async def _fetch_imdb_rating(
         "mediaType": normalized_type,
         "checkedAt": now,
         "lookupVersion": IMDB_RATING_LOOKUP_VERSION,
+        "tmdbIdTried": tmdb_id or None,
     }
     if not keys:
         return {**base, "status": "unavailable", "reason": "OMDb API key is not configured"}
@@ -10595,11 +10596,16 @@ async def _fetch_imdb_rating(
         if tmdb_id < 1:
             return None
         try:
-            tmdb_details = await _tmdb_get_json(
-                f"movie/{tmdb_id}",
-                {"language": "en-US"},
-                request_timeout=3.0,
-            )
+            if normalized_type == "tv":
+                tmdb_details = await _tmdb_get_json(
+                    f"tv/{tmdb_id}/external_ids", {}, request_timeout=3.0,
+                )
+            else:
+                tmdb_details = await _tmdb_get_json(
+                    f"movie/{tmdb_id}",
+                    {"language": "en-US"},
+                    request_timeout=3.0,
+                )
         except Exception as exc:
             logger.info("TMDB IMDb-ID fallback failed for %s (%s): %s",
                 tmdb_id, type(exc).__name__, title)
@@ -10755,6 +10761,14 @@ async def _get_imdb_rating_record(
     cache_key = _imdb_rating_cache_key(title, year, normalized_type)
     cached = _load_imdb_rating_cache().get(cache_key)
     now = int(time.time())
+    # A miss recorded before a TMDB id was available deserves one retry with the id.
+    if (
+        cached
+        and tmdb_id > 0
+        and not cached.get("tmdbIdTried")
+        and (cached.get("status") != "found" or cached.get("imdbRating") is None)
+    ):
+        cached = None
     if cached:
         try:
             checked_at = int(cached.get("checkedAt") or 0)

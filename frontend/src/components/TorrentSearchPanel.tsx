@@ -3304,6 +3304,19 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         tmdbId: Number(item.tmdbId || item.id) || undefined,
         mediaType: item.mediaType === 'tv' ? 'tv' as const : 'movie' as const,
       })),
+      // Cards whose title has no saved metadata match still get a rating: look them up by
+      // their own title/year, plus the TMDB id the catalogue row already carries.
+      ...groupedResults
+        .filter(group => !episodeSeriesTitle(group.title))
+        .map(group => {
+          const withId = group.variants.find(variant => Number((variant as any).tmdbId) > 0) as any;
+          return {
+            title: group.title.replace(/\s*\(?(?:19|20)\d{2}\)?\s*$/, '').trim(),
+            year: group.year,
+            tmdbId: Number(withId?.tmdbId) || undefined,
+            mediaType: 'movie' as const,
+          };
+        }),
     ].filter(item => item.title);
 
     const pending = new Map<string, { title: string; mediaType: 'movie' | 'tv'; tmdbId?: number }>();
@@ -3319,6 +3332,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     }
     const requests = [...pending.entries()].slice(0, 80);
     if (!requests.length) return;
+    const hasMorePending = pending.size > requests.length;
     requests.forEach(([key]) => imdbRatingRequestedRef.current.add(key));
 
     const requestItems = requests.map(([, item]) => item);
@@ -3335,6 +3349,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     ).then(response => {
       const ratings = Array.isArray(response.results) ? response.results : [];
       let needsRetry = false;
+      // More than one batch of titles is waiting: continue with the next batch right away.
+      if (hasMorePending) setImdbRetryTick(tick => tick + 1);
       setImdbRatingsByKey(previous => {
         const next = { ...previous };
         for (const rating of ratings) {
@@ -3369,7 +3385,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       requests.forEach(([key]) => imdbRatingRequestedRef.current.delete(key));
       scheduleImdbRetry();
     });
-  }, [movieCatalogue?.results, searchMetadata, imdbRetryTick]);
+  }, [movieCatalogue?.results, searchMetadata, groupedResults, imdbRetryTick]);
 
   const clearTmdbCacheAndReload = async () => {
     const currentCatalogue = movieCatalogue;
@@ -4496,9 +4512,11 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 imdbRatingsByKey[imdbRatingKey(group.title, group.year, imdbDisplayType)];
               const imdbTitleHref = imdbTitleLink(displayImdbRating, imdbDisplayTitle || mediaDisplayTitle, imdbDisplayYear);
               const groupPosterKey = posterKeyFor(posterResult);
-              // Never trust an unrelated catalogue/indexer poster. Use only the
-              // title-and-year resolver result, which validates exact title matches.
-              const resolvedPosterUrl = posterOverrides[groupPosterKey] || '';
+              // Never trust an unrelated catalogue/indexer poster. Use the title-and-year
+              // resolver result (exact title match) or the card's own metadata poster.
+              // While that resolver is still working, show the poster of the same TMDB
+              // title the card's synopsis comes from, so no card sits blank.
+              const resolvedPosterUrl = posterOverrides[groupPosterKey] || mediaMetadata?.posterUrl || '';
 
               // Normal searches use a poster-first two-state card. Clicking the poster
               // opens the Prepare/details card; clicking it again returns here.
