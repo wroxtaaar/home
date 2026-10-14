@@ -92,8 +92,15 @@ def _retry_after_seconds(response: httpx.Response, default: float = 60.0) -> flo
 
 async def _watchmode_get(path: str, *, params: dict[str, Any] | None = None,
     timeout: httpx.Timeout | float = 10.0, auth_header: bool = True) -> httpx.Response | None:
-    """Rotate through available keys immediately; retry transient failures once after a pause."""
+    """Rotate keys when available, but honor Watchmode's shared rate-limit cooldown."""
+    global _WATCHMODE_RATE_LIMITED_UNTIL
     if not WATCHMODE_API_KEYS:
+        return None
+    # Watchmode rate limits and monthly credits are plan/account governed. Once any
+    # credential receives 429, pause all credentials in this process instead of
+    # immediately retrying the same account through another key.
+    if _WATCHMODE_RATE_LIMITED_UNTIL > time.time():
+        logger.debug("Watchmode request skipped during shared rate-limit cooldown (%s)", path)
         return None
     provider = "watchmode"
     request_params = dict(params or {})
@@ -141,9 +148,20 @@ async def _watchmode_get(path: str, *, params: dict[str, Any] | None = None,
                 _provider_key_success(provider, key)
                 return response, True
             if response.status_code == 429:
-                # Respect this account's quota/rate limit; don't try other accounts
-                # as a way to bypass a provider-imposed limit.
-                _provider_key_failure(provider, key, _retry_after_seconds(response), "HTTP 429")
+                # Watchmode documents plan-level request limits and account-level
+                # quota. Treat 429 as a provider-wide cooldown, not a per-key issue.
+                retry_after = _retry_after_seconds(response)
+                _WATCHMODE_RATE_LIMITED_UNTIL = max(
+                    _WATCHMODE_RATE_LIMITED_UNTIL, time.time() + retry_after
+                )
+                _provider_key_failure(provider, key, retry_after, "HTTP 429 (shared cooldown)")
+                logger.warning(
+                    "Watchmode shared cooldown activated for %.0fs on %s (limit=%s remaining=%s quota_used=%s)",
+                    retry_after, path,
+                    response.headers.get("X-RateLimit-Limit", "unknown"),
+                    response.headers.get("X-RateLimit-Remaining", "unknown"),
+                    response.headers.get("X-Account-Quota-Used", "unknown"),
+                )
                 return response, True
             if response.status_code == 401:
                 _provider_key_failure(provider, key, 3600, "HTTP 401")
