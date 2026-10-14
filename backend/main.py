@@ -5762,6 +5762,12 @@ _RUNTIME_CACHE_SEED_FILES = {
         "REGIONAL_MOVIE_PREBUILT_CACHE_PATH",
         str(Path(os.getenv("APP_DATA_DIR", "/app/data")) / "regional_movie_prebuilt_cache.json"),
     )),
+    "nexstream_cache.json": Path(os.getenv(
+        "NEXSTREAM_CACHE_PATH", "/app/data/nexstream_cache.json",
+    )),
+    "nexstream_episode_metadata_cache.json": Path(os.getenv(
+        "NEXSTREAM_EPISODE_CACHE_PATH", "/app/data/nexstream_episode_metadata_cache.json",
+    )),
 }
 
 
