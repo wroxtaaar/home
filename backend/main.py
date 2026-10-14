@@ -8298,6 +8298,28 @@ _CLASSICS_TV_CATALOGUES: dict[str, list[tuple[str, int]]] = {
     ],
 }
 _CLASSICS_TV_CATALOGUE_CACHE: dict[str, dict[str, Any]] = {}
+_CLASSICS_TV_CACHE_FILES = {
+    "classics-web-series": "classics_web_series_tv_catalogue.json",
+    "classics-anime": "classics_anime_tv_catalogue.json",
+}
+
+
+def _load_bundled_classics_tv_cache(catalogue_key: str) -> dict[str, Any] | None:
+    filename = _CLASSICS_TV_CACHE_FILES.get(catalogue_key)
+    if not filename:
+        return None
+    candidates = (
+        _CACHE_SEED_DIR / filename,
+        Path(os.getenv("APP_DATA_DIR", "/app/data")) / filename,
+    )
+    for path in candidates:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if payload.get("catalogue") == catalogue_key and isinstance(payload.get("results"), list):
+                return payload
+        except (OSError, ValueError, AttributeError):
+            continue
+    return None
 
 
 async def _get_classics_tv_catalogue(catalogue_key: str) -> dict[str, Any]:
@@ -8307,6 +8329,10 @@ async def _get_classics_tv_catalogue(catalogue_key: str) -> dict[str, Any]:
     cached = _CLASSICS_TV_CATALOGUE_CACHE.get(catalogue_key)
     if cached is not None:
         return cached
+    bundled = _load_bundled_classics_tv_cache(catalogue_key)
+    if bundled is not None:
+        _CLASSICS_TV_CATALOGUE_CACHE[catalogue_key] = bundled
+        return bundled
     if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
         raise HTTPException(status_code=503, detail="TMDB credentials are not configured.")
     semaphore = asyncio.Semaphore(3)
