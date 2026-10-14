@@ -92,8 +92,22 @@ export const MovieCompactCard: React.FC<MovieCompactCardProps> = ({
               loading="lazy"
               className="h-full w-full object-cover cursor-pointer"
               onClick={onPosterClick}
-              onLoad={onPosterLoad}
-              onError={onPosterError}
+              onLoad={event => {
+                      const image = event.currentTarget;
+                      onPosterLoad(event);
+                      if (!image.dataset.highQualityTried && image.currentSrc.includes('/t/p/w342/')) {
+                        image.dataset.highQualityTried = 'true';
+                        image.src = image.currentSrc.replace('/t/p/w342/', '/t/p/w780/');
+                      }
+                    }}
+                    onError={event => {
+                      const image = event.currentTarget;
+                      if (image.dataset.highQualityTried === 'true' && image.src.includes('/t/p/w780/')) {
+                        image.src = image.src.replace('/t/p/w780/', '/t/p/w342/');
+                        return;
+                      }
+                      onPosterError(event);
+                    }}
             />
             <div data-poster-placeholder="true" onClick={onPosterClick} className="hidden cursor-pointer absolute inset-0 flex items-center justify-center text-slate-600">
               <Film className="h-8 w-8" />
@@ -251,8 +265,22 @@ export const MoviePrepareCard: React.FC<MoviePrepareCardProps> = ({
                     loading="lazy"
                     className="w-full h-full object-cover cursor-pointer"
                     onClick={onPosterClick}
-                    onLoad={onPosterLoad}
-                    onError={onPosterError}
+                    onLoad={event => {
+                      const image = event.currentTarget;
+                      onPosterLoad(event);
+                      if (!image.dataset.highQualityTried && image.currentSrc.includes('/t/p/w342/')) {
+                        image.dataset.highQualityTried = 'true';
+                        image.src = image.currentSrc.replace('/t/p/w342/', '/t/p/w780/');
+                      }
+                    }}
+                    onError={event => {
+                      const image = event.currentTarget;
+                      if (image.dataset.highQualityTried === 'true' && image.src.includes('/t/p/w780/')) {
+                        image.src = image.src.replace('/t/p/w780/', '/t/p/w342/');
+                        return;
+                      }
+                      onPosterError(event);
+                    }}
                   />
                   <div data-poster-placeholder="true" onClick={onPosterClick} className="hidden cursor-pointer absolute inset-0 flex items-center justify-center bg-slate-950 text-slate-500">
                     <Film className="w-7 h-7" />
