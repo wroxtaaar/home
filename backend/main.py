@@ -8276,7 +8276,10 @@ _CLASSICS_TV_CATALOGUES: dict[str, list[tuple[str, int]]] = {
         ("Chernobyl", 2019), ("Dark", 2017), ("Succession", 2018),
         ("The Wire", 2002), ("The Office", 2005), ("Wednesday", 2022),
         ("Squid Game", 2021), ("Stranger Things", 2016),
-        ("Game of Thrones", 2011),
+        ("Game of Thrones", 2011), ("Severance", 2022),
+        ("True Detective", 2014), ("Billions", 2016),
+        ("The Studio", 2025), ("Secret Level", 2024),
+        ("Love, Death & Robots", 2019),
     ],
     "classics-anime": [
         ("Death Note", 2006), ("Attack on Titan", 2013), ("Code Geass", 2006),
