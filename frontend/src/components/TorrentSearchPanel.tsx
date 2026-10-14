@@ -1108,12 +1108,20 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       movies = movies.filter(movie => !/batman\s*:\s*mask of the phantasm/i.test(String(movie.title || '')));
     }
     movies = [...movies].sort((a, b) => {
-      const yearA = Number(a.year) || Number(String(a.title || '').match(/\b(?:19|20)\d{2}\b/)?.[0]) || 0;
-      const yearB = Number(b.year) || Number(String(b.title || '').match(/\b(?:19|20)\d{2}\b/)?.[0]) || 0;
-      if (!yearA && !yearB) return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true });
-      if (!yearA) return 1;
-      if (!yearB) return -1;
-      if (yearA !== yearB) return yearB - yearA;
+      // Sort by the complete release date, not just the year. TMDB dates are
+      // ISO YYYY-MM-DD strings, so lexical comparison preserves month/day order.
+      // If a title has only a year, keep it behind dated titles from that year.
+      const releaseKey = (movie: MovieCatalogueItem) => {
+        const date = String(movie.releaseDate || '').trim();
+        if (/^\d{4}-\d{2}-\d{2}$/.test(date)) return date;
+        const year = Number(movie.year) || Number(String(movie.title || '').match(/\b(?:19|20)\d{2}\b/)?.[0]) || 0;
+        return year ? String(year).padStart(4, '0') + '-00-00' : '';
+      };
+      const dateA = releaseKey(a);
+      const dateB = releaseKey(b);
+      if (dateA && dateB && dateA !== dateB) return dateB.localeCompare(dateA);
+      if (dateA && !dateB) return -1;
+      if (!dateA && dateB) return 1;
       return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true });
     });
     if (streamingOnly) movies = movies.filter(movie => ottAvailability[String(movie.id)]?.status === 'streaming');
@@ -3107,11 +3115,18 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   // Movies use OMDb's movie type; show metadata uses OMDb's series type.
   useEffect(() => {
     const candidates = [
-      ...(movieCatalogue?.results || []).map(item => ({
-        title: String(item.title || '').trim(),
-        year: item.year,
-        mediaType: 'movie' as const,
-      })),
+      ...(movieCatalogue?.results || []).flatMap(item => {
+        const candidate = {
+          title: String(item.title || '').trim(),
+          year: item.year,
+          mediaType: 'movie' as const,
+        };
+        // IMDb classifies One Last Kill as a TV special, while TMDB serves it
+        // in the movie catalogue. Query both OMDb types so its IMDb rating is found.
+        return /punisher.*one last kill|one last kill.*punisher/i.test(candidate.title)
+          ? [candidate, { ...candidate, mediaType: 'tv' as const }]
+          : [candidate];
+      }),
       ...searchMetadata.map(item => ({
         title: String(item.title || '').trim(),
         year: item.year,
@@ -3818,7 +3833,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 movieTorrentPreviewCatalogueId === String(movie.id) ||
                 movieTorrentSearchTitle === movie.title + (movie.year ? ' ' + movie.year : '');
               const previewGroup = previewMatchesMovie ? movieTorrentPreviewGroup : null;
-              const movieImdb = imdbRatingsByKey[imdbRatingKey(movie.title, movie.year)];
+              const isPunisherSpecial = /punisher.*one last kill|one last kill.*punisher/i.test(String(movie.title || ''));
+              const movieImdb = imdbRatingsByKey[imdbRatingKey(movie.title, movie.year)] ||
+                (isPunisherSpecial ? imdbRatingsByKey[imdbRatingKey(movie.title, movie.year, 'tv')] : undefined);
               const movieTitleHref = imdbTitleLink(movieImdb, movie.title, movie.year);
 
               if (previewGroup) {
