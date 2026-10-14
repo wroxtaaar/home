@@ -1174,23 +1174,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     if (isDcLiveActionEnglishResults) {
       movies = movies.filter(movie => !/batman\s*:\s*mask of the phantasm/i.test(String(movie.title || '')));
     }
-    movies = [...movies].sort((a, b) => {
-      // Sort by the complete release date, not just the year. TMDB dates are
-      // ISO YYYY-MM-DD strings, so lexical comparison preserves month/day order.
-      // If a title has only a year, keep it behind dated titles from that year.
-      const releaseKey = (movie: MovieCatalogueItem) => {
-        const date = String(movie.releaseDate || '').trim();
-        if (/^\d{4}-\d{2}-\d{2}$/.test(date)) return date;
-        const year = Number(movie.year) || Number(String(movie.title || '').match(/\b(?:19|20)\d{2}\b/)?.[0]) || 0;
-        return year ? String(year).padStart(4, '0') + '-00-00' : '';
-      };
-      const dateA = releaseKey(a);
-      const dateB = releaseKey(b);
-      if (dateA && dateB && dateA !== dateB) return dateB.localeCompare(dateA);
-      if (dateA && !dateB) return -1;
-      if (!dateA && dateB) return 1;
-      return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true });
-    });
+    // Apply the shared release-date comparator to every catalogue so the
+    // ordering is consistent across Marvel/DC and the other movie sections.
+    movies = [...movies].sort(compareReleaseDateDescending);
     if (streamingOnly) movies = movies.filter(movie => ottAvailability[String(movie.id)]?.status === 'streaming');
     return movies;
   }, [movieCatalogue, streamingOnly, ottAvailability, isMarvelEnglishResults, showMarvelWebSeries, marvelFilmFilter, isDcLiveActionEnglishResults]);
@@ -4256,7 +4242,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       </article>
                     ))}
                   </div>
-                  {dcWebSeriesCatalogue.page < dcWebSeriesCatalogue.totalPages && <button type="button" disabled={dcWebSeriesLoading} onClick={async () => { setDcWebSeriesLoading(true); setDcWebSeriesError(''); try { const nextPage = await api.getTvCatalogue('dc-live-action', dcWebSeriesCatalogue.page + 1); setDcWebSeriesCatalogue(current => current ? { ...nextPage, results: [...current.results, ...nextPage.results.filter(item => !current.results.some(existing => String(existing.id) === String(item.id)))] } : nextPage); } catch (error: any) { setDcWebSeriesError(String(error?.message || 'Could not load more series.')); } finally { setDcWebSeriesLoading(false); } }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-semibold text-slate-200 hover:border-cyan-500 disabled:opacity-50">Load more</button>}
+                  {dcWebSeriesCatalogue.page < dcWebSeriesCatalogue.totalPages && <button type="button" disabled={dcWebSeriesLoading} onClick={async () => { setDcWebSeriesLoading(true); setDcWebSeriesError(''); try { const nextPage = await api.getTvCatalogue('dc-live-action', dcWebSeriesCatalogue.page + 1); setDcWebSeriesCatalogue(current => current ? { ...nextPage, results: [...current.results, ...nextPage.results.filter(item => !current.results.some(existing => String(existing.id) === String(item.id)))].sort(compareReleaseDateDescending) } : { ...nextPage, results: [...nextPage.results].sort(compareReleaseDateDescending) }); } catch (error: any) { setDcWebSeriesError(String(error?.message || 'Could not load more series.')); } finally { setDcWebSeriesLoading(false); } }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-semibold text-slate-200 hover:border-cyan-500 disabled:opacity-50">Load more</button>}
                 </>
               )}
             </div>
@@ -4269,7 +4255,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   <div className="px-1 text-xs text-slate-400">{marvelWebSeriesCatalogue.totalResults.toLocaleString()} Marvel web series · Page {marvelWebSeriesCatalogue.page} of {marvelWebSeriesCatalogue.totalPages.toLocaleString()} · Metadata by TMDB</div>
                   <div className="grid grid-cols-2 items-stretch gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
                     {[...marvelWebSeriesCatalogue.results]
-                      .sort((a, b) => compareReleaseDateDescending)
+                      .sort(compareReleaseDateDescending)
                       .map(show => (
                       <article key={String(show.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-cyan-500/40 hover:bg-slate-900/95 flex flex-col">
                         <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} aria-label={`Find ${show.title} on NexStream`} className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950 text-left cursor-pointer">
