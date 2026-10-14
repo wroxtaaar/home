@@ -27,6 +27,102 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
+
+# Process-local cache/API diagnostics. Counts reset on each worker restart.
+_CACHE_DIAGNOSTICS_STARTED_AT = time.time()
+_CACHE_DIAGNOSTICS: dict[str, Any] = {
+    "cache_events": {},
+    "upstream_requests": 0,
+    "upstream_failures": 0,
+    "upstream_by_provider": {},
+    "upstream_by_endpoint": {},
+    "upstream_status_codes": {},
+}
+
+
+def _record_cache_event(store: str, event: str, count: int = 1) -> None:
+    """Count cache decisions, not the number of rows inside a cache file."""
+    stores = _CACHE_DIAGNOSTICS["cache_events"]
+    events = stores.setdefault(str(store), {})
+    key = str(event)
+    events[key] = int(events.get(key) or 0) + max(0, int(count))
+
+
+def _upstream_provider_name(host: str) -> str:
+    host = (host or "").casefold().strip(".")
+    known = (
+        (("api.themoviedb.org",), "tmdb"),
+        (("image.tmdb.org",), "tmdb_images"),
+        (("api.watchmode.com",), "watchmode"),
+        (("api.movieofthenight.com",), "streaming_availability"),
+        (("www.omdbapi.com", "omdbapi.com"), "omdb"),
+        (("api.tvmaze.com",), "tvmaze"),
+        (("seedr.cc", "www.seedr.cc", "v2.seedr.cc"), "seedr"),
+        (("api.knaben.org",), "knaben"),
+        (("itorrents.net", "www.itorrents.net"), "itorrents"),
+        (("cinemeta-live.vercel.app",), "cinemeta"),
+    )
+    for hosts, label in known:
+        if host in hosts:
+            return label
+    if "yts" in host or "accel.li" in host:
+        return "yts"
+    if "1337x" in host or "1337.to" in host:
+        return "1337x"
+    if "limetorrents" in host:
+        return "limetorrents"
+    if "thepiratebay" in host or host == "apibay.org":
+        return "thepiratebay"
+    if host.endswith(".onrender.com") or host.endswith(".fly.dev") or host.endswith(".railway.app"):
+        return "hosted_service:" + host
+    return host or "unknown_host"
+
+
+def _upstream_endpoint_group(path: str) -> str:
+    # Keep endpoint names useful for diagnosis without recording queries or IDs.
+    cleaned = re.sub(r"/movie-\d+(?=/|$)", "/movie-{id}", path or "/")
+    cleaned = re.sub(r"(?<=/)\d+(?=/|$)", "{id}", cleaned)
+    cleaned = re.sub(r"/[0-9a-fA-F]{32,}(?=/|$)", "/{token-or-hash}", cleaned)
+    pieces = [piece for piece in cleaned.split("/") if piece]
+    return "/" + "/".join(pieces[:4]) if pieces else "/"
+
+
+def _record_upstream_request(url: Any, status_code: int | None = None, failed: bool = False) -> None:
+    try:
+        parsed = urlsplit(str(url))
+        provider = _upstream_provider_name(parsed.hostname or "")
+        endpoint = _upstream_endpoint_group(parsed.path)
+        _CACHE_DIAGNOSTICS["upstream_requests"] += 1
+        if failed:
+            _CACHE_DIAGNOSTICS["upstream_failures"] += 1
+        by_provider = _CACHE_DIAGNOSTICS["upstream_by_provider"]
+        by_provider[provider] = int(by_provider.get(provider) or 0) + 1
+        by_endpoint = _CACHE_DIAGNOSTICS["upstream_by_endpoint"]
+        endpoint_key = provider + " " + endpoint
+        by_endpoint[endpoint_key] = int(by_endpoint.get(endpoint_key) or 0) + 1
+        status_key = "network_error" if failed else (
+            str(status_code) if status_code is not None else "no_status"
+        )
+        statuses = _CACHE_DIAGNOSTICS["upstream_status_codes"]
+        statuses[status_key] = int(statuses.get(status_key) or 0) + 1
+    except Exception:
+        # Observability must never break the request that it measures.
+        return
+
+
+class _InstrumentedAsyncClient(httpx.AsyncClient):
+    """Count actual outbound HTTP requests from backend httpx call sites."""
+
+    async def request(self, method: str, url: Any, *args: Any, **kwargs: Any) -> httpx.Response:
+        try:
+            response = await super().request(method, url, *args, **kwargs)
+        except Exception:
+            _record_upstream_request(url, failed=True)
+            raise
+        _record_upstream_request(url, status_code=response.status_code)
+        return response
+
+
 APP_NAME = "Torrent Studio API"
 logger = logging.getLogger("torrent-studio")
 
@@ -127,7 +223,7 @@ async def _watchmode_get(path: str, *, params: dict[str, Any] | None = None,
         try:
             global _WATCHMODE_HTTP_CLIENT
             if _WATCHMODE_HTTP_CLIENT is None or _WATCHMODE_HTTP_CLIENT.is_closed:
-                _WATCHMODE_HTTP_CLIENT = httpx.AsyncClient(
+                _WATCHMODE_HTTP_CLIENT = _InstrumentedAsyncClient(
                     timeout=httpx.Timeout(10.0, connect=4.0),
                     follow_redirects=True,
                     headers={"Accept": "application/json"},
@@ -728,7 +824,7 @@ async def _fetch_itorrents_metadata(info_hash_value: str) -> dict[str, Any] | No
 
     url = f"{TORRENT_METADATA_ITORRENTS_BASE_URL}/{target}.torrent"
     try:
-        async with httpx.AsyncClient(
+        async with _InstrumentedAsyncClient(
             timeout=TORRENT_METADATA_ITORRENTS_TIMEOUT_SECONDS,
             follow_redirects=True,
             headers={"User-Agent": "Torrent-Studio/1.0"},
@@ -776,7 +872,7 @@ async def _fetch_source_torrent_descriptor(source_url: str, info_hash_value: str
 
     candidates = [source_url]
     try:
-        async with httpx.AsyncClient(
+        async with _InstrumentedAsyncClient(
             timeout=8.0,
             follow_redirects=True,
             headers={"User-Agent": "Torrent-Studio/1.0"},
@@ -860,7 +956,7 @@ async def _fetch_fast_test_metadata(magnet: str, info_hash_value: str) -> dict[s
         return None
 
     try:
-        async with httpx.AsyncClient(
+        async with _InstrumentedAsyncClient(
             timeout=4.0,
             follow_redirects=True,
             headers={"Accept": "application/json", "Content-Type": "application/json"},
@@ -894,7 +990,7 @@ async def _fetch_fast_test_metadata(magnet: str, info_hash_value: str) -> dict[s
             await asyncio.sleep(0.75)
             remaining = max(0.5, deadline - time.monotonic())
             try:
-                async with httpx.AsyncClient(
+                async with _InstrumentedAsyncClient(
                     timeout=min(3.0, remaining),
                     follow_redirects=True,
                     headers={"Accept": "application/json"},
@@ -1323,7 +1419,7 @@ async def legacy_seedr_request(
         "access_token": access_token,
         "func": str(func),
     }
-    async with httpx.AsyncClient(timeout=httpx.Timeout(35.0, connect=8.0), follow_redirects=True) as client:
+    async with _InstrumentedAsyncClient(timeout=httpx.Timeout(35.0, connect=8.0), follow_redirects=True) as client:
         response = await client.request(
             method,
             url,
@@ -1416,7 +1512,7 @@ async def legacy_seedr_list_contents(folder_id: str = "0") -> Any:
         "content_type": "folder",
         "content_id": str(folder_id),
     }
-    async with httpx.AsyncClient(timeout=httpx.Timeout(35.0, connect=8.0), follow_redirects=True) as client:
+    async with _InstrumentedAsyncClient(timeout=httpx.Timeout(35.0, connect=8.0), follow_redirects=True) as client:
         response = await client.post(
             url,
             params=params,
@@ -1471,7 +1567,7 @@ async def seedr_root_request() -> Any:
     headers = {"Accept": "application/json"}
     params = {"access_token": seedr_access_token()}
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(35.0, connect=8.0), follow_redirects=True) as client:
+    async with _InstrumentedAsyncClient(timeout=httpx.Timeout(35.0, connect=8.0), follow_redirects=True) as client:
         response = await client.get(url, headers=headers, params=params)
 
     raw = response.text
@@ -1580,7 +1676,7 @@ async def seedr_request(path: str, method: str = "GET", body: Any = None, form: 
     else:
         headers_base = {}
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(35.0, connect=8.0), follow_redirects=True) as client:
+    async with _InstrumentedAsyncClient(timeout=httpx.Timeout(35.0, connect=8.0), follow_redirects=True) as client:
         tried_tokens: list[str] = []
         # Never fall back from one browser session to another Seedr credential.
         candidates = [token]
@@ -2171,7 +2267,7 @@ def _safe_download_filename(filename: str, fallback: str) -> str:
 
 
 async def _stream_seedr_download(url: str):
-    client = httpx.AsyncClient(timeout=None, follow_redirects=True)
+    client = _InstrumentedAsyncClient(timeout=None, follow_redirects=True)
     request = client.build_request("GET", url, headers={"Accept": "*/*"})
     response = await client.send(request, stream=True)
 
@@ -2236,7 +2332,7 @@ async def _seedr_subtitle_text(file_id: str, filename: str) -> tuple[str, str]:
     result = await download_url(file_id)
     url = result["url"]
     lower = (filename or result.get("name") or "").lower()
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+    async with _InstrumentedAsyncClient(timeout=30, follow_redirects=True) as client:
         response = await client.get(url)
         response.raise_for_status()
         raw = response.content
@@ -2448,7 +2544,7 @@ async def search_1337x_direct(
         else (["TV"] if season is not None or episode is not None else ["Movies", "TV"])
     )
 
-    async with httpx.AsyncClient(
+    async with _InstrumentedAsyncClient(
         timeout=SEARCH_SOURCE_TIMEOUT_SECONDS,
         follow_redirects=True,
         headers=headers,
@@ -2712,7 +2808,7 @@ async def search_yts_movies(query: str, limit: int = 50) -> list[dict[str, Any]]
         return []
 
     payload = None
-    async with httpx.AsyncClient(timeout=12, follow_redirects=True) as client:
+    async with _InstrumentedAsyncClient(timeout=12, follow_redirects=True) as client:
         for host in YTS_API_HOSTS:
             try:
                 async with _YTS_REQUEST_SEMAPHORE:
@@ -2808,7 +2904,7 @@ async def search_tv_eztv(query: str, limit: int = 30) -> list[dict[str, Any]]:
         return []
 
     try:
-        async with httpx.AsyncClient(timeout=12, follow_redirects=True) as client:
+        async with _InstrumentedAsyncClient(timeout=12, follow_redirects=True) as client:
             response = await client.get(
                 "https://api.tvmaze.com/search/shows",
                 params={"q": tv_query},
@@ -2839,7 +2935,7 @@ async def search_tv_eztv(query: str, limit: int = 30) -> list[dict[str, Any]]:
         return []
 
     payload: dict[str, Any] | None = None
-    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+    async with _InstrumentedAsyncClient(timeout=15, follow_redirects=True) as client:
         for host in ("eztv.yt", "eztvx.to"):
             try:
                 response = await client.get(
@@ -3048,7 +3144,7 @@ async def search_limetorrents(
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     }
 
-    async with httpx.AsyncClient(
+    async with _InstrumentedAsyncClient(
         timeout=SEARCH_SOURCE_TIMEOUT_SECONDS,
         follow_redirects=True,
         headers=headers,
@@ -3200,7 +3296,7 @@ async def search_knaben(
         # v2 is edge-cached, but give it a little more than the old 2.25s v1
         # budget: the latter was consistently timing out in Home's live logs.
         timeout = httpx.Timeout(max(7.0, SEARCH_SOURCE_TIMEOUT_SECONDS), connect=6.0)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        async with _InstrumentedAsyncClient(timeout=timeout, follow_redirects=True) as client:
             async with _KNABEN_REQUEST_SEMAPHORE:
                 response = await client.get(
                     endpoint,
@@ -3316,7 +3412,7 @@ async def search_knaben(
 async def search_torrents_csv(query: str, limit: int) -> dict[str, Any]:
     started = time.monotonic()
     try:
-        async with httpx.AsyncClient(timeout=SEARCH_SOURCE_TIMEOUT_SECONDS, follow_redirects=True) as client:
+        async with _InstrumentedAsyncClient(timeout=SEARCH_SOURCE_TIMEOUT_SECONDS, follow_redirects=True) as client:
             response = await client.get(
                 "https://torrents-csv.com/service/search",
                 params={
@@ -3372,7 +3468,7 @@ async def search_torrents_csv(query: str, limit: int) -> dict[str, Any]:
 async def search_apibay(query: str, limit: int) -> dict[str, Any]:
     started = time.monotonic()
     try:
-        async with httpx.AsyncClient(timeout=SEARCH_SOURCE_TIMEOUT_SECONDS, follow_redirects=True) as client:
+        async with _InstrumentedAsyncClient(timeout=SEARCH_SOURCE_TIMEOUT_SECONDS, follow_redirects=True) as client:
             response = await client.get(
                 "https://apibay.org/q.php",
                 params={"q": _media_provider_query(query), "cat": "0"},
@@ -3990,9 +4086,11 @@ async def search_1337x(
         ttl = SEARCH_CACHE_SECONDS
 
         if age < ttl:
+            _record_cache_event("torrent_search", "hit")
             return cached_results[:limit]
 
         if age < SEARCH_CACHE_STALE_SECONDS:
+            _record_cache_event("torrent_search", "stale_hit")
             # Serve stale results immediately and refresh only once per query.
             existing = _search_inflight.get(cache_key)
             if existing is None or existing.done():
@@ -4023,6 +4121,7 @@ async def search_1337x(
     # Share the same live request among concurrent users. This is particularly
     # useful on Render Free where multiple browser tabs/devices can otherwise
     # fan out identical provider requests.
+    _record_cache_event("torrent_search", "miss")
     task = _search_inflight.get(cache_key)
     if task is None or task.done():
         task = asyncio.create_task(
@@ -4337,7 +4436,7 @@ async def _cinemeta_poster_lookup(title: str, year: str = "") -> str | None:
                 queries.append(query_value)
 
     try:
-        async with httpx.AsyncClient(timeout=4, follow_redirects=True) as client:
+        async with _InstrumentedAsyncClient(timeout=4, follow_redirects=True) as client:
             for media_type in ("movie", "series"):
                 for query_value in queries:
                     encoded = quote(query_value, safe="")
@@ -4505,7 +4604,7 @@ async def _poster_lookup_uncached(clean_title: str, clean_year: str, cache_key: 
         wanted_titles = [_poster_normalize_title(value) for value in title_aliases]
         wanted_year = clean_year
         candidates: list[tuple[int, str]] = []
-        async with httpx.AsyncClient(timeout=4, follow_redirects=True) as client:
+        async with _InstrumentedAsyncClient(timeout=4, follow_redirects=True) as client:
             for alias in title_aliases:
                 query = quote((alias + " " + clean_year).strip(), safe="")
                 response = await client.get(
@@ -4551,7 +4650,7 @@ async def _poster_lookup_uncached(clean_title: str, clean_year: str, cache_key: 
             wanted_titles = [_poster_normalize_title(value) for value in title_aliases]
             wanted_year = clean_year
             candidates: list[tuple[int, str]] = []
-            async with httpx.AsyncClient(timeout=4, follow_redirects=True) as client:
+            async with _InstrumentedAsyncClient(timeout=4, follow_redirects=True) as client:
                 for alias in title_aliases:
                     response = await client.get(
                         "https://itunes.apple.com/search",
@@ -4601,10 +4700,13 @@ async def _poster_lookup(title: str, year: str = "") -> str | None:
     cached = _poster_cache.get(cache_key)
     cache_ttl = _POSTER_CACHE_SECONDS if cached and cached[1] else _POSTER_NEGATIVE_CACHE_SECONDS
     if cached and now - cached[0] < cache_ttl:
+        _record_cache_event("poster", "hit")
         return cached[1]
 
+    _record_cache_event("poster", "miss")
     existing = _poster_inflight.get(cache_key)
     if existing is not None and not existing.done():
+        _record_cache_event("poster", "inflight_join")
         try:
             return await asyncio.shield(existing)
         except Exception:
@@ -4674,7 +4776,7 @@ async def resolve_search_magnet(body: dict[str, Any]):
         # Follow redirects manually so every hop is checked against the
         # allowlist BEFORE it is requested (httpx would otherwise fetch an
         # unapproved redirect target and we would only notice afterwards).
-        async with httpx.AsyncClient(timeout=8.0, follow_redirects=False, headers=headers) as client:
+        async with _InstrumentedAsyncClient(timeout=8.0, follow_redirects=False, headers=headers) as client:
             current_url = info_url
             response = None
             for _ in range(6):
@@ -7470,7 +7572,7 @@ async def _streaming_availability_movie_sources(movie_id: int, region: str) -> t
     if not STREAMING_AVAILABILITY_API_KEY:
         return [], False
     try:
-        async with httpx.AsyncClient(
+        async with _InstrumentedAsyncClient(
             timeout=httpx.Timeout(10.0, connect=4.0),
             follow_redirects=True,
             headers={"Accept": "application/json", "X-API-Key": STREAMING_AVAILABILITY_API_KEY},
@@ -7544,15 +7646,19 @@ async def _tmdb_fetch_movie_ott_availability(movie_id: int, region: str) -> dict
     if os.getenv("OTT_CACHE_ONLY", "false").strip().casefold() in {"1", "true", "yes", "on"}:
         cached = _tmdb_ott_cache.get((movie_id, region.upper()))
         if cached and isinstance(cached[1], dict):
+            _record_cache_event("ott", "cache_only_memory_hit")
             return cached[1]
         persistent = _read_tmdb_ott_persistent_cache((movie_id, region.upper()))
         if persistent and isinstance(persistent[1], dict):
+            _record_cache_event("ott", "cache_only_persistent_hit")
             return persistent[1]
+        _record_cache_event("ott", "cache_only_miss_blocked")
         raise HTTPException(
             status_code=503,
             detail="OTT availability is not present in the local cache; live provider lookups are disabled.",
         )
 
+    _record_cache_event("ott", "live_provider_lookup")
     # Prefer Watchmode for legal platform availability when configured. Keep TMDB
     # as a fallback and as the source of regional release-date metadata.
     watchmode_rows, release_result = await asyncio.gather(
@@ -7721,7 +7827,7 @@ async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None, *, req
         try:
             global _TMDB_HTTP_CLIENT
             if _TMDB_HTTP_CLIENT is None or _TMDB_HTTP_CLIENT.is_closed:
-                _TMDB_HTTP_CLIENT = httpx.AsyncClient(
+                _TMDB_HTTP_CLIENT = _InstrumentedAsyncClient(
                     timeout=httpx.Timeout(12.0, connect=4.0),
                     follow_redirects=True,
                     headers={"Accept": "application/json"},
@@ -9039,7 +9145,9 @@ async def api_tmdb_movie_catalogue(
         )
         fast_cached = _tmdb_movie_catalogue_cache.get(fast_key)
         if fast_cached and time.monotonic() - fast_cached[0] < 900:
+            _record_cache_event("movie_catalogue", "fast_memory_hit")
             return fast_cached[1]
+        _record_cache_event("movie_catalogue", "fast_miss")
         raw = await _tmdb_fetch_movie_catalogue(catalogue_key, page, True)
         rows = [row for row in (raw.get("results") or []) if isinstance(row, dict)]
         normalized_titles = {
@@ -9069,15 +9177,18 @@ async def api_tmdb_movie_catalogue(
         if eligible_cached and (
             not is_trending or time.monotonic() - eligible_cached[0] < 900
         ):
+            _record_cache_event("movie_catalogue", "eligible_memory_hit")
             return eligible_cached[1]
         if eligible_cached:
             _tmdb_movie_catalogue_cache.pop(eligible_cache_key, None)
         if not is_trending:
             eligible_persistent = _read_tmdb_persistent_cache(eligible_cache_key)
             if eligible_persistent:
+                _record_cache_event("movie_catalogue", "eligible_persistent_hit")
                 payload = eligible_persistent[1]
                 _tmdb_movie_catalogue_cache[eligible_cache_key] = (time.monotonic(), payload)
                 return payload
+        _record_cache_event("movie_catalogue", "eligible_miss")
         payload = await _fetch_paginated_regional_movie_catalogue(catalogue_key, page)
         _tmdb_movie_catalogue_cache[eligible_cache_key] = (time.monotonic(), payload)
         if not is_trending:
@@ -9103,6 +9214,7 @@ async def api_tmdb_movie_catalogue(
     cache_ttl = min(TMDB_CATALOGUE_CACHE_SECONDS, 900) if catalogue_key.startswith("trending-") else TMDB_CATALOGUE_CACHE_SECONDS
     cached = _tmdb_movie_catalogue_cache.get(cache_key)
     if cached and (durable_regional_page or now - cached[0] < cache_ttl):
+        _record_cache_event("movie_catalogue", "memory_hit")
         _schedule_tmdb_catalogue_synopsis_enrichment(cached[1])
         return await _apply_movie_release_eligibility(cached[1], enabled=released_only)
 
@@ -9112,6 +9224,7 @@ async def api_tmdb_movie_catalogue(
         saved_at, persistent_payload = persistent
         age_seconds = max(0.0, time.time() - saved_at)
         if durable_regional_page or age_seconds < cache_ttl:
+            _record_cache_event("movie_catalogue", "persistent_hit")
             _tmdb_movie_catalogue_cache[cache_key] = (
                 time.monotonic() - age_seconds,
                 persistent_payload,
@@ -9119,6 +9232,7 @@ async def api_tmdb_movie_catalogue(
             _schedule_tmdb_catalogue_synopsis_enrichment(persistent_payload)
             return await _apply_movie_release_eligibility(persistent_payload, enabled=released_only)
 
+    _record_cache_event("movie_catalogue", "miss")
     task = _tmdb_movie_catalogue_inflight.get(cache_key)
     if task is None or task.done():
         task = asyncio.create_task(_tmdb_fetch_movie_catalogue(catalogue_key, page, released_only))
@@ -9174,12 +9288,14 @@ async def api_tmdb_movie_ott_availability(
     cached = _tmdb_ott_cache.get(cache_key)
     stale_payload = cached[1] if cached else None
     if cached and not force and time.monotonic() - cached[0] < _tmdb_ott_ttl(cached[1]):
+        _record_cache_event("ott", "memory_hit")
         return cached[1]
 
     persistent = None if force else _read_tmdb_ott_persistent_cache(cache_key)
     if persistent:
         saved_at, persistent_payload = persistent
         if 0 <= time.time() - saved_at < _tmdb_ott_ttl(persistent_payload):
+            _record_cache_event("ott", "persistent_hit")
             _tmdb_ott_cache[cache_key] = (time.monotonic(), persistent_payload)
             return persistent_payload
         if stale_payload is None:
@@ -9188,6 +9304,7 @@ async def api_tmdb_movie_ott_availability(
     # Serve expired-but-usable data immediately. Refresh in the background so
     # slow or rate-limited providers cannot block catalogue cards.
     if stale_payload is not None and not force:
+        _record_cache_event("ott", "stale_hit")
         task = _tmdb_ott_inflight.get(cache_key)
         if task is None or task.done():
             async def refresh_stale_ott_cache():
@@ -9212,7 +9329,9 @@ async def api_tmdb_movie_ott_availability(
         stale_response["cacheWarning"] = "Showing cached OTT availability while it refreshes."
         return stale_response
 
-    # force=true bypasses both caches for a fresh provider lookup.
+    # A forced request intentionally bypasses stored entries; otherwise this is
+    # a true cache miss. The helper blocks provider lookup when OTT_CACHE_ONLY=true.
+    _record_cache_event("ott", "force_bypass" if force else "miss")
     task = _tmdb_ott_inflight.get(cache_key)
     owns_inflight_task = False
     if force:
@@ -9396,6 +9515,7 @@ async def api_extra_catalogue(catalogue_key: str):
     if catalogue_key not in _EXTRA_CATALOGUES:
         raise HTTPException(404, "Unknown catalogue")
     cached = _read_extra_catalogue(catalogue_key)
+    _record_cache_event("extra_catalogue", "hit" if cached else "miss")
     if catalogue_key == "classics" and cached:
         _schedule_classics_movie_ott_enrichment()
     await _ensure_extra_catalogue_refresh(catalogue_key)
@@ -9612,6 +9732,7 @@ async def api_search_saved_ott(titles: list[str] = Query(..., min_length=1, max_
 async def api_marvel_catalogue():
     global _marvel_catalogue_task
     cached = _merge_bundled_marvel_catalogue_cache(_read_marvel_catalogue())
+    _record_cache_event("marvel_catalogue", "hit" if cached else "miss")
     if cached:
         # Keep the current cache available immediately while rebuilding it once
         # when its version predates the updated MCU film list.
@@ -9711,7 +9832,7 @@ async def _fallback_tvmaze_search(query: str, timeout: httpx.Timeout) -> list[di
     if cached and time.time() - cached[0] < _WATCHMODE_SEARCH_CACHE_TTL:
         return cached[1]
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        async with _InstrumentedAsyncClient(timeout=timeout, follow_redirects=True) as client:
             response = await client.get("https://api.tvmaze.com/search/shows", params={"q": query})
         if response.status_code != 200:
             return []
@@ -9757,7 +9878,7 @@ async def _fallback_omdb_search(query: str, timeout: httpx.Timeout) -> list[dict
     target = _availability_normalize_title(query)
     for key in keys:
         try:
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            async with _InstrumentedAsyncClient(timeout=timeout, follow_redirects=True) as client:
                 response = await client.get("https://www.omdbapi.com/", params={"apikey": key, "s": query})
             if response.status_code != 200:
                 continue
@@ -9817,8 +9938,10 @@ async def _api_search_availability_impl(q: str) -> dict[str, Any]:
     now = time.time()
     cached = _watchmode_search_cache.get(cache_key)
     if cached and now - cached[0] < _WATCHMODE_SEARCH_CACHE_TTL:
+        _record_cache_event("availability_search", "hit")
         return cached[1]
 
+    _record_cache_event("availability_search", "miss")
     timeout = httpx.Timeout(8.0, connect=3.0)
     target = _availability_normalize_title(query)
     primary_matches: list[dict[str, Any]] = []
@@ -10076,7 +10199,9 @@ async def api_search_metadata(q: str = Query(..., min_length=2, max_length=160))
     now = time.time()
     cached = _TMDB_SEARCH_METADATA_CACHE.get(cache_key)
     if cached and now - cached[0] < _TMDB_SEARCH_METADATA_CACHE_TTL:
+        _record_cache_event("search_metadata", "memory_hit")
         return cached[1]
+    _record_cache_event("search_metadata", "miss")
 
     # Disk-backed query envelopes survive process/container restarts. The per-title
     # cache below remains durable indefinitely and is refreshed whenever a new
@@ -10095,6 +10220,7 @@ async def api_search_metadata(q: str = Query(..., min_length=2, max_length=160))
         # envelope from a previous deployment.
         cached_response = query_entry.get("response")
         if isinstance(cached_response, dict) and cached_response.get("status") == "ready":
+            _record_cache_event("search_metadata", "persistent_query_hit")
             _TMDB_SEARCH_METADATA_CACHE[cache_key] = (now, cached_response)
             return cached_response
         key_rows = query_entry.get("keys", [])
@@ -10123,6 +10249,7 @@ async def api_search_metadata(q: str = Query(..., min_length=2, max_length=160))
             if row_key in requested_keys:
                 cached_results.append(candidate)
         if cached_results:
+            _record_cache_event("search_metadata", "persistent_title_hit", len(cached_results))
             cached_response = {
                 "status": "ready",
                 "query": query,
@@ -10682,7 +10809,7 @@ async def _fetch_imdb_rating(
         global _OMDB_HTTP_CLIENT, _OMDB_RATE_LIMITED_UNTIL
         try:
             if _OMDB_HTTP_CLIENT is None or _OMDB_HTTP_CLIENT.is_closed:
-                _OMDB_HTTP_CLIENT = httpx.AsyncClient(
+                _OMDB_HTTP_CLIENT = _InstrumentedAsyncClient(
                     timeout=timeout,
                     follow_redirects=True,
                     limits=httpx.Limits(
@@ -10926,8 +11053,10 @@ async def _get_imdb_rating_record(
                 else IMDB_RATING_CACHE_TTL_SECONDS
             )
         ):
+            _record_cache_event("imdb_rating", "hit")
             return cached
 
+    _record_cache_event("imdb_rating", "miss")
     task = _IMDB_RATING_INFLIGHT.get(cache_key)
     if task is None or task.done():
         async def fetch_and_save() -> dict[str, Any]:
@@ -11159,14 +11288,153 @@ async def api_regional_movie_prebuilt(
                    if item_key.startswith(cache_title_key(title) + "|")]
         entry = matches[0] if len(matches) == 1 else None
     if not isinstance(entry, dict):
+        _record_cache_event("regional_movie_prebuilt", "miss")
         return {"status": "not_cached", "movie": None, "torrentDetails": None,
                 "builtAt": payload.get("builtAt")}
+    _record_cache_event("regional_movie_prebuilt", "hit")
     return {
         "status": "ready",
         "builtAt": payload.get("builtAt"),
         "movie": entry.get("movie"),
         "catalogues": entry.get("catalogues", []),
         "torrentDetails": entry.get("torrentDetails"),
+    }
+
+
+
+def _cache_file_snapshot(name: str, path: Path, *, bundled: bool = False) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "name": name,
+        "file": path.name,
+        "exists": False,
+        "bytes": 0,
+        "modifiedAt": None,
+        "entryCount": None,
+        "entryGroups": {},
+        "bundledSnapshot": bundled,
+    }
+    try:
+        if not path.is_file():
+            return row
+        stat = path.stat()
+        row["exists"] = True
+        row["bytes"] = stat.st_size
+        row["modifiedAt"] = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            groups: dict[str, int] = {}
+            for key in ("items", "catalogues", "queries", "movies", "results", "ratings", "entries", "records", "pages"):
+                value = payload.get(key)
+                if isinstance(value, (dict, list)):
+                    groups[key] = len(value)
+            row["entryGroups"] = groups
+            for key in ("items", "movies", "results", "entries", "records", "ratings", "catalogues", "pages"):
+                if key in groups:
+                    row["entryCount"] = groups[key]
+                    break
+            if row["entryCount"] is None:
+                row["entryCount"] = len(payload)
+        elif isinstance(payload, list):
+            row["entryCount"] = len(payload)
+        else:
+            row["entryCount"] = 0
+    except (OSError, ValueError, TypeError):
+        row["parseError"] = True
+    return row
+
+
+@app.get("/api/cache/report")
+async def api_cache_report():
+    """Inventory saved cache data and report process-local cache/use counters."""
+    runtime_paths: dict[str, Path] = {
+        name: path for name, path in _RUNTIME_CACHE_SEED_FILES.items()
+    }
+    runtime_paths["marvel_catalogue.json"] = MARVEL_CATALOGUE_PATH
+    runtime_paths["marvel_web_series_catalogue.json"] = Path(
+        os.getenv("MARVEL_WEB_SERIES_CATALOGUE_PATH", "/app/data/marvel_web_series_catalogue.json")
+    )
+    runtime_paths["bollywood_torrent_matched_catalogue.json"] = Path(
+        os.getenv("BOLLYWOOD_TORRENT_CATALOGUE_PATH", str(Path(os.getenv("APP_DATA_DIR", "/app/data")) / "bollywood_torrent_matched_catalogue.json"))
+    )
+    runtime_paths["torrent_metadata_cache"] = TORRENT_METADATA_CACHE_FILE
+    for key, path in _EXTRA_CATALOGUE_PATHS.items():
+        runtime_paths["catalogue:" + key] = path
+    runtime_files = [
+        _cache_file_snapshot(name, path)
+        for name, path in sorted(runtime_paths.items())
+    ]
+
+    bundled_paths: dict[str, Path] = {
+        name: _CACHE_SEED_DIR / name for name in _CACHE_SEED_FILES
+    }
+    for name in (
+        "tmdb_movie_catalogue_cache.json",
+        "tmdb_search_metadata_cache.json",
+        "imdb_rating_cache.json",
+        "tmdb_ott_availability_cache.json",
+        "marvel_tv_catalogue_cache.json",
+        "dc_tv_catalogue_cache.json",
+        "regional_movie_prebuilt_cache.json",
+        "nexstream_cache.json",
+        "nexstream_episode_metadata_cache.json",
+    ):
+        bundled_paths["runtime/" + name] = _CACHE_SEED_DIR / "runtime" / name
+    bundled_files = [
+        _cache_file_snapshot(name, path, bundled=True)
+        for name, path in sorted(bundled_paths.items())
+    ]
+
+    memory_store_names = (
+        "_tmdb_ott_cache", "_tmdb_movie_catalogue_cache", "_tmdb_company_id_cache",
+        "_TMDB_SEARCH_METADATA_CACHE", "_IMDB_RATING_CACHE", "_search_cache",
+        "_poster_cache", "_watchmode_search_cache", "_TVMAZE_SEARCH_CACHE",
+        "_metadata_cache", "_seedr_folder_cache", "_REGIONAL_TV_PAGE_CACHE",
+        "_REGIONAL_TV_DISCOVERY_CACHE", "_REGIONAL_TV_PREBUILT_CACHE",
+        "_MARVEL_TV_CATALOGUE_CACHE", "_DC_TV_CATALOGUE_CACHE",
+        "_CLASSICS_TV_CATALOGUE_CACHE", "_seedr_ffprobe_cache",
+        "_seedr_media_info_cache", "_seedr_embedded_subtitle_cache",
+    )
+    memory_stores: dict[str, Any] = {}
+    for name in memory_store_names:
+        value = globals().get(name)
+        if isinstance(value, (dict, list, tuple, set)):
+            memory_stores[name.lstrip("_")] = len(value)
+        elif value is None:
+            memory_stores[name.lstrip("_")] = None
+
+    cache_events = {
+        store: dict(events)
+        for store, events in sorted(_CACHE_DIAGNOSTICS["cache_events"].items())
+    }
+    upstream = {
+        "requests": int(_CACHE_DIAGNOSTICS["upstream_requests"]),
+        "failures": int(_CACHE_DIAGNOSTICS["upstream_failures"]),
+        "byProvider": dict(sorted(_CACHE_DIAGNOSTICS["upstream_by_provider"].items())),
+        "byEndpoint": dict(sorted(
+            _CACHE_DIAGNOSTICS["upstream_by_endpoint"].items(),
+            key=lambda pair: pair[1],
+            reverse=True,
+        )[:100]),
+        "statusCodes": dict(sorted(_CACHE_DIAGNOSTICS["upstream_status_codes"].items())),
+    }
+    now = time.time()
+    return {
+        "status": "ok",
+        "measurementStartedAt": datetime.fromtimestamp(_CACHE_DIAGNOSTICS_STARTED_AT, timezone.utc).isoformat(),
+        "measurementScope": "This worker process only; counters reset on worker restart and are not aggregated across Render instances.",
+        "ottCacheOnly": os.getenv("OTT_CACHE_ONLY", "false").strip().casefold() in {"1", "true", "yes", "on"},
+        "uptimeSeconds": max(0, int(now - _CACHE_DIAGNOSTICS_STARTED_AT)),
+        "cacheEvents": cache_events,
+        "outboundHttp": upstream,
+        "memoryCacheSizes": memory_stores,
+        "runtimeCacheFiles": runtime_files,
+        "bundledCacheSnapshots": bundled_files,
+        "notes": [
+            "File entry counts describe saved inventory; they are not cache-hit counts.",
+            "Cache event counters measure only the explicitly instrumented cache decision points.",
+            "Outbound HTTP counts cover backend requests issued through httpx.AsyncClient, grouped by provider and endpoint without query strings or credentials.",
+            "A cache hit means that path returned or reused an entry; outbound request totals show actual httpx requests attempted by this worker.",
+        ],
     }
 
 
@@ -11209,7 +11477,7 @@ async def _validate_seedr_pat(token: str) -> None:
     # individually. Do not fan out concurrently: concurrent probes previously
     # all failed at the transport layer despite these same endpoints succeeding
     # when tested one at a time. Stop on the first 2xx response.
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+    async with _InstrumentedAsyncClient(timeout=timeout, follow_redirects=True) as client:
         for url in endpoints:
             try:
                 response = await client.get(
@@ -11338,7 +11606,7 @@ async def seedr_connect_start(request: Request):
         return {"status": "connected", "connected": True}
 
     try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        async with _InstrumentedAsyncClient(timeout=15, follow_redirects=True) as client:
             response = await client.get(
                 SEEDR_DEVICE_CODE_URL,
                 params={"client_id": SEEDR_DEVICE_CLIENT_ID},
@@ -11482,7 +11750,7 @@ async def seedr_connect_status(request: Request):
         }
 
     try:
-        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+        async with _InstrumentedAsyncClient(timeout=10, follow_redirects=True) as client:
             # Seedr's device authorization endpoint expects the original
             # device_code. The current Seedr client implementations pass only
             # device_code here; do not add client_id to this request.
@@ -12730,7 +12998,7 @@ async def seedr_v2_request(path: str) -> Any:
     if not bearer:
         raise HTTPException(503, "Seedr access token is empty")
     url = SEEDR_V2_BASE.rstrip("/") + "/" + str(path).lstrip("/")
-    async with httpx.AsyncClient(timeout=httpx.Timeout(35.0, connect=8.0), follow_redirects=True) as client:
+    async with _InstrumentedAsyncClient(timeout=httpx.Timeout(35.0, connect=8.0), follow_redirects=True) as client:
         response = await client.get(
             url,
             headers={"Authorization": f"Bearer {bearer}", "Accept": "application/json"},
@@ -12827,7 +13095,7 @@ async def _presentation_is_hls(url: str) -> bool:
     if not url:
         return False
     try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        async with _InstrumentedAsyncClient(timeout=15, follow_redirects=True) as client:
             response = await client.get(url, headers={"Accept": "application/vnd.apple.mpegurl,application/x-mpegURL,video/*,*/*", "Range": "bytes=0-2047"})
         content_type = str(response.headers.get("content-type") or "").lower()
         prefix = response.content[:2048].decode("utf-8", errors="ignore")
@@ -12849,7 +13117,7 @@ async def _fetch_seedr_hls_manifest(file_id: str) -> tuple[str, str]:
     last_detail = "Seedr did not return an HLS manifest"
     for upstream_url in dict.fromkeys(candidates):
         try:
-            async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
+            async with _InstrumentedAsyncClient(timeout=35, follow_redirects=True) as client:
                 response = await client.get(
                     upstream_url,
                     headers={"Accept": "application/vnd.apple.mpegurl,application/x-mpegURL,*/*"},
@@ -13061,7 +13329,7 @@ async def seedr_hls_resource(request: Request, file_id: str, u: str = Query(...)
         if range_header:
             headers["Range"] = range_header
 
-    async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
+    async with _InstrumentedAsyncClient(timeout=35, follow_redirects=True) as client:
         response = await client.get(target, headers=headers)
 
     if response.status_code >= 400:
@@ -13516,7 +13784,7 @@ async def seedr_video_media(
     if range_header:
         headers["Range"] = range_header
 
-    client = httpx.AsyncClient(timeout=60, follow_redirects=True)
+    client = _InstrumentedAsyncClient(timeout=60, follow_redirects=True)
     try:
         response = await client.send(
             client.build_request("GET", upstream_url, headers=headers),
@@ -13672,7 +13940,7 @@ async def seedr_file_subtitle(
     if not upstream_url:
         raise HTTPException(502, "Seedr returned no subtitle URL")
 
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+    async with _InstrumentedAsyncClient(timeout=20, follow_redirects=True) as client:
         response = await client.get(upstream_url)
         if response.status_code >= 400:
             raise HTTPException(response.status_code, "Seedr subtitle download failed")
@@ -14033,7 +14301,7 @@ async def _fetch_remote_torrent_metadata(magnet: str, info_hash_value: str) -> d
     try:
         # This service resolves BEP-9 metadata from a magnet without starting
         # a file download. Give Fly.io enough time to wake a sleeping instance.
-        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+        async with _InstrumentedAsyncClient(timeout=20.0, follow_redirects=True) as client:
             response = await client.post(
                 TORRENT_METADATA_API_URL.rstrip("/") + "/",
                 json={"query": magnet},
@@ -14105,7 +14373,7 @@ async def _lookup_knaben_by_hash(info_hash_value: str) -> dict[str, Any] | None:
         "hide_xxx": False,
     }
 
-    async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as client:
+    async with _InstrumentedAsyncClient(timeout=6.0, follow_redirects=True) as client:
         for field in ("hash", None):
             payload = dict(payload_base)
             if field:
@@ -14531,7 +14799,7 @@ async def submit_feedback(body: FeedbackRequest, request: Request):
         "User-Agent": "Torrent-Studio-Feedback",
     }
     try:
-        async with httpx.AsyncClient(timeout=12.0) as client:
+        async with _InstrumentedAsyncClient(timeout=12.0) as client:
             response = await client.post(
                 f"https://api.github.com/repos/{repo}/issues",
                 headers=headers,
