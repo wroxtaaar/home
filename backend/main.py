@@ -4743,6 +4743,8 @@ MARVEL_CATALOGUE_PATH = Path(os.getenv("MARVEL_CATALOGUE_PATH", "/app/data/marve
 MARVEL_MOVIE_SEARCHES: tuple[tuple[str, int], ...] = (
     # MCU theatrical films, newest first.
     ("Spider-Man: Brand New Day", 2026),
+    # Marvel Television special presentation starring Jon Bernthal as the Punisher.
+    ("The Punisher: One Last Kill", 2026),
     ("The Fantastic Four: First Steps", 2025),
     ("Thunderbolts", 2025),
     ("Captain America: Brave New World", 2025),
@@ -7925,8 +7927,12 @@ MARVEL_WEB_SERIES: tuple[tuple[str, int], ...] = (
     ("What If...?", 2021), ("Hawkeye", 2021), ("Moon Knight", 2022), ("Ms. Marvel", 2022),
     ("She-Hulk: Attorney at Law", 2022), ("Secret Invasion", 2023), ("Echo", 2024),
     ("Agatha All Along", 2024), ("Daredevil: Born Again", 2025), ("Ironheart", 2025),
+    ("Eyes of Wakanda", 2025), ("Wonder Man", 2026), ("VisionQuest", 2026),
     ("Marvel Zombies", 2025), ("Your Friendly Neighborhood Spider-Man", 2025), ("X-Men '97", 2024),
-    ("Legion", 2017), ("The Gifted", 2017), ("Agents of S.H.I.E.L.D.", 2013),
+    ("I Am Groot", 2022), ("Marvel Studios: Legends", 2021),
+    ("Moon Girl and Devil Dinosaur", 2023), ("Spidey and His Amazing Friends", 2021),
+    ("Marvel's Avengers", 2018), ("Marvel Rising", 2018), ("Iron Man and His Awesome Friends", 2025),
+    ("Avengers Assemble", 2013), ("Legion", 2017), ("The Gifted", 2017), ("Agents of S.H.I.E.L.D.", 2013),
     ("Agent Carter", 2015), ("Inhumans", 2017), ("Runaways", 2017), ("Cloak & Dagger", 2018),
     ("Daredevil", 2015), ("Jessica Jones", 2015), ("Luke Cage", 2016), ("Iron Fist", 2017),
     ("The Defenders", 2017), ("The Punisher", 2017), ("Helstrom", 2020), ("Blade: The Series", 2006),
@@ -8035,9 +8041,7 @@ async def _tv_streaming_providers(tmdb_id: int) -> list[dict[str, Any]]:
 async def api_tmdb_marvel_tv_catalogue(page: int = Query(1, ge=1, le=500)):
     """Return cards for the curated Marvel TV/web-series list, enriched from TMDB."""
     cached_payload = _load_persistent_tv_catalogue(_MARVEL_TV_CATALOGUE_CACHE, MARVEL_TV_CATALOGUE_CACHE_FILE)
-    if cached_payload:
-        return cached_payload
-    if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
+    if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS) and not cached_payload:
         raise HTTPException(status_code=503, detail="TMDB credentials are not configured.")
 
     semaphore = asyncio.Semaphore(3)
@@ -8098,6 +8102,24 @@ async def api_tmdb_marvel_tv_catalogue(page: int = Query(1, ge=1, le=500)):
                 "providerLink": "",
                 "source": "TMDB",
             }
+
+    if cached_payload:
+        # Extend existing persistent catalogues additively. Never discard existing
+        # entries: official Marvel titles missing from an older cache are appended.
+        results = list(cached_payload.get("results") or [])
+        known_titles = {_normalize_title(str(row.get("title") or "")) for row in results if isinstance(row, dict)}
+        missing = [
+            (title, year) for title, year in MARVEL_WEB_SERIES
+            if _normalize_title(title) not in known_titles
+        ]
+        if missing and (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
+            additions = await asyncio.gather(*(resolve_series(title, year) for title, year in missing))
+            results.extend(additions)
+            cached_payload = {**cached_payload, "results": results, "totalResults": len(results),
+                              "provider": "TMDB + curated Marvel series list"}
+            _save_persistent_tv_catalogue(MARVEL_TV_CATALOGUE_CACHE_FILE, cached_payload)
+        _MARVEL_TV_CATALOGUE_CACHE.update({"expiresAt": float("inf"), "payload": cached_payload})
+        return cached_payload
 
     results = await asyncio.gather(*(resolve_series(title, year) for title, year in MARVEL_WEB_SERIES))
     result = {
