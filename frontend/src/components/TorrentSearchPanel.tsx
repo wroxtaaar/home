@@ -255,32 +255,6 @@ function prefetchNexStreamEpisodeMetadata(
 
 type NexStreamTitleLike = { id: number; type: 'movie' | 'tv' };
 
-const CLASSICS_WEB_SERIES = [
-  { id: 1396, title: 'Breaking Bad', year: 2008 },
-  { id: 60059, title: 'Better Call Saul', year: 2015 },
-  { id: 1412, title: 'Arrow (CW)', year: 2012 },
-  { id: 60735, title: 'The Flash (CW)', year: 2014 },
-  { id: 61889, title: 'Daredevil', year: 2015 },
-] as const;
-
-const CLASSICS_ANIME = [
-  { id: 13916, title: 'Death Note', year: 2006 },
-  { id: 1429, title: 'Attack on Titan', year: 2013 },
-  { id: 31724, title: 'Code Geass', year: 2006 },
-  { id: 30981, title: 'Monster', year: 2004 },
-  { id: 12609, title: 'Dragon Ball', year: 1986 },
-  { id: 12971, title: 'Dragon Ball Z', year: 1989 },
-  { id: 12611, title: 'Dragon Ball GT', year: 1996 },
-  { id: 61709, title: 'Dragon Ball Z Kai', year: 2009 },
-  { id: 62715, title: 'Dragon Ball Super', year: 2015 },
-  { id: 80986, title: 'Super Dragon Ball Heroes', year: 2018 },
-  { id: 226574, title: 'Dragon Ball Daima', year: 2024 },
-  { id: 46260, title: 'Naruto', year: 2002 },
-  { id: 31910, title: 'Naruto: Shippuden', year: 2007 },
-  { id: 30984, title: 'Bleach', year: 2004 },
-  { id: 37854, title: 'One Piece', year: 1999 },
-] as const;
-
 function normalizeTorrentTitleForNexStream(value: string): string {
   return normalizeGroupTitle(String(value || '')
     .replace(/\\b(?:19|20)\\d{2}\\b/g, ' ')
