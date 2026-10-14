@@ -1067,7 +1067,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         'ant-man','ant-man and the wasp','ant-man and the wasp: quantumania','avengers: age of ultron','avengers: endgame','avengers: infinity war','the avengers',
         'black panther','black panther: wakanda forever','black widow','captain america: brave new world','captain america: civil war',
         'captain america: the first avenger','captain america: the winter soldier','captain marvel','doctor strange',
-        'doctor strange in the multiverse of madness','deadpool & wolverine','eternals','guardians of the galaxy',
+        'doctor strange in the multiverse of madness','deadpool & wolverine','eternals','the punisher: one last kill','the punisher one last kill','a marvel television special presentation the punisher one last kill','guardians of the galaxy',
         'guardians of the galaxy vol. 2','guardians of the galaxy vol. 3','iron man','iron man 2','iron man 3',
         'shang-chi and the legend of the ten rings','spider-man: brand new day','spider-man: far from home','spider-man: homecoming',
         'spider-man: no way home','the fantastic four: first steps','the incredible hulk','the marvels','thor','thor: love and thunder',
