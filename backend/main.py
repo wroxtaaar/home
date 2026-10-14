@@ -113,6 +113,7 @@ async def _watchmode_get(path: str, *, params: dict[str, Any] | None = None,
 
     async def attempt(key: str) -> tuple[httpx.Response | None, bool]:
         nonlocal last_response, eligible
+        global _WATCHMODE_RATE_LIMITED_UNTIL
         if not _provider_key_available(provider, key):
             return None, False
         eligible += 1
