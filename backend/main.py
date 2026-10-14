@@ -5463,7 +5463,7 @@ async def _build_marvel_catalogue() -> None:
 # catalogues are refreshed monthly and keep serving the previous good cache during refresh.
 _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
     "dc-live-action": {
-        "file": "dc_live_action_catalogue.json", "version": 4, "refresh_days": 36500,
+        "file": "dc_live_action_catalogue.json", "version": 5, "refresh_days": 36500,
         "minimum_movies": 5, "mode": "fixed", "language": "english",
         "exclude_titles": [
             "The Old Guard", "The Old Guard 2", "RED 2", "The Kitchen", "RED",
@@ -5497,7 +5497,7 @@ _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
         ],
     },
     "dc-animated": {
-        "file": "dc_animated_catalogue.json", "version": 2, "refresh_days": 36500,
+        "file": "dc_animated_catalogue.json", "version": 3, "refresh_days": 36500,
         "minimum_movies": 5, "mode": "fixed",
         "titles": [
             ("Batman: Knightfall - Part 1: Knightfall", 2026),
@@ -5568,13 +5568,13 @@ _EXTRA_CATALOGUES: dict[str, dict[str, Any]] = {
 _EXTRA_CATALOGUES["dc-live-action-hindi"] = {
     **_EXTRA_CATALOGUES["dc-live-action"],
     "file": "dc_live_action_hindi_catalogue.json",
-    "version": 4,
+    "version": 5,
     "language": "hindi",
     "titles": list(_EXTRA_CATALOGUES["dc-live-action"]["titles"]),
 }
 _EXTRA_CATALOGUES["classics"] = {
     "file": "classics_catalogue.json",
-    "version": 2,
+    "version": 3,
     "refresh_days": 36500,
     "minimum_movies": 5,
     "mode": "fixed",
@@ -5657,7 +5657,7 @@ _EXTRA_CATALOGUES["classics"] = {
 }
 _EXTRA_CATALOGUES["marvel-hindi"] = {
     "file": "marvel_hindi_catalogue.json",
-    "version": 3,
+    "version": 4,
     "refresh_days": 36500,
     "minimum_movies": 5,
     "mode": "fixed",
@@ -6576,6 +6576,20 @@ def _extra_item_year(item: dict[str, Any], fallback: int = 0) -> int:
     return int(match.group(1)) if match else fallback
 
 
+def _extra_item_release_date(item: dict[str, Any]) -> str:
+    """Use full release dates where known; fall back to January 1 of the year."""
+    for field in ("releaseDate", "release_date", "releaseDateISO", "firstAirDate"):
+        value = str(item.get(field) or "").strip()
+        if re.fullmatch(r"(?:19|20)\d{2}-\d{2}-\d{2}", value):
+            try:
+                datetime.strptime(value, "%Y-%m-%d")
+                return value
+            except ValueError:
+                pass
+    year = _extra_item_year(item)
+    return f"{year:04d}-01-01" if year else ""
+
+
 async def _build_extra_catalogue(key: str) -> None:
     config = _EXTRA_CATALOGUES[key]
     state = _extra_catalogue_states[key]
@@ -6856,10 +6870,19 @@ async def _build_extra_catalogue(key: str) -> None:
         movie_count = len({ _normalize_title(str(item.get("mediaTitle") or item.get("title") or "")) + "|" + str(item.get("year") or "") for item in results })
         if movie_count < int(config["minimum_movies"]):
             raise RuntimeError(f"Only {movie_count} titles found; keeping the previous catalogue.")
-        results.sort(key=lambda item: (_extra_item_year(item), float(item.get("rating") or 0), int(item.get("seeders") or 0)), reverse=True)
         payload = {"version": config["version"], "builtAt": datetime.now(timezone.utc).isoformat(),
                    "titlesQueried": len(jobs), "movieCount": movie_count, "resultCount": len(results), "results": results}
+        # Merge saved metadata before sorting so full release dates are available
+        # across Classics, Marvel, DC live-action, DC animated, and language variants.
         _merge_saved_catalogue_metadata(payload, _EXTRA_CATALOGUE_PATHS[key])
+        results.sort(
+            key=lambda item: (
+                _extra_item_release_date(item),
+                float(item.get("rating") or 0),
+                int(item.get("seeders") or 0),
+            ),
+            reverse=True,
+        )
         _write_extra_catalogue(key, payload)
         _extra_catalogue_retry_after.pop(key, None)
         state.update({"status": "ready", "completed": len(jobs), "total": len(jobs), "movieCount": movie_count,
