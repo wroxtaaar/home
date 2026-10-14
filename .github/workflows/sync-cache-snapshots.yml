@@ -92,7 +92,9 @@ jobs:
             tmdb_ott_availability_cache.json \
             marvel_tv_catalogue_cache.json \
             dc_tv_catalogue_cache.json \
-            nexstream_cache.json; do
+            regional_movie_prebuilt_cache.json \
+            nexstream_cache.json \
+            nexstream_episode_metadata_cache.json; do
             sync_remote_file "$DATA_DIR/$name" "backend/cache-seed/runtime/$name"
           done
 
