@@ -8270,6 +8270,13 @@ _CLASSICS_TV_CATALOGUES: dict[str, list[tuple[str, int]]] = {
     "classics-web-series": [
         ("Breaking Bad", 2008), ("Better Call Saul", 2015), ("Arrow", 2012),
         ("The Flash", 2014), ("Marvel's Daredevil", 2015),
+        ("The Queen's Gambit", 2020), ("Sherlock", 2010),
+        ("How I Met Your Mother", 2005), ("The Last of Us", 2023),
+        ("Peaky Blinders", 2013), ("The Big Bang Theory", 2007),
+        ("Chernobyl", 2019), ("Dark", 2017), ("Succession", 2018),
+        ("The Wire", 2002), ("The Office", 2005), ("Wednesday", 2022),
+        ("Squid Game", 2021), ("Stranger Things", 2016),
+        ("Game of Thrones", 2011),
     ],
     "classics-anime": [
         ("Death Note", 2006), ("Attack on Titan", 2013), ("Code Geass", 2006),
@@ -8282,7 +8289,7 @@ _CLASSICS_TV_CATALOGUES: dict[str, list[tuple[str, int]]] = {
         ("Demon Slayer: Kimetsu no Yaiba", 2019), ("Vinland Saga", 2019),
         ("Cowboy Bebop", 1998), ("Jujutsu Kaisen", 2020), ("Hunter x Hunter", 2011),
         ("Hajime no Ippo", 2000), ("Chainsaw Man", 2022), ("Berserk", 1997),
-        ("Parasyte: The Maxim", 2014),
+        ("Parasyte: The Maxim", 2014), ("Avatar: The Last Airbender", 2005),
     ],
 }
 _CLASSICS_TV_CATALOGUE_CACHE: dict[str, dict[str, Any]] = {}
