@@ -77,6 +77,7 @@ jobs:
             dc_animated_catalogue.json \
             classics_catalogue.json \
             regional_tv_prebuilt_cache.json \
+            regional_tv_prebuilt_cache.json \
             latest_hollywood_catalogue.json \
             latest_bollywood_catalogue.json \
             bollywood_torrent_matched_catalogue.json; do
