@@ -2990,7 +2990,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         'guardians of the galaxy vol 3', 'iron man', 'iron man 2', 'iron man 3',
         'shang chi and the legend of the ten rings', 'spider man brand new day', 'spider man far from home',
         'spider man homecoming', 'spider man no way home', 'the fantastic four first steps',
-        'the incredible hulk', 'the marvels', 'thor', 'thor love and thunder', 'thor ragnarok',
+        'the incredible hulk', 'the marvels', 'the punisher one last kill', 'the punisher: one last kill', 'thor', 'thor love and thunder', 'thor ragnarok',
         'thor the dark world', 'thunderbolts'
       ]);
       const isSpiderMan = (title: string) => /spider\s*man|spider\s*verse|into the spider|across the spider/i.test(title);
