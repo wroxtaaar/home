@@ -22,6 +22,15 @@ _NEXSTREAM_CACHE_PATH = Path(os.getenv("NEXSTREAM_CACHE_PATH", "/app/data/nexstr
 _NEXSTREAM_CACHE_SEED_PATH = Path(
     os.getenv("NEXSTREAM_CACHE_SEED_PATH", "/app/cache-seed/runtime/nexstream_cache.json")
 )
+_NEXSTREAM_EPISODE_CACHE_PATH = Path(
+    os.getenv("NEXSTREAM_EPISODE_CACHE_PATH", "/app/data/nexstream_episode_metadata_cache.json")
+)
+_NEXSTREAM_EPISODE_CACHE_SEED_PATH = Path(
+    os.getenv(
+        "NEXSTREAM_EPISODE_CACHE_SEED_PATH",
+        "/app/cache-seed/runtime/nexstream_episode_metadata_cache.json",
+    )
+)
 _NEXSTREAM_CACHE_LOCK = threading.Lock()
 _NEXSTREAM_SEARCH_CACHE_TTL = 24 * 60 * 60
 _NEXSTREAM_RESOLVE_CACHE_TTL = 5 * 60
@@ -48,6 +57,37 @@ def _seed_nexstream_cache() -> None:
 
 
 _seed_nexstream_cache()
+
+
+def _seed_nexstream_episode_cache() -> None:
+    """Restore bundled episode metadata only when persistent data is absent."""
+    try:
+        if (
+            _NEXSTREAM_EPISODE_CACHE_PATH.is_file()
+            and _NEXSTREAM_EPISODE_CACHE_PATH.stat().st_size > 0
+        ):
+            return
+        if (
+            not _NEXSTREAM_EPISODE_CACHE_SEED_PATH.is_file()
+            or _NEXSTREAM_EPISODE_CACHE_SEED_PATH.stat().st_size == 0
+        ):
+            return
+        payload = json.loads(
+            _NEXSTREAM_EPISODE_CACHE_SEED_PATH.read_text(encoding="utf-8")
+        )
+        if not isinstance(payload, dict):
+            return
+        _NEXSTREAM_EPISODE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _NEXSTREAM_EPISODE_CACHE_PATH.write_text(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+    except (OSError, ValueError, TypeError):
+        # Cache seeding is best-effort and must never prevent API startup.
+        return
+
+
+_seed_nexstream_episode_cache()
 
 
 def _read_nexstream_cache() -> dict[str, dict]:
