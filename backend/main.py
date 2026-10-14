@@ -9391,20 +9391,44 @@ async def _enrich_classics_movie_ott_cache() -> None:
             tmdb_id = int(row.get("tmdbId") or 0) if str(row.get("tmdbId") or "").isdigit() else 0
             async with semaphore:
                 try:
+                    # If the catalogue row already has a TMDB ID, consult the shared
+                    # cache before resolving metadata. The previous order performed a
+                    # network metadata lookup for every Favourites row on every cold
+                    # start, even when OTT availability was already cached.
+                    availability = None
+                    resolved_id = tmdb_id
+                    if resolved_id > 0:
+                        cache_key = (resolved_id, "IN")
+                        memory = _tmdb_ott_cache.get(cache_key)
+                        if memory and isinstance(memory[1], dict):
+                            age = max(0.0, time.monotonic() - memory[0])
+                            if age < _tmdb_ott_ttl(memory[1]):
+                                availability = memory[1]
+                        if availability is None:
+                            persistent = _read_tmdb_ott_persistent_cache(cache_key)
+                            if persistent and isinstance(persistent[1], dict):
+                                age = max(0.0, time.time() - persistent[0])
+                                if age < _tmdb_ott_ttl(persistent[1]):
+                                    availability = persistent[1]
+                                    _tmdb_ott_cache[cache_key] = (time.monotonic() - age, availability)
+                        if isinstance(availability, dict) and str(availability.get("status") or "").casefold() not in {"unknown", "error", "pending"}:
+                            row["ottAvailability"] = availability
+                            row["ottEnrichedAt"] = datetime.now(timezone.utc).isoformat()
+                            changed = True
+                            return
+
+                    # Only resolve metadata when there is no usable cached OTT entry.
                     metadata = await asyncio.wait_for(_lookup_catalogue_synopsis(title, year, tmdb_id), timeout=15)
                     resolved_id = int((metadata or {}).get("tmdbId") or (metadata or {}).get("id") or tmdb_id)
                     if resolved_id <= 0:
                         return
                     cache_key = (resolved_id, "IN")
-                    availability = None
-                    # Prefer the shared OTT cache before making any provider request.
-                    # This also lets Favourites reuse data fetched by movie cards and
-                    # other catalogue sections instead of re-querying Watchmode/TMDB.
-                    memory = _tmdb_ott_cache.get(cache_key)
-                    if memory and isinstance(memory[1], dict):
-                        age = max(0.0, time.monotonic() - memory[0])
-                        if age < _tmdb_ott_ttl(memory[1]):
-                            availability = memory[1]
+                    if availability is None:
+                        memory = _tmdb_ott_cache.get(cache_key)
+                        if memory and isinstance(memory[1], dict):
+                            age = max(0.0, time.monotonic() - memory[0])
+                            if age < _tmdb_ott_ttl(memory[1]):
+                                availability = memory[1]
                     if availability is None:
                         persistent = _read_tmdb_ott_persistent_cache(cache_key)
                         if persistent and isinstance(persistent[1], dict):
