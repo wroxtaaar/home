@@ -8274,7 +8274,7 @@ _CLASSICS_TV_CATALOGUES: dict[str, list[tuple[str, int]]] = {
     "classics-anime": [
         ("Death Note", 2006), ("Attack on Titan", 2013), ("Code Geass", 2006),
         ("Monster", 2004), ("Dragon Ball", 1986), ("Dragon Ball Z", 1989),
-        ("Dragon Ball GT", 1996), ("Dragon Ball Super", 2015),
+        ("Dragon Ball GT", 1996), ("Dragon Ball Z Kai", 2009), ("Super Dragon Ball Heroes", 2018), ("Dragon Ball Super", 2015),
         ("Dragon Ball Daima", 2024), ("Naruto", 2002),
         ("Naruto: Shippuden", 2007), ("Bleach", 2004), ("One Piece", 1999),
     ],
