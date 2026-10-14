@@ -9722,6 +9722,17 @@ app.router.add_event_handler("startup", _warm_extra_catalogues_on_startup)
 async def api_search_saved_ott(titles: list[str] = Query(..., min_length=1, max_length=80)):
     """Look up saved OTT enrichment by title from persistent franchise catalogue caches only."""
     _record_cache_event("saved_ott_title_search", "lookup")
+    # Read the persistent OTT JSON once for the entire title search. The cache
+    # file may contain over a thousand rows; parsing the complete file once per
+    # catalogue row turns a cache-only lookup into unnecessary repeated I/O.
+    try:
+        ott_disk = json.loads(TMDB_OTT_CACHE_FILE.read_text(encoding="utf-8"))
+        ott_items = ott_disk.get("items", {}) if isinstance(ott_disk, dict) else {}
+        if not isinstance(ott_items, dict):
+            ott_items = {}
+    except (OSError, ValueError, TypeError):
+        ott_items = {}
+
     source_paths = [MARVEL_CATALOGUE_PATH, *_EXTRA_CATALOGUE_PATHS.values()]
     saved_rows: list[dict[str, Any]] = []
     seen_rows: set[tuple[str, str]] = set()
@@ -9755,9 +9766,10 @@ async def api_search_saved_ott(titles: list[str] = Query(..., min_length=1, max_
                 if cached and isinstance(cached[1], dict):
                     availability = cached[1]
                 if not isinstance(availability, dict):
-                    persistent = _read_tmdb_ott_persistent_cache((tmdb_id, "IN"))
-                    if persistent and isinstance(persistent[1], dict):
-                        availability = persistent[1]
+                    envelope = ott_items.get(_tmdb_ott_disk_key((tmdb_id, "IN")))
+                    persistent_payload = envelope.get("payload") if isinstance(envelope, dict) else None
+                    if isinstance(persistent_payload, dict):
+                        availability = persistent_payload
                         _tmdb_ott_cache[(tmdb_id, "IN")] = (time.monotonic(), availability)
             if not isinstance(availability, dict):
                 continue
@@ -9772,14 +9784,6 @@ async def api_search_saved_ott(titles: list[str] = Query(..., min_length=1, max_
     # Also use title-to-TMDB-ID mappings in the general saved metadata/catalogue
     # cache. This makes OTT entries reusable even when their title is not in a
     # Marvel/DC/Classics catalogue snapshot.
-    try:
-        ott_disk = json.loads(TMDB_OTT_CACHE_FILE.read_text(encoding="utf-8"))
-        ott_items = ott_disk.get("items", {}) if isinstance(ott_disk, dict) else {}
-        if not isinstance(ott_items, dict):
-            ott_items = {}
-    except (OSError, ValueError, TypeError):
-        ott_items = {}
-
     for row in _read_search_metadata_catalogue_rows():
         if not isinstance(row, dict):
             continue
