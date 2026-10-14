@@ -5574,7 +5574,7 @@ _EXTRA_CATALOGUES["dc-live-action-hindi"] = {
 }
 _EXTRA_CATALOGUES["classics"] = {
     "file": "classics_catalogue.json",
-    "version": 4,
+    "version": 5,
     "refresh_days": 36500,
     "minimum_movies": 5,
     "mode": "fixed",
@@ -5653,6 +5653,8 @@ _EXTRA_CATALOGUES["classics"] = {
         ("The Maze Runner", 2014),
         ("The A-Team", 2010),
         ("Skyscraper", 2018),
+        ("Sherlock Holmes", 2009),
+        ("Sherlock Holmes: A Game of Shadows", 2011),
     ],
 }
 _EXTRA_CATALOGUES["marvel-hindi"] = {
