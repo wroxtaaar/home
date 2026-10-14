@@ -255,6 +255,32 @@ function prefetchNexStreamEpisodeMetadata(
 
 type NexStreamTitleLike = { id: number; type: 'movie' | 'tv' };
 
+const CLASSICS_WEB_SERIES = [
+  { id: 1396, title: 'Breaking Bad', year: 2008 },
+  { id: 60059, title: 'Better Call Saul', year: 2015 },
+  { id: 1412, title: 'Arrow (CW)', year: 2012 },
+  { id: 60735, title: 'The Flash (CW)', year: 2014 },
+  { id: 61889, title: 'Daredevil', year: 2015 },
+] as const;
+
+const CLASSICS_ANIME = [
+  { id: 13916, title: 'Death Note', year: 2006 },
+  { id: 1429, title: 'Attack on Titan', year: 2013 },
+  { id: 31724, title: 'Code Geass', year: 2006 },
+  { id: 30981, title: 'Monster', year: 2004 },
+  { id: 12609, title: 'Dragon Ball', year: 1986 },
+  { id: 12971, title: 'Dragon Ball Z', year: 1989 },
+  { id: 12611, title: 'Dragon Ball GT', year: 1996 },
+  { id: 61709, title: 'Dragon Ball Z Kai', year: 2009 },
+  { id: 62715, title: 'Dragon Ball Super', year: 2015 },
+  { id: 80986, title: 'Super Dragon Ball Heroes', year: 2018 },
+  { id: 226574, title: 'Dragon Ball Daima', year: 2024 },
+  { id: 46260, title: 'Naruto', year: 2002 },
+  { id: 31910, title: 'Naruto: Shippuden', year: 2007 },
+  { id: 30984, title: 'Bleach', year: 2004 },
+  { id: 37854, title: 'One Piece', year: 1999 },
+] as const;
+
 function normalizeTorrentTitleForNexStream(value: string): string {
   return normalizeGroupTitle(String(value || '')
     .replace(/\\b(?:19|20)\\d{2}\\b/g, ' ')
@@ -896,6 +922,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   type RegionalContentTab = 'movies' | 'web-series' | null;
   const [regionalContentTabs, setRegionalContentTabs] = useState<Record<RegionalCatalogueGroup, RegionalContentTab>>({ bollywood: null, hollywood: null });
   const [marvelContentTab, setMarvelContentTab] = useState<RegionalContentTab>(null);
+  type ClassicsContentTab = 'movies' | 'web-series' | 'anime';
+  const [classicsContentTab, setClassicsContentTab] = useState<ClassicsContentTab>('movies');
   type RegionalCatalogueGroup = 'bollywood' | 'hollywood';
   type RegionalCatalogueMode = 'popular' | 'trending' | 'latest';
   const [openRegionalCatalogueMenu, setOpenRegionalCatalogueMenu] = useState<RegionalCatalogueGroup | null>(null);
@@ -3438,7 +3466,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           <button type="button" onClick={() => { setActiveTopSection('dc'); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">🦇 DC</button>
           <button type="button" onClick={() => { setActiveTopSection('hollywood'); setRegionalContentTabs(previous => ({ ...previous, hollywood: null })); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">🎥 Hollywood</button>
           <button type="button" onClick={() => { setActiveTopSection('bollywood'); setRegionalContentTabs(previous => ({ ...previous, bollywood: null })); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">🎬 Bollywood</button>
-          <button type="button" onClick={() => { setActiveTopSection('classics'); setResolutionFilter(null); setSizeSort(null); setTimeSort(null); void runSearch(undefined, 'Classics', 'classics'); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">🎬 Classics</button>
+          <button type="button" onClick={() => { setActiveTopSection('classics'); setClassicsContentTab('movies'); setResolutionFilter(null); setSizeSort(null); setTimeSort(null); void runSearch(undefined, 'Classics', 'classics'); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">🎬 Classics</button>
         </div>
         {activeTopSection !== null && <>
           <div className="mt-2 flex flex-wrap gap-2 rounded-lg border border-slate-800 bg-slate-900 px-2.5 py-2.5" aria-label={activeTopSection + ' subsections'}>
@@ -3455,7 +3483,11 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               <button type="button" onClick={() => { setRegionalContentTabs(previous => ({ ...previous, [activeTopSection]: 'movies' })); openRegionalCatalogue(activeTopSection, regionalCatalogueModes[activeTopSection]); }} className={regionalContentTabs[activeTopSection] === 'movies' ? 'rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800'}>🎬 Movies</button>
               <button type="button" onClick={() => { const group = activeTopSection === 'bollywood' ? 'indian' : 'hollywood'; setRegionalContentTabs(previous => ({ ...previous, [activeTopSection]: 'web-series' })); void openRegionalTvCatalogue(group, regionalTvModes[group]); }} className={regionalContentTabs[activeTopSection] === 'web-series' ? 'rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800'}>📺 Web Series</button>
             </>}
-            {activeTopSection === 'classics' && <button type="button" onClick={() => { setResolutionFilter(null); setSizeSort(null); setTimeSort(null); void runSearch(undefined, 'Classics', 'classics'); }} className="rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950">All Classics</button>}
+            {activeTopSection === 'classics' && <>
+              <button type="button" onClick={() => { setClassicsContentTab('movies'); setResolutionFilter(null); setSizeSort(null); setTimeSort(null); void runSearch(undefined, 'Classics', 'classics'); }} className={classicsContentTab === 'movies' ? 'rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'}>🎬 Movies</button>
+              <button type="button" onClick={() => { setClassicsContentTab('web-series'); setNexStreamError(''); setNexStreamSearchMode(null); }} className={classicsContentTab === 'web-series' ? 'rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'}>📺 Web Series</button>
+              <button type="button" onClick={() => { setClassicsContentTab('anime'); setNexStreamError(''); setNexStreamSearchMode(null); }} className={classicsContentTab === 'anime' ? 'rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'}>⛩️ Anime</button>
+            </>}
           </div>
           {activeTopSection === 'marvel' && marvelContentTab === 'movies' && <div className="mt-2 flex flex-wrap gap-2 rounded-lg border border-slate-800 bg-slate-950/70 px-2.5 py-2.5" aria-label="Marvel movie filters">
             {([['mcu','MCU'],['sony','Spiderman'],['x-men','X-Men']] as [Exclude<MarvelFilmFilter,'all'>,string][]).map(([filter,label]) => <button key={filter} type="button" onClick={() => setMarvelFilmFilter(filter)} className={marvelFilmFilter === filter ? 'rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={marvelFilmFilter === filter}>{label}</button>)}
@@ -4086,7 +4118,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         </div>
       )}
 
-      {(results.length > 0 || regionalWebSeriesLoading || Boolean(regionalWebSeriesError) || Boolean(regionalWebSeriesCatalogue)) && (
+      {(results.length > 0 || regionalWebSeriesLoading || Boolean(regionalWebSeriesError) || Boolean(regionalWebSeriesCatalogue) || (activeTopSection === 'classics' && classicsContentTab !== null)) && (
         <div className="space-y-2">
           <div className="px-1 text-[11px] text-slate-500">Use the subsection buttons above to switch catalogue views.</div>
 
@@ -4097,7 +4129,28 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           </div>
 
 
-          {regionalWebSeriesLoading ? (
+          {activeTopSection === 'classics' && classicsContentTab !== 'movies' ? (
+            <section className="space-y-3">
+              <div className="px-1 text-xs text-slate-400">
+                {classicsContentTab === 'web-series'
+                  ? 'Classic live-action series · playback through NexStream, no torrent search'
+                  : 'Classic anime series · playback through NexStream, no torrent search'}
+              </div>
+              <div className="grid grid-cols-2 items-stretch gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
+                {(classicsContentTab === 'web-series' ? CLASSICS_WEB_SERIES : CLASSICS_ANIME).map(show => (
+                  <article key={show.id} className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-violet-400/60">
+                    <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} aria-label={`Play ${show.title} with NexStream`} className="flex min-h-28 flex-1 flex-col items-start justify-between gap-3 bg-gradient-to-br from-slate-900 to-slate-950 p-3 text-left hover:bg-violet-500/10">
+                      <span className="text-sm font-bold leading-snug text-slate-100">{show.title}</span>
+                      <span className="text-[11px] text-slate-500">{show.year} · TV Series</span>
+                      <span className="inline-flex items-center gap-1 rounded-lg border border-violet-400/40 bg-violet-500/10 px-2.5 py-1.5 text-[11px] font-bold text-violet-200">
+                        <Play className="h-3 w-3" /> Find on NexStream
+                      </span>
+                    </button>
+                  </article>
+                ))}
+              </div>
+            </section>
+          ) : regionalWebSeriesLoading ? (
             <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-sm text-slate-300">Loading web series catalogue…</div>
           ) : regionalWebSeriesError ? (
             <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">{regionalWebSeriesError}</div>
