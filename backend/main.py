@@ -4735,7 +4735,7 @@ async def resolve_search_magnet(body: dict[str, Any]):
 # One-time Marvel catalogue. Results are shared by every visitor to this Home
 # instance and never expire; the deployment mounts /app/data on persistent VPS
 # storage so a container replacement does not force another provider crawl.
-MARVEL_CATALOGUE_VERSION = 8
+MARVEL_CATALOGUE_VERSION = 9
 MARVEL_CATALOGUE_PATH = Path(os.getenv("MARVEL_CATALOGUE_PATH", "/app/data/marvel_catalogue.json"))
 # Curated live-action theatrical Marvel films across studios (Marvel Studios, Fox,
 # Sony, Universal, etc.). Excludes TV films, specials, documentaries, and animated
@@ -5371,13 +5371,20 @@ async def _build_marvel_catalogue() -> None:
                     old_year = int(old_item.get("year") or 0)
                 except (TypeError, ValueError):
                     old_year = 0
-                canonical = current_titles.get((re.sub(r"[^a-z0-9]+", "", old_title.casefold()), old_year))
-                if not canonical or _catalogue_row_has_3d_quality(old_item) or _catalogue_row_is_excluded_franchise_title(old_item):
+                # Preserve every previously cached row during additive catalogue
+                # updates. Curated titles get canonical naming; legacy entries that
+                # are no longer in the current list remain intact rather than vanishing.
+                canonical = current_titles.get(
+                    (re.sub(r"[^a-z0-9]+", "", old_title.casefold()), old_year),
+                    old_title,
+                )
+                if not canonical:
                     continue
                 preserved = dict(old_item)
                 preserved["mediaTitle"] = canonical
                 preserved["marvelCatalogueTitle"] = canonical
-                preserved["year"] = old_year
+                if old_year:
+                    preserved["year"] = old_year
                 digest = str(preserved.get("infoHash") or "").strip().lower()
                 if not re.fullmatch(r"[0-9a-f]{40}", digest):
                     digest = info_hash(str(preserved.get("magnetUrl") or preserved.get("downloadUrl") or ""))
