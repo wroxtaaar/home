@@ -3726,25 +3726,31 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           {nexStreamPlayer && (
             <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/85 p-2 sm:p-5">
               <div className="relative flex max-h-[96vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-violet-400/40 bg-slate-950 shadow-2xl">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-4 py-3 pr-14">
                 <div className="min-w-0">
                   <div className="truncate text-xs font-bold text-slate-100">Playing with NexStream: {nexStreamPlayer.title}</div>
                   <div className="text-[10px] text-slate-400">
                     {nexStreamPlayer.type === 'tv' ? 'Season ' + nexStreamPlayer.season + ', Episode ' + nexStreamPlayer.episode + ' · ' : ''}{nexStreamPlayer.sourceName}
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => window.open(nexStreamPlayer.url, '_blank', 'noopener,noreferrer')}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-violet-400/40 px-3 py-2 text-xs font-semibold text-violet-200 hover:bg-violet-500/15"
-                    title="Open fullscreen playback in a new tab"
-                  >
-                    <Maximize2 className="h-4 w-4" /> Full screen / New tab
-                  </button>
-                  <button type="button" onClick={() => setNexStreamPlayer(null)} className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-800">Close</button>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => window.open(nexStreamPlayer.url, '_blank', 'noopener,noreferrer')}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-violet-400/40 px-3 py-2 text-xs font-semibold text-violet-200 hover:bg-violet-500/15"
+                  title="Open fullscreen playback in a new tab"
+                >
+                  <Maximize2 className="h-4 w-4" /> Full screen / New tab
+                </button>
               </div>
+              <button
+                type="button"
+                onClick={() => setNexStreamPlayer(null)}
+                className="absolute right-2 top-2 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-slate-600 bg-slate-900/95 text-lg font-bold text-slate-200 shadow-lg hover:bg-slate-700"
+                aria-label="Close NexStream player"
+                title="Close player"
+              >
+                ×
+              </button>
               <div
                 id="nexstream-player-container"
                 className="min-h-0 flex-1 aspect-video overflow-hidden bg-black max-sm:aspect-video max-sm:max-h-[calc(96vh-90px)]"
