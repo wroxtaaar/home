@@ -1092,7 +1092,11 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           case 'sony': return isSony(title);
           case 'old-marvel': {
             const normalized = title.replace(/[^a-z0-9]+/g, ' ').trim();
-            return /^(?:the punisher|the trial of the incredible hulk|the incredible hulk returns|howard the duck|captain america ii death too soon|dr strange)(?:\s|$)/i.test(normalized);
+            const legacyTitles = new Set(Array.from(oldMarvelTitles, value =>
+              value.replace(/\b(?:19|20)\d{2}\b/g, '').replace(/[^a-z0-9]+/g, ' ').trim().toLowerCase()
+            ));
+            return legacyTitles.has(normalized) ||
+              /^(?:the punisher|the trial of the incredible hulk|the incredible hulk returns|howard the duck|captain america ii death too soon|dr strange)(?:\s|$)/i.test(normalized);
           }
           default: return true;
         }
@@ -4075,7 +4079,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 <button type="button" onClick={() => { if (showDcWebSeries) setShowDcWebSeries(false); else void loadDcWebSeries(); }} className={showDcWebSeries ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={showDcWebSeries} title="Show DC live-action web series">📺 Web Series</button>
               )}
               {isMarvelEnglishResults && showMarvelWebSeries && (
-                <button type="button" onClick={() => setShowMarvelWebSeries(false)} className="shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950" title="Return to Marvel movies">🎬 Movies</button>
+                <button type="button" onClick={() => setShowMarvelWebSeries(false)} className="shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200" title="Return to Marvel movies">🎬 Movies</button>
               )}
               {isMarvelEnglishResults && !showMarvelWebSeries && (
                 <>
