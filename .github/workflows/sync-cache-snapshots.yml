@@ -2,6 +2,15 @@ name: Sync portable cache snapshots
 
 on:
   workflow_dispatch:
+  # Bootstrap snapshots when this workflow is changed, then refresh from the VPS
+  # every six hours so ephemeral Render deployments keep receiving warm caches.
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/sync-cache-snapshots.yml
+  schedule:
+    - cron: "0 */6 * * *"
 
 permissions:
   contents: write
