@@ -4150,22 +4150,73 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             <section className="space-y-3">
               <div className="px-1 text-xs text-slate-400">
                 {classicsContentTab === 'web-series'
-                  ? 'Classic live-action series · playback through NexStream, no torrent search'
-                  : 'Classic anime series · playback through NexStream, no torrent search'}
+                  ? 'Classic live-action series · full TMDB details and India OTT availability · playback through NexStream'
+                  : 'Classic anime series · full TMDB details and India OTT availability · playback through NexStream'}
               </div>
-              <div className="grid grid-cols-2 items-stretch gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
-                {(classicsContentTab === 'web-series' ? CLASSICS_WEB_SERIES : CLASSICS_ANIME).map(show => (
-                  <article key={show.id} className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-violet-400/60">
-                    <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} aria-label={`Play ${show.title} with NexStream`} className="flex min-h-28 flex-1 flex-col items-start justify-between gap-3 bg-gradient-to-br from-slate-900 to-slate-950 p-3 text-left hover:bg-violet-500/10">
-                      <span className="text-sm font-bold leading-snug text-slate-100">{show.title}</span>
-                      <span className="text-[11px] text-slate-500">{show.year} · TV Series</span>
-                      <span className="inline-flex items-center gap-1 rounded-lg border border-violet-400/40 bg-violet-500/10 px-2.5 py-1.5 text-[11px] font-bold text-violet-200">
-                        <Play className="h-3 w-3" /> Find on NexStream
-                      </span>
-                    </button>
-                  </article>
-                ))}
-              </div>
+              {marvelWebSeriesLoading && <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-sm text-slate-300">Loading {classicsContentTab === 'anime' ? 'Classics anime' : 'Classics web series'}…</div>}
+              {marvelWebSeriesError && <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">{marvelWebSeriesError}</div>}
+              {marvelWebSeriesCatalogue && marvelWebSeriesCatalogue.catalogue === (classicsContentTab === 'anime' ? 'classics-anime' : 'classics-web-series') && (
+                <>
+                  <div className="px-1 text-xs text-slate-400">{marvelWebSeriesCatalogue.totalResults.toLocaleString()} {classicsContentTab === 'anime' ? 'anime titles' : 'web series'} · Metadata by TMDB</div>
+                  <div className="grid grid-cols-2 items-stretch gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
+                    {[...marvelWebSeriesCatalogue.results].sort(compareReleaseDateDescending).map(show => (
+                      <article key={String(show.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-violet-400/50 hover:bg-slate-900/95 flex flex-col">
+                        <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} aria-label={`Play ${show.title} with NexStream`} className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950 text-left cursor-pointer">
+                          {show.posterUrl ? <img src={lowQualityPosterUrl(show.posterUrl)} alt={show.title} loading="eager" onLoad={event => {
+                            const image = event.currentTarget;
+                            if (!image.dataset.highQualityTried && image.currentSrc.includes('/t/p/w342/')) {
+                              image.dataset.highQualityTried = 'true';
+                              image.src = image.currentSrc.replace('/t/p/w342/', '/t/p/w780/');
+                            }
+                          }} className="h-full w-full object-cover" onError={event => {
+                            const image = event.currentTarget;
+                            if (image.dataset.highQualityTried === 'true' && image.src.includes('/t/p/w780/')) {
+                              image.src = image.src.replace('/t/p/w780/', '/t/p/w342/');
+                              return;
+                            }
+                            image.style.display = 'none';
+                          }} /> : <div className="absolute inset-0 flex items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
+                          {show.rating ? <span className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow">⭐ {show.rating.toFixed(1)}/10</span> : null}
+                          <span className="absolute bottom-2 right-2 rounded-md border border-violet-300/50 bg-slate-950/90 px-2 py-1 text-[10px] font-bold text-violet-200">▶ NexStream</span>
+                        </button>
+                        <div className="flex flex-1 flex-col gap-2 p-2.5">
+                          <div className="min-h-[3.2rem]">
+                            <h3 className="line-clamp-2 text-sm font-bold leading-snug text-slate-100">{show.title}</h3>
+                            <div className="mt-0.5 text-xs text-slate-500">{show.year || 'Year unknown'} · {classicsContentTab === 'anime' ? 'Anime' : 'TV Series'}</div>
+                          </div>
+                          <div className="min-h-[3.75rem]">{show.overview && <p className="line-clamp-3 text-[11px] leading-relaxed text-slate-400">{show.overview}</p>}</div>
+                          <div className="min-h-[2.5rem]">
+                            {show.streamingProviders?.length ? (
+                              <div className="space-y-1.5">
+                                {(['subscription', 'free', 'ads', 'rent', 'buy'] as const).map(kind => {
+                                  const providers = (show.streamingProviders || []).filter(provider => provider.type === kind);
+                                  if (!providers.length) return null;
+                                  const label = kind === 'subscription' ? 'Stream' : kind === 'ads' ? 'Free with ads' : kind === 'free' ? 'Free' : kind === 'rent' ? 'Rent' : 'Buy';
+                                  return (
+                                    <div key={kind} className="flex flex-wrap items-center gap-1">
+                                      <span className="mr-0.5 text-[10px] text-slate-500">{label}:</span>
+                                      {providers.map((provider, index) => (
+                                        <a key={String(provider.providerId ?? provider.name) + '-' + index} href={provider.webUrl || show.tmdbUrl || ('https://www.themoviedb.org/tv/' + show.id)} target="_blank" rel="noreferrer" title={provider.name} onClick={event => event.stopPropagation()} className="inline-flex items-center rounded-full border border-cyan-500/25 bg-cyan-500/5 px-2 py-0.5 text-[10px] text-cyan-200 hover:border-cyan-400/60">
+                                          <span>{provider.name}</span>
+                                        </a>
+                                      ))}
+                                    </div>
+                                  );
+                                })}
+                                <div className="text-[9px] text-slate-600">Availability in India · TMDB / JustWatch</div>
+                              </div>
+                            ) : <p className="text-[10px] text-slate-500">Streaming availability in India not confirmed</p>}
+                          </div>
+                          <div className="mt-auto grid grid-cols-1 gap-2">
+                            <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} className="rounded-lg border border-violet-400/50 bg-violet-500/10 px-2 py-2 text-center text-[11px] font-bold text-violet-200 hover:bg-violet-500/20">Find on NexStream</button>
+                            <a href={show.tmdbUrl || ('https://www.themoviedb.org/tv/' + show.id)} target="_blank" rel="noreferrer" className="block rounded-lg border border-slate-700 px-2 py-2 text-center text-[11px] font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">View on TMDB</a>
+                          </div>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </>
+              )}
             </section>
           ) : regionalWebSeriesLoading ? (
             <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-sm text-slate-300">Loading web series catalogue…</div>
