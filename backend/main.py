@@ -10343,13 +10343,9 @@ async def _fetch_imdb_rating(
         returned_id = str(details.get("imdbID") or "").strip()
         returned_year_match = re.search(r"\b((?:18|19|20|21)\d{2})\b", str(details.get("Year") or ""))
         returned_year = int(returned_year_match.group(1)) if returned_year_match else 0
-        returned_type = str(details.get("Type") or "").casefold()
-        wanted_type = "series" if normalized_type == "tv" else "movie"
-        if (
-            returned_id != imdb_id
-            or (year and returned_year and returned_year != year)
-            or (returned_type and returned_type != wanted_type)
-        ):
+        # The TMDB-to-IMDb ID relationship is authoritative. IMDb/OMDb may
+        # classify a special differently or use a different premiere year.
+        if returned_id != imdb_id:
             return None
 
         raw_rating = str(details.get("imdbRating") or "").strip()
