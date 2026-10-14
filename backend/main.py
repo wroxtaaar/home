@@ -28,107 +28,16 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response, Streamin
 from pydantic import BaseModel
 
 
-# Process-local cache/API diagnostics. Counts reset on each worker restart.
-_CACHE_DIAGNOSTICS_STARTED_AT = time.time()
-_CACHE_DIAGNOSTICS: dict[str, Any] = {
-    "cache_events": {},
-    "upstream_requests": 0,
-    "upstream_failures": 0,
-    "upstream_by_provider": {},
-    "upstream_by_endpoint": {},
-    "upstream_by_feature": {},
-    "upstream_status_codes": {},
-}
-
-
-_UPSTREAM_FEATURE = contextvars.ContextVar("cache_diagnostics_feature", default="background")
-
-
-def _record_cache_event(store: str, event: str, count: int = 1) -> None:
-    """Count cache decisions, not the number of rows inside a cache file."""
-    stores = _CACHE_DIAGNOSTICS["cache_events"]
-    events = stores.setdefault(str(store), {})
-    key = str(event)
-    events[key] = int(events.get(key) or 0) + max(0, int(count))
-
-
-def _upstream_provider_name(host: str) -> str:
-    host = (host or "").casefold().strip(".")
-    known = (
-        (("api.themoviedb.org",), "tmdb"),
-        (("image.tmdb.org",), "tmdb_images"),
-        (("api.watchmode.com",), "watchmode"),
-        (("api.movieofthenight.com",), "streaming_availability"),
-        (("www.omdbapi.com", "omdbapi.com"), "omdb"),
-        (("api.tvmaze.com",), "tvmaze"),
-        (("seedr.cc", "www.seedr.cc", "v2.seedr.cc"), "seedr"),
-        (("api.knaben.org",), "knaben"),
-        (("itorrents.net", "www.itorrents.net"), "itorrents"),
-        (("cinemeta-live.vercel.app",), "cinemeta"),
-    )
-    for hosts, label in known:
-        if host in hosts:
-            return label
-    if "yts" in host or "accel.li" in host:
-        return "yts"
-    if "1337x" in host or "1337.to" in host:
-        return "1337x"
-    if "limetorrents" in host:
-        return "limetorrents"
-    if "thepiratebay" in host or host == "apibay.org":
-        return "thepiratebay"
-    if host.endswith(".onrender.com") or host.endswith(".fly.dev") or host.endswith(".railway.app"):
-        return "hosted_service:" + host
-    return host or "unknown_host"
-
-
-def _upstream_endpoint_group(path: str) -> str:
-    # Keep endpoint names useful for diagnosis without recording queries or IDs.
-    cleaned = re.sub(r"/movie-\d+(?=/|$)", "/movie-{id}", path or "/")
-    cleaned = re.sub(r"(?<=/)\d+(?=/|$)", "{id}", cleaned)
-    cleaned = re.sub(r"/[0-9a-fA-F]{32,}(?=/|$)", "/{token-or-hash}", cleaned)
-    pieces = [piece for piece in cleaned.split("/") if piece]
-    return "/" + "/".join(pieces[:4]) if pieces else "/"
-
-
-def _record_upstream_request(url: Any, status_code: int | None = None, failed: bool = False) -> None:
-    try:
-        parsed = urlsplit(str(url))
-        provider = _upstream_provider_name(parsed.hostname or "")
-        endpoint = _upstream_endpoint_group(parsed.path)
-        feature_key = str(_UPSTREAM_FEATURE.get()) + " | " + provider + " " + endpoint
-        by_feature = _CACHE_DIAGNOSTICS["upstream_by_feature"]
-        by_feature[feature_key] = int(by_feature.get(feature_key) or 0) + 1
-        _CACHE_DIAGNOSTICS["upstream_requests"] += 1
-        if failed:
-            _CACHE_DIAGNOSTICS["upstream_failures"] += 1
-        by_provider = _CACHE_DIAGNOSTICS["upstream_by_provider"]
-        by_provider[provider] = int(by_provider.get(provider) or 0) + 1
-        by_endpoint = _CACHE_DIAGNOSTICS["upstream_by_endpoint"]
-        endpoint_key = provider + " " + endpoint
-        by_endpoint[endpoint_key] = int(by_endpoint.get(endpoint_key) or 0) + 1
-        status_key = "network_error" if failed else (
-            str(status_code) if status_code is not None else "no_status"
-        )
-        statuses = _CACHE_DIAGNOSTICS["upstream_status_codes"]
-        statuses[status_key] = int(statuses.get(status_key) or 0) + 1
-    except Exception:
-        # Observability must never break the request that it measures.
-        return
-
-
-class _InstrumentedAsyncClient(httpx.AsyncClient):
-    """Count backend HTTP sends, including calls made through client.stream()."""
-
-    async def send(self, request: httpx.Request, *args: Any, **kwargs: Any) -> httpx.Response:
-        try:
-            response = await super().send(request, *args, **kwargs)
-        except Exception:
-            _record_upstream_request(request.url, failed=True)
-            raise
-        _record_upstream_request(request.url, status_code=response.status_code)
-        return response
-
+from cache_diagnostics import (
+    _CACHE_DIAGNOSTICS,
+    _CACHE_DIAGNOSTICS_STARTED_AT,
+    _UPSTREAM_FEATURE,
+    _InstrumentedAsyncClient,
+    _record_cache_event,
+    _record_upstream_request,
+    _upstream_provider_name,
+    _upstream_endpoint_group,
+)
 
 APP_NAME = "Torrent Studio API"
 logger = logging.getLogger("torrent-studio")
@@ -11508,12 +11417,12 @@ def _cache_file_snapshot(name: str, path: Path, *, bundled: bool = False) -> dic
         payload = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(payload, dict):
             groups: dict[str, int] = {}
-            for key in ("items", "catalogues", "queries", "movies", "results", "ratings", "entries", "records", "pages"):
+            for key in ("items", "catalogues", "queries", "movies", "results", "ratings", "entries", "records", "pages", "shows"):
                 value = payload.get(key)
                 if isinstance(value, (dict, list)):
                     groups[key] = len(value)
             row["entryGroups"] = groups
-            for key in ("items", "movies", "results", "entries", "records", "ratings", "catalogues", "pages"):
+            for key in ("items", "movies", "results", "entries", "records", "ratings", "catalogues", "pages", "shows"):
                 if key in groups:
                     row["entryCount"] = groups[key]
                     break
@@ -11546,6 +11455,8 @@ async def api_cache_report():
     runtime_paths["regional_movie_prebuilt_cache.json"] = REGIONAL_MOVIE_PREBUILT_CACHE_PATH
     runtime_paths["classics_web_series_tv_catalogue.json"] = Path(os.getenv("APP_DATA_DIR", "/app/data")) / "classics_web_series_tv_catalogue.json"
     runtime_paths["classics_anime_tv_catalogue.json"] = Path(os.getenv("APP_DATA_DIR", "/app/data")) / "classics_anime_tv_catalogue.json"
+    runtime_paths["nexstream_cache.json"] = Path(os.getenv("NEXSTREAM_CACHE_PATH", "/app/data/nexstream_cache.json"))
+    runtime_paths["nexstream_episode_metadata_cache.json"] = Path(os.getenv("NEXSTREAM_EPISODE_CACHE_PATH", "/app/data/nexstream_episode_metadata_cache.json"))
     for key, path in _EXTRA_CATALOGUE_PATHS.items():
         runtime_paths["catalogue:" + key] = path
     runtime_files = [
@@ -11661,7 +11572,8 @@ async def api_cache_report():
         "notes": [
             "File entry counts describe saved inventory; they are not cache-hit counts.",
             "Cache event counters measure only the explicitly instrumented cache decision points.",
-            "Outbound HTTP counts cover backend requests issued through httpx.AsyncClient, grouped by provider and endpoint without query strings or credentials.",
+            "Outbound HTTP counts cover backend requests issued through instrumented httpx clients, grouped by provider and endpoint without query strings or credentials.",
+            "NexStream search and episode caches are measured by the shared diagnostics module; frontend localStorage hit counts and Vercel serverless cache hits are outside this backend report.",
             "A cache hit means that path returned or reused an entry; outbound request totals show actual httpx requests attempted by this worker.",
         ],
     }
