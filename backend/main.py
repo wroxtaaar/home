@@ -118,15 +118,15 @@ def _record_upstream_request(url: Any, status_code: int | None = None, failed: b
 
 
 class _InstrumentedAsyncClient(httpx.AsyncClient):
-    """Count actual outbound HTTP requests from backend httpx call sites."""
+    """Count backend HTTP sends, including calls made through client.stream()."""
 
-    async def request(self, method: str, url: Any, *args: Any, **kwargs: Any) -> httpx.Response:
+    async def send(self, request: httpx.Request, *args: Any, **kwargs: Any) -> httpx.Response:
         try:
-            response = await super().request(method, url, *args, **kwargs)
+            response = await super().send(request, *args, **kwargs)
         except Exception:
-            _record_upstream_request(url, failed=True)
+            _record_upstream_request(request.url, failed=True)
             raise
-        _record_upstream_request(url, status_code=response.status_code)
+        _record_upstream_request(request.url, status_code=response.status_code)
         return response
 
 
@@ -7948,8 +7948,10 @@ async def _tmdb_discovered_company_ids(franchise: str) -> list[str]:
     now = time.monotonic()
     cached = _tmdb_company_id_cache.get(normalized)
     if cached and now - cached[0] < TMDB_COMPANY_CACHE_SECONDS:
+        _record_cache_event("tmdb_company_ids", "memory_hit")
         return cached[1]
 
+    _record_cache_event("tmdb_company_ids", "miss")
     task = _tmdb_company_inflight.get(normalized)
     if task is None or task.done():
         task = asyncio.create_task(_tmdb_load_company_ids(normalized))
@@ -8240,7 +8242,9 @@ _MARVEL_TV_CATALOGUE_CACHE: dict[str, Any] = {"expiresAt": 0.0, "payload": None}
 _DC_TV_CATALOGUE_CACHE: dict[str, Any] = {"expiresAt": 0.0, "payload": None}
 def _load_persistent_tv_catalogue(cache: dict[str, Any], path: Path) -> dict[str, Any] | None:
     """Load a completed TV catalogue from persistent storage; it has no time-based expiry."""
+    store = "tv_catalogue:" + path.stem
     if cache.get("payload"):
+        _record_cache_event(store, "memory_hit")
         return cache["payload"]
     try:
         with path.open("r", encoding="utf-8") as handle:
@@ -8254,10 +8258,13 @@ def _load_persistent_tv_catalogue(cache: dict[str, Any], path: Path) -> dict[str
             and all(isinstance(item, dict) and isinstance(item.get("streamingProviders"), list) for item in payload["results"])
         ):
             cache.update({"expiresAt": float("inf"), "payload": payload})
+            _record_cache_event(store, "persistent_hit")
+            _record_cache_event(store, "persistent_rows_served", len(payload["results"]))
             logger.info("Loaded persistent TV catalogue cache %s (%d titles)", path.name, len(payload["results"]))
             return payload
     except (OSError, json.JSONDecodeError) as exc:
         logger.debug("Persistent TV catalogue cache unavailable at %s: %s", path, exc)
+    _record_cache_event(store, "miss")
     return None
 
 
@@ -8519,11 +8526,14 @@ async def _get_classics_tv_catalogue(catalogue_key: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Unknown Classics TV catalogue.")
     cached = _CLASSICS_TV_CATALOGUE_CACHE.get(catalogue_key)
     if cached is not None:
+        _record_cache_event("classics_tv:" + catalogue_key, "memory_hit")
         return cached
     bundled = _load_bundled_classics_tv_cache(catalogue_key)
     if bundled is not None:
+        _record_cache_event("classics_tv:" + catalogue_key, "bundled_hit")
         _CLASSICS_TV_CATALOGUE_CACHE[catalogue_key] = bundled
         return bundled
+    _record_cache_event("classics_tv:" + catalogue_key, "miss")
     if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
         raise HTTPException(status_code=503, detail="TMDB credentials are not configured.")
     semaphore = asyncio.Semaphore(3)
@@ -8824,14 +8834,18 @@ async def api_tmdb_regional_tv_catalogue(catalogue_key: str, page: int = Query(1
     # Use only pages explicitly marked as verified by this endpoint.
     prebuilt = _read_regional_tv_prebuilt_page(catalogue_key, page)
     if prebuilt is not None:
+        _record_cache_event("regional_tv_catalogue", "prebuilt_hit")
         return prebuilt
+    _record_cache_event("regional_tv_catalogue", "prebuilt_miss")
 
     country, language, sort_by = configs[catalogue_key]
     cache_key = (catalogue_key, page)
     cached = _REGIONAL_TV_DISCOVERY_CACHE.get(cache_key)
     cache_ttl = 900 if catalogue_key.endswith("-trending") else 21600
     if cached and time.monotonic() - cached[0] < cache_ttl and not exclude_indian_broadcast_networks:
+        _record_cache_event("regional_tv_catalogue", "memory_hit")
         return await filter_cached_networks(cached[1])
+    _record_cache_event("regional_tv_catalogue", "discovery_miss")
     if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
         raise HTTPException(status_code=503, detail="TMDB credentials are not configured.")
 
@@ -9089,14 +9103,18 @@ async def _fetch_paginated_regional_movie_catalogue(catalogue_key: str, page: in
         source_payload = cached[1] if cached and (
             not is_trending or time.monotonic() - cached[0] < 900
         ) else None
+        if source_payload is not None:
+            _record_cache_event("regional_movie_source_page", "memory_hit")
         if cached and source_payload is None:
             _tmdb_movie_catalogue_cache.pop(cache_key, None)
         if source_payload is None and not is_trending:
             persistent = _read_tmdb_persistent_cache(cache_key)
             if persistent:
+                _record_cache_event("regional_movie_source_page", "persistent_hit")
                 source_payload = persistent[1]
                 _tmdb_movie_catalogue_cache[cache_key] = (time.monotonic(), source_payload)
         if source_payload is None:
+            _record_cache_event("regional_movie_source_page", "miss")
             source_payload = await _tmdb_fetch_movie_catalogue(catalogue_key, source_page, True)
             _tmdb_movie_catalogue_cache[cache_key] = (time.monotonic(), source_payload)
             if not is_trending:
@@ -9703,6 +9721,7 @@ app.router.add_event_handler("startup", _warm_extra_catalogues_on_startup)
 @app.get("/api/catalogue/ott/search")
 async def api_search_saved_ott(titles: list[str] = Query(..., min_length=1, max_length=80)):
     """Look up saved OTT enrichment by title from persistent franchise catalogue caches only."""
+    _record_cache_event("saved_ott_title_search", "lookup")
     source_paths = [MARVEL_CATALOGUE_PATH, *_EXTRA_CATALOGUE_PATHS.values()]
     saved_rows: list[dict[str, Any]] = []
     seen_rows: set[tuple[str, str]] = set()
@@ -9811,6 +9830,9 @@ async def api_search_saved_ott(titles: list[str] = Query(..., min_length=1, max_
             matches.append({"query": request["title"], "found": True, "entries": candidates[:3]})
         else:
             matches.append({"query": request["title"], "found": False, "entries": []})
+    matched_count = sum(1 for item in matches if item.get("found"))
+    _record_cache_event("saved_ott_title_search", "title_hit" if matched_count else "title_miss")
+    _record_cache_event("saved_ott_title_search", "matched_rows", sum(len(item.get("entries") or []) for item in matches))
     return {"status": "ready", "results": matches}
 
 
