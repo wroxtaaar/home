@@ -8282,6 +8282,7 @@ _CLASSICS_TV_CATALOGUES: dict[str, list[tuple[str, int]]] = {
         ("True Detective", 2014), ("Billions", 2016),
         ("The Studio", 2025), ("Secret Level", 2024),
         ("Love, Death & Robots", 2019), ("Two and a Half Men", 2003),
+        ("Person of Interest", 2011),
     ],
     "classics-anime": [
         ("Death Note", 2006), ("Attack on Titan", 2013), ("Code Geass", 2006),
