@@ -10429,7 +10429,8 @@ async def api_search_metadata(q: str = Query(..., min_length=2, max_length=160))
             if row_key in requested_keys:
                 cached_results.append(candidate)
         if cached_results:
-            _record_cache_event("search_metadata", "persistent_title_hit", len(cached_results))
+            _record_cache_event("search_metadata", "persistent_title_hit")
+            _record_cache_event("search_metadata", "persistent_rows_served", len(cached_results))
             cached_response = {
                 "status": "ready",
                 "query": query,
@@ -11590,6 +11591,40 @@ async def api_cache_report():
         store: dict(events)
         for store, events in sorted(_CACHE_DIAGNOSTICS["cache_events"].items())
     }
+    explicit_cache_hits = sum(
+        int(count)
+        for events in cache_events.values()
+        for event, count in events.items()
+        if "hit" in event
+    )
+    explicit_cache_misses = sum(
+        int(count)
+        for events in cache_events.values()
+        for event, count in events.items()
+        if "miss" in event or "bypass" in event
+    )
+    blocked_live_lookups = sum(
+        int(count)
+        for events in cache_events.values()
+        for event, count in events.items()
+        if "blocked" in event
+    )
+    availability_live_lookup_events = sum(
+        int(count)
+        for events in cache_events.values()
+        for event, count in events.items()
+        if "live_provider_lookup" in event
+    )
+    cache_use_summary = {
+        "explicitCacheHitEvents": explicit_cache_hits,
+        "explicitCacheMissOrBypassEvents": explicit_cache_misses,
+        "blockedLiveLookupEvents": blocked_live_lookups,
+        "availabilityLiveLookupEvents": availability_live_lookup_events,
+        "hitRatePercentAmongExplicitHitMissEvents": round(
+            100 * explicit_cache_hits / (explicit_cache_hits + explicit_cache_misses), 2
+        ) if explicit_cache_hits + explicit_cache_misses else None,
+        "scope": "Only explicitly instrumented cache-decision points. Not a whole-app hit rate or catalogue-row percentage.",
+    }
     upstream = {
         "requests": int(_CACHE_DIAGNOSTICS["upstream_requests"]),
         "failures": int(_CACHE_DIAGNOSTICS["upstream_failures"]),
@@ -11614,6 +11649,7 @@ async def api_cache_report():
         "ottCacheOnly": os.getenv("OTT_CACHE_ONLY", "false").strip().casefold() in {"1", "true", "yes", "on"},
         "uptimeSeconds": max(0, int(now - _CACHE_DIAGNOSTICS_STARTED_AT)),
         "cacheEvents": cache_events,
+        "cacheUseSummary": cache_use_summary,
         "outboundHttp": upstream,
         "memoryCacheSizes": memory_stores,
         "runtimeCacheFiles": runtime_files,
