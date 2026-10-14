@@ -7939,7 +7939,7 @@ MARVEL_WEB_SERIES: tuple[tuple[str, int], ...] = (
     ("I Am Groot", 2022), ("Marvel Studios: Legends", 2021),
     ("Moon Girl and Devil Dinosaur", 2023), ("Spidey and His Amazing Friends", 2021),
     ("Marvel's Avengers", 2018), ("Marvel Rising", 2018), ("Iron Man and His Awesome Friends", 2025),
-    ("Avengers Assemble", 2013), ("Legion", 2017), ("The Gifted", 2017), ("Agents of S.H.I.E.L.D.", 2013),
+    ("Legion", 2017), ("The Gifted", 2017), ("Agents of S.H.I.E.L.D.", 2013),
     ("Agent Carter", 2015), ("Inhumans", 2017), ("Runaways", 2017), ("Cloak & Dagger", 2018),
     ("Daredevil", 2015), ("Jessica Jones", 2015), ("Luke Cage", 2016), ("Iron Fist", 2017),
     ("The Defenders", 2017), ("The Punisher", 2017), ("Helstrom", 2020), ("Blade: The Series", 2006),
