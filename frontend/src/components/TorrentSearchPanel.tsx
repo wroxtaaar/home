@@ -944,8 +944,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [tmdbCacheMessage, setTmdbCacheMessage] = useState('');
 
   const tmdbFranchiseLabels: Record<FranchiseTmdbKey, string> = {
-    marvel: 'Marvel Movies',
-    'dc-live-action': 'DC Live-Action',
+    marvel: 'Marvel',
+    'dc-live-action': 'DC',
     'dc-animated': 'DC Animated',
   };
   const [streamingOnly, setStreamingOnly] = useState(false);
@@ -3207,19 +3207,16 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     }
   };
 
-  const selectCachedFranchiseLanguage = (franchise: CachedFranchiseKey, language: 'english' | 'hindi') => {
+  const selectCachedFranchise = (franchise: CachedFranchiseKey) => {
     setOpenCachedLanguageMenu(null);
     setResolutionFilter(null);
     setSizeSort(null);
     setTimeSort(null);
     setReleaseYearSort(null);
     setTmdbFranchiseKey(franchise);
-    const mode = franchise === 'marvel'
-      ? (language === 'hindi' ? 'marvel-hindi' : 'marvel')
-      : (language === 'hindi' ? 'dc-live-action-hindi' : 'dc-live-action');
-    const category = franchise === 'marvel' ? 'Marvel Movies' : 'DC Live-Action Movies';
-    const languageLabel = language === 'hindi' ? 'Hindi' : 'English';
-    void runSearch(undefined, category + ' (' + languageLabel + ')', mode);
+    const mode = franchise === 'marvel' ? 'marvel' : 'dc-live-action';
+    const category = franchise === 'marvel' ? 'Marvel' : 'DC';
+    void runSearch(undefined, category, mode);
   };
 
   const extractedQuality = (result: TorrentSearchResult) => {
@@ -3367,33 +3364,17 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
 
           {([
-            ['marvel', '🦸 Marvel Movies'],
-            ['dc-live-action', '🦇 DC Live-Action'],
+            ['marvel', '🦸 Marvel'],
+            ['dc-live-action', '🦇 DC'],
           ] as const).map(([franchise, label]) => (
-            <div key={franchise} data-cached-language-menu="true" className="relative">
-              <button
-                type="button"
-                aria-expanded={openCachedLanguageMenu === franchise}
-                onClick={() => setOpenCachedLanguageMenu(current => current === franchise ? null : franchise)}
-                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
-              >
-                {label} <span className="ml-1 text-[10px]">▾</span>
-              </button>
-              {openCachedLanguageMenu === franchise && (
-                <div className="absolute left-0 top-full z-40 mt-1 min-w-[150px] overflow-hidden rounded-lg border border-slate-700 bg-slate-950 shadow-xl">
-                  {(['english', 'hindi'] as const).map(language => (
-                    <button
-                      key={language}
-                      type="button"
-                      onClick={() => selectCachedFranchiseLanguage(franchise, language)}
-                      className="block w-full px-3 py-2.5 text-left text-xs font-semibold text-slate-200 hover:bg-slate-800 hover:text-cyan-300"
-                    >
-                      {language === 'hindi' ? 'Hindi audio' : 'English audio'}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+            <button
+              key={franchise}
+              type="button"
+              onClick={() => selectCachedFranchise(franchise)}
+              className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
+            >
+              {label}
+            </button>
           ))}
 
           <button
@@ -3491,8 +3472,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               onChange={(event) => setTmdbFranchiseKey(event.target.value as FranchiseTmdbKey)}
               className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-2 py-2 text-xs text-slate-200 sm:flex-none"
             >
-              <option value="marvel">Marvel Movies</option>
-              <option value="dc-live-action">DC Live-Action</option>
+              <option value="marvel">Marvel</option>
+              <option value="dc-live-action">DC</option>
               <option value="dc-animated">DC Animated</option>
             </select>
             <button
