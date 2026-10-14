@@ -9784,7 +9784,7 @@ async def api_search_saved_ott(titles: list[str] = Query(..., min_length=1, max_
             continue
         year_value = row.get("year")
         title_identity = (
-            _normalize_title(re.sub(r"\\s*\\(?((?:19|20)\\d{2})\\)?\\s*$", "", raw_title)),
+            _normalize_title(re.sub(r"\s*\(?((?:19|20)\d{2})\)?\s*$", "", raw_title)),
             str(year_value or ""),
         )
         if title_identity in seen_rows:
