@@ -194,7 +194,7 @@ TMDB_SEARCH_METADATA_CACHE_FILE = Path(os.getenv("TMDB_SEARCH_METADATA_CACHE_FIL
 TMDB_SEARCH_METADATA_QUERY_TTL_SECONDS = max(3600, int(os.getenv("TMDB_SEARCH_METADATA_QUERY_TTL_SECONDS", str(30 * 24 * 60 * 60))))
 IMDB_RATING_CACHE_FILE = Path(os.getenv("IMDB_RATING_CACHE_FILE", "/app/data/imdb_rating_cache.json"))
 IMDB_RATING_CACHE_TTL_SECONDS = max(86400, int(os.getenv("IMDB_RATING_CACHE_TTL_SECONDS", str(30 * 24 * 60 * 60))))
-IMDB_RATING_LOOKUP_VERSION = 4
+IMDB_RATING_LOOKUP_VERSION = 5
 # Misses are re-checked sooner than hits: OMDb data and title matching improve over time.
 IMDB_RATING_NOT_FOUND_TTL_SECONDS = max(3600, int(os.getenv("IMDB_RATING_NOT_FOUND_TTL_SECONDS", str(24 * 60 * 60))))
 _OMDB_HTTP_CLIENT: httpx.AsyncClient | None = None
@@ -10238,6 +10238,7 @@ async def _fetch_imdb_rating(
     year: int,
     cache_key: str,
     media_type: str = "movie",
+    tmdb_id: int = 0,
 ) -> dict[str, Any]:
     global _OMDB_HTTP_CLIENT, _OMDB_RATE_LIMITED_UNTIL
     keys = _split_env_keys(os.getenv("OMDB_API_KEYS", ""), os.getenv("OMDB_API_KEY", ""))
@@ -10315,6 +10316,59 @@ async def _fetch_imdb_rating(
                 return None, "invalid_key"
         return payload, "ok"
 
+    async def lookup_by_tmdb_imdb_id(key: str) -> dict[str, Any] | None:
+        """Use TMDB's IMDb ID as an authoritative fallback when title search misses."""
+        if tmdb_id < 1:
+            return None
+        try:
+            tmdb_details = await _tmdb_get_json(
+                f"movie/{tmdb_id}",
+                {"language": "en-US"},
+                request_timeout=3.0,
+            )
+        except Exception as exc:
+            logger.info("TMDB IMDb-ID fallback failed for %s (%s): %s",
+                tmdb_id, type(exc).__name__, title)
+            return None
+
+        imdb_id = str(tmdb_details.get("imdb_id") or "").strip()
+        if not re.fullmatch(r"tt\d+", imdb_id):
+            return None
+        details, state = await call_omdb(key, {"i": imdb_id})
+        if state == "rate_limited":
+            return {**base, "status": "rate_limited", "reason": "OMDb rate limit reached", "cacheable": False}
+        if state != "ok" or not details or str(details.get("Response") or "").casefold() == "false":
+            return None
+
+        returned_id = str(details.get("imdbID") or "").strip()
+        returned_year_match = re.search(r"\b((?:18|19|20|21)\d{2})\b", str(details.get("Year") or ""))
+        returned_year = int(returned_year_match.group(1)) if returned_year_match else 0
+        returned_type = str(details.get("Type") or "").casefold()
+        wanted_type = "series" if normalized_type == "tv" else "movie"
+        if (
+            returned_id != imdb_id
+            or (year and returned_year and returned_year != year)
+            or (returned_type and returned_type != wanted_type)
+        ):
+            return None
+
+        raw_rating = str(details.get("imdbRating") or "").strip()
+        try:
+            imdb_rating = float(raw_rating) if raw_rating.casefold() != "n/a" else None
+        except (TypeError, ValueError):
+            imdb_rating = None
+        return {
+            **base,
+            "title": title,
+            "year": year or returned_year or None,
+            "status": "found",
+            "imdbRating": imdb_rating,
+            "imdbVotes": str(details.get("imdbVotes") or "").strip() or None,
+            "imdbId": imdb_id,
+            "imdbUrl": f"https://www.imdb.com/title/{imdb_id}/",
+            "ratingLookupSource": "tmdb_imdb_id",
+        }
+
     for key in ordered:
         if not _provider_key_available(provider, key):
             continue
@@ -10364,6 +10418,9 @@ async def _fetch_imdb_rating(
                         continue
                     candidates.append((0 if year and candidate_year == year else 1, row))
                 if not candidates:
+                    direct_match = await lookup_by_tmdb_imdb_id(key)
+                    if direct_match:
+                        return direct_match
                     return {**base, "status": "not_found", "reason": "OMDb returned no exact title/year match"}
                 candidates.sort(key=lambda item: item[0])
                 selected_id = str(candidates[0][1].get("imdbID") or "").strip()
@@ -10390,6 +10447,10 @@ async def _fetch_imdb_rating(
             or (returned_type and returned_type != wanted_type)
         ):
             # Never display another title's score just because OMDb returned a nearby match.
+            # TMDB's IMDb ID is safer than accepting a fuzzy title result.
+            direct_match = await lookup_by_tmdb_imdb_id(key)
+            if direct_match:
+                return direct_match
             return {
                 **base,
                 "status": "not_found",
@@ -10417,7 +10478,9 @@ async def _fetch_imdb_rating(
 
     return {**base, "status": "unavailable", "reason": "No usable OMDb key or transient upstream error", "cacheable": False}
 
-async def _get_imdb_rating_record(title: str, year: int, media_type: str = "movie") -> dict[str, Any]:
+async def _get_imdb_rating_record(
+    title: str, year: int, media_type: str = "movie", tmdb_id: int = 0
+) -> dict[str, Any]:
     normalized_type = "tv" if str(media_type or "movie").casefold() in {"tv", "series"} else "movie"
     cache_key = _imdb_rating_cache_key(title, year, normalized_type)
     cached = _load_imdb_rating_cache().get(cache_key)
@@ -10429,7 +10492,11 @@ async def _get_imdb_rating_record(title: str, year: int, media_type: str = "movi
         except (TypeError, ValueError):
             checked_at = lookup_version = 0
         if (
-            lookup_version >= IMDB_RATING_LOOKUP_VERSION
+            lookup_version >= (
+                IMDB_RATING_LOOKUP_VERSION
+                if cached.get("status") != "found" or cached.get("imdbRating") is None
+                else 4
+            )
             and checked_at
             and now - checked_at < (
                 IMDB_RATING_NOT_FOUND_TTL_SECONDS
@@ -10442,7 +10509,7 @@ async def _get_imdb_rating_record(title: str, year: int, media_type: str = "movi
     task = _IMDB_RATING_INFLIGHT.get(cache_key)
     if task is None or task.done():
         async def fetch_and_save() -> dict[str, Any]:
-            result = await _fetch_imdb_rating(title, year, cache_key, normalized_type)
+            result = await _fetch_imdb_rating(title, year, cache_key, normalized_type, tmdb_id)
             if result.get("status") in {"found", "not_found"} and result.get("cacheable", True):
                 result.pop("cacheable", None)
                 await _save_imdb_rating_cache_record(result)
@@ -10460,29 +10527,34 @@ async def _get_imdb_rating_record(title: str, year: int, media_type: str = "movi
 async def api_catalogue_imdb_ratings(
     titles: list[str] = Query(..., min_length=1, max_length=80),
     media_types: list[str] = Query(default=[]),
+    tmdb_ids: list[int] = Query(default=[]),
 ):
-    """Return cached IMDb ratings for requested movie or TV titles."""
-    requested: dict[str, tuple[str, int, str, str]] = {}
+    """Return cached IMDb ratings, using TMDB's IMDb ID to resolve ambiguous titles."""
+    requested: dict[str, tuple[str, int, str, str, int]] = {}
     for index, raw in enumerate(titles[:80]):
         title, year = _parse_imdb_rating_title(raw)
         if not title:
             continue
         supplied_type = media_types[index] if index < len(media_types) else "movie"
         media_type = "tv" if str(supplied_type or "movie").casefold() in {"tv", "series"} else "movie"
+        try:
+            tmdb_id = max(0, int(tmdb_ids[index])) if index < len(tmdb_ids) else 0
+        except (TypeError, ValueError):
+            tmdb_id = 0
         key = _imdb_rating_cache_key(title, year, media_type)
-        requested.setdefault(key, (title, year, media_type, raw))
+        requested.setdefault(key, (title, year, media_type, raw, tmdb_id))
     if not requested:
         return {"status": "ready", "results": []}
 
     results = await asyncio.gather(
         *(
-            _get_imdb_rating_record(title, year, media_type)
-            for title, year, media_type, _raw in requested.values()
+            _get_imdb_rating_record(title, year, media_type, tmdb_id)
+            for title, year, media_type, _raw, tmdb_id in requested.values()
         ),
         return_exceptions=True,
     )
     output = []
-    for (title, year, media_type, raw), result in zip(requested.values(), results):
+    for (title, year, media_type, raw, _tmdb_id), result in zip(requested.values(), results):
         if isinstance(result, Exception):
             logger.info("IMDb rating lookup failed for %r (%s)", title, type(result).__name__)
             output.append({

@@ -306,6 +306,7 @@ export const api = {
   async getImdbRatings(
     titles: string[],
     mediaTypes: Array<'movie' | 'tv'> = [],
+    tmdbIds: Array<number | string | null | undefined> = [],
     signal?: AbortSignal,
   ): Promise<{
     status: string;
@@ -324,6 +325,8 @@ export const api = {
       seen.add(key);
       params.append('titles', title);
       params.append('media_types', mediaType);
+      const tmdbId = Number(tmdbIds[index] || 0);
+      params.append('tmdb_ids', String(Number.isFinite(tmdbId) && tmdbId > 0 ? tmdbId : 0));
     });
     const res = await fetch(API_BASE + '/api/catalogue/imdb-ratings?' + params.toString(), {
       signal, credentials: 'include', cache: 'no-store',

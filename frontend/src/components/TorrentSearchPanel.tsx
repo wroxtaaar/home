@@ -3119,6 +3119,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         const candidate = {
           title: String(item.title || '').trim(),
           year: item.year,
+          tmdbId: Number(item.tmdbId || item.id) || undefined,
           mediaType: 'movie' as const,
         };
         // IMDb classifies One Last Kill as a TV special, while TMDB serves it
@@ -3130,17 +3131,19 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       ...searchMetadata.map(item => ({
         title: String(item.title || '').trim(),
         year: item.year,
+        tmdbId: Number(item.tmdbId || item.id) || undefined,
         mediaType: item.mediaType === 'tv' ? 'tv' as const : 'movie' as const,
       })),
     ].filter(item => item.title);
 
-    const pending = new Map<string, { title: string; mediaType: 'movie' | 'tv' }>();
+    const pending = new Map<string, { title: string; mediaType: 'movie' | 'tv'; tmdbId?: number }>();
     for (const item of candidates) {
       const key = imdbRatingKey(item.title, item.year, item.mediaType);
       if (!key.startsWith('movie||') && !key.startsWith('tv||') && !imdbRatingRequestedRef.current.has(key)) {
         pending.set(key, {
           title: imdbRatingQueryTitle(item.title, item.year),
           mediaType: item.mediaType,
+          tmdbId: item.tmdbId,
         });
       }
     }
@@ -3158,6 +3161,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     void api.getImdbRatings(
       requestItems.map(item => item.title),
       requestItems.map(item => item.mediaType),
+      requestItems.map(item => item.tmdbId),
     ).then(response => {
       const ratings = Array.isArray(response.results) ? response.results : [];
       let needsRetry = false;
