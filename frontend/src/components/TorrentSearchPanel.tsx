@@ -891,6 +891,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [openCachedLanguageMenu, setOpenCachedLanguageMenu] = useState<CachedFranchiseKey | null>(null);
   type MainCatalogueMenu = 'dc' | 'bollywood' | 'hollywood';
   const [openMainCatalogueMenu, setOpenMainCatalogueMenu] = useState<MainCatalogueMenu | null>(null);
+  type ActiveTopSection = 'marvel' | 'dc' | 'hollywood' | 'bollywood' | 'classics';
+  const [activeTopSection, setActiveTopSection] = useState<ActiveTopSection>('marvel');
   type RegionalCatalogueGroup = 'bollywood' | 'hollywood';
   type RegionalCatalogueMode = 'popular' | 'trending' | 'latest';
   const [openRegionalCatalogueMenu, setOpenRegionalCatalogueMenu] = useState<RegionalCatalogueGroup | null>(null);
@@ -3443,61 +3445,27 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         </form>
 
         <div className="mt-2 flex flex-wrap gap-2" aria-label="Movie catalogues">
-          <button
-            type="button"
-            onClick={() => selectCachedFranchise('marvel')}
-            className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
-          >🦸 Marvel</button>
-
-          <div className="relative" data-main-catalogue-menu="true">
-            <button type="button" aria-expanded={openMainCatalogueMenu === 'dc'}
-              onClick={() => setOpenMainCatalogueMenu(current => current === 'dc' ? null : 'dc')}
-              className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">
-              🦇 DC <span className="ml-1 text-[10px]">▾</span>
-            </button>
-            {openMainCatalogueMenu === 'dc' && (
-              <div className="absolute left-0 top-full z-40 mt-1 min-w-[190px] overflow-hidden rounded-lg border border-slate-700 bg-slate-950 shadow-xl">
-                <button type="button" onClick={() => { setOpenMainCatalogueMenu(null); selectCachedFranchise('dc-live-action'); }}
-                  className="block w-full px-3 py-2.5 text-left text-xs font-semibold text-slate-200 hover:bg-slate-800 hover:text-cyan-300">DC Movies</button>
-                <button type="button" onClick={() => { setOpenMainCatalogueMenu(null); setResolutionFilter(null); setSizeSort(null); setTimeSort(null); void runSearch(undefined, 'DC Animated Movies', 'dc-animated'); }}
-                  className="block w-full px-3 py-2.5 text-left text-xs font-semibold text-slate-200 hover:bg-slate-800 hover:text-cyan-300">DC Animated</button>
-              </div>
-            )}
-          </div>
-
-          {([
-            ['hollywood', '🎥 Hollywood'],
-            ['bollywood', '🎬 Bollywood'],
-          ] as const).map(([group, label]) => (
-            <div key={group} data-main-catalogue-menu="true" className="relative">
-              <button type="button" aria-expanded={openMainCatalogueMenu === group}
-                onClick={() => setOpenMainCatalogueMenu(current => current === group ? null : group)}
-                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">
-                {label} <span className="ml-1 text-[10px]">▾</span>
-              </button>
-              {openMainCatalogueMenu === group && (
-                <div className="absolute left-0 top-full z-40 mt-1 min-w-[190px] overflow-hidden rounded-lg border border-slate-700 bg-slate-950 shadow-xl">
-                  <div className="border-b border-slate-800 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-500">Movies</div>
-                  {(['popular', 'trending', 'latest'] as const).map(mode => (
-                    <button key={mode} type="button" onClick={() => { setOpenMainCatalogueMenu(null); openRegionalCatalogue(group, mode); }}
-                      className={'block w-full px-3 py-2 text-left text-xs font-semibold hover:bg-slate-800 hover:text-cyan-300 ' + (regionalCatalogueModes[group] === mode ? 'text-cyan-300' : 'text-slate-200')}>
-                      {mode.charAt(0).toUpperCase() + mode.slice(1)}{regionalCatalogueModes[group] === mode ? ' ✓' : ''}
-                    </button>
-                  ))}
-                  <div className="border-y border-slate-800 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-500">Web Series</div>
-                  {(['popular', 'trending', 'latest'] as const).map(mode => {
-                    const tvGroup = group === 'bollywood' ? 'indian' : 'hollywood';
-                    return <button key={'tv-' + mode} type="button" onClick={() => { setOpenMainCatalogueMenu(null); void openRegionalTvCatalogue(tvGroup, mode); }}
-                      className={'block w-full px-3 py-2 text-left text-xs font-semibold hover:bg-slate-800 hover:text-cyan-300 ' + (regionalTvModes[tvGroup] === mode ? 'text-cyan-300' : 'text-slate-200')}>
-                      {mode.charAt(0).toUpperCase() + mode.slice(1)}{regionalTvModes[tvGroup] === mode ? ' ✓' : ''}
-                    </button>;
-                  })}
-                </div>
-              )}
-            </div>
-          ))}
-          <button type="button" onClick={() => { setResolutionFilter(null); setSizeSort(null); setTimeSort(null); void runSearch(undefined, 'Classics', 'classics'); }}
-            className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">🎬 Classics</button>
+          <button type="button" onClick={() => { setActiveTopSection('marvel'); selectCachedFranchise('marvel'); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">🦸 Marvel</button>
+          <button type="button" onClick={() => { setActiveTopSection('dc'); selectCachedFranchise('dc-live-action'); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">🦇 DC</button>
+          <button type="button" onClick={() => { setActiveTopSection('hollywood'); openRegionalCatalogue('hollywood', regionalCatalogueModes.hollywood); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">🎥 Hollywood</button>
+          <button type="button" onClick={() => { setActiveTopSection('bollywood'); openRegionalCatalogue('bollywood', regionalCatalogueModes.bollywood); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">🎬 Bollywood</button>
+          <button type="button" onClick={() => { setActiveTopSection('classics'); setResolutionFilter(null); setSizeSort(null); setTimeSort(null); void runSearch(undefined, 'Classics', 'classics'); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300">🎬 Classics</button>
+        </div>
+        <div className="mt-2 flex flex-wrap gap-2 rounded-lg border border-slate-800 bg-slate-900 px-2.5 py-2.5" aria-label={activeTopSection + ' subsections'}>
+          {activeTopSection === 'marvel' && <>
+            {([['all','All'],['mcu','MCU'],['x-men','X-Men'],['sony','Spiderman']] as [MarvelFilmFilter,string][]).map(([filter,label]) => <button key={filter} type="button" onClick={() => setMarvelFilmFilter(filter)} className={marvelFilmFilter === filter ? 'rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'}>{label}</button>)}
+            <button type="button" onClick={() => { if (showMarvelWebSeries) setShowMarvelWebSeries(false); else void loadMarvelWebSeries(); }} className={showMarvelWebSeries ? 'rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'}>📺 Web Series</button>
+          </>}
+          {activeTopSection === 'dc' && <>
+            <button type="button" onClick={() => selectCachedFranchise('dc-live-action')} className={!showDcWebSeries ? 'rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800'}>Live Action</button>
+            <button type="button" onClick={() => { setResolutionFilter(null); setSizeSort(null); setTimeSort(null); setShowDcWebSeries(false); void runSearch(undefined, 'DC Animated Movies', 'dc-animated'); }} className="rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200">DC Animated</button>
+            <button type="button" onClick={() => { if (showDcWebSeries) setShowDcWebSeries(false); else void loadDcWebSeries(); }} className={showDcWebSeries ? 'rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800'}>📺 Web Series</button>
+          </>}
+          {(activeTopSection === 'hollywood' || activeTopSection === 'bollywood') && <>
+            {(['popular','trending','latest'] as RegionalCatalogueMode[]).map(mode => <button key={mode} type="button" onClick={() => openRegionalCatalogue(activeTopSection, mode)} className={regionalCatalogueModes[activeTopSection] === mode ? 'rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800'}>{mode.charAt(0).toUpperCase()+mode.slice(1)}</button>)}
+            <button type="button" onClick={() => void openRegionalTvCatalogue(activeTopSection === 'bollywood' ? 'indian' : 'hollywood', regionalTvModes[activeTopSection === 'bollywood' ? 'indian' : 'hollywood'])} className={regionalWebSeriesCatalogue ? 'rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800'}>📺 Web Series</button>
+          </>}
+          {activeTopSection === 'classics' && <button type="button" onClick={() => { setResolutionFilter(null); setSizeSort(null); setTimeSort(null); void runSearch(undefined, 'Classics', 'classics'); }} className="rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950">All Classics</button>}
         </div>
         <div className="mt-2 flex flex-col gap-2 rounded-lg border border-slate-800 bg-slate-950/70 p-2.5 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
