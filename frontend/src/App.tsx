@@ -6,6 +6,7 @@
 
 // Deployment marker: frontend is deployed from main via Vercel.
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { getInitialAppTab, type AppTab } from './app/navigation.ts';
 import {
   Cloud,
   Download,
@@ -147,16 +148,7 @@ export default function App() {
     }
   }, [seedrPat]);
 
-  const [activeTab, setActiveTab] = useState<'search' | 'files' | 'shared' | 'activity' | 'storage'>(() => {
-    try {
-      const saved = window.localStorage.getItem('seedflow_active_tab');
-      return saved === 'search' || saved === 'files' || saved === 'shared' || saved === 'activity' || saved === 'storage'
-        ? saved
-        : 'search';
-    } catch {
-      return 'search';
-    }
-  });
+  const [activeTab, setActiveTab] = useState<AppTab>(getInitialAppTab);
 
   // Treat the app's sections as browser-history states. Android back buttons
   // and swipe-back gestures therefore move from Files/other sections to Search
