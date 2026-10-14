@@ -5574,7 +5574,7 @@ _EXTRA_CATALOGUES["dc-live-action-hindi"] = {
 }
 _EXTRA_CATALOGUES["classics"] = {
     "file": "classics_catalogue.json",
-    "version": 1,
+    "version": 2,
     "refresh_days": 36500,
     "minimum_movies": 5,
     "mode": "fixed",
@@ -5645,6 +5645,14 @@ _EXTRA_CATALOGUES["classics"] = {
         ("Constantine", 2005),
         ("The Hitman's Bodyguard", 2017),
         ("The Hitman's Wife's Bodyguard", 2021),
+        ("Cast Away", 2000),
+        ("Dracula Untold", 2014),
+        ("Abraham Lincoln: Vampire Hunter", 2012),
+        ("300", 2006),
+        ("Escape Plan", 2013),
+        ("The Maze Runner", 2014),
+        ("The A-Team", 2010),
+        ("Skyscraper", 2018),
     ],
 }
 _EXTRA_CATALOGUES["marvel-hindi"] = {
