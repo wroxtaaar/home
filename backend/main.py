@@ -8263,6 +8263,99 @@ async def api_tmdb_dc_live_action_tv_catalogue(page: int = Query(1, ge=1, le=500
 
 
 
+
+# Curated Classics TV and anime catalogues. These use NexStream/TMDB cards,
+# not torrent searches.
+_CLASSICS_TV_CATALOGUES: dict[str, list[tuple[str, int]]] = {
+    "classics-web-series": [
+        ("Breaking Bad", 2008), ("Better Call Saul", 2015), ("Arrow", 2012),
+        ("The Flash", 2014), ("Marvel's Daredevil", 2015),
+    ],
+    "classics-anime": [
+        ("Death Note", 2006), ("Attack on Titan", 2013), ("Code Geass", 2006),
+        ("Monster", 2004), ("Dragon Ball", 1986), ("Dragon Ball Z", 1989),
+        ("Dragon Ball GT", 1996), ("Dragon Ball Super", 2015),
+        ("Dragon Ball Daima", 2024), ("Naruto", 2002),
+        ("Naruto: Shippuden", 2007), ("Bleach", 2004), ("One Piece", 1999),
+    ],
+}
+_CLASSICS_TV_CATALOGUE_CACHE: dict[str, dict[str, Any]] = {}
+
+
+async def _get_classics_tv_catalogue(catalogue_key: str) -> dict[str, Any]:
+    titles = _CLASSICS_TV_CATALOGUES.get(catalogue_key)
+    if titles is None:
+        raise HTTPException(status_code=404, detail="Unknown Classics TV catalogue.")
+    cached = _CLASSICS_TV_CATALOGUE_CACHE.get(catalogue_key)
+    if cached is not None:
+        return cached
+    if not (TMDB_READ_ACCESS_TOKENS or TMDB_API_KEYS):
+        raise HTTPException(status_code=503, detail="TMDB credentials are not configured.")
+    semaphore = asyncio.Semaphore(3)
+
+    async def resolve_series(title: str, year: int) -> dict[str, Any]:
+        fallback = {
+            "id": f"classics-tv:{re.sub(r'[^a-z0-9]+', '-', title.casefold()).strip('-')}:{year}",
+            "title": title, "year": year, "releaseDate": str(year), "overview": "",
+            "posterUrl": "", "backdropUrl": "", "rating": 0.0, "tmdbUrl": "",
+            "streamingProviders": [], "providerLink": "", "source": "Curated Classics list",
+        }
+        async with semaphore:
+            try:
+                payload = await _tmdb_get_json("search/tv", {
+                    "query": title, "first_air_date_year": year, "include_adult": "false",
+                    "language": "en-US", "page": 1,
+                })
+            except HTTPException as exc:
+                logger.info("TMDB Classics TV lookup failed for %s (%s): %s", title, year, exc.detail)
+                return fallback
+            target = _normalize_title(title)
+            candidates = [row for row in (payload.get("results") or []) if isinstance(row, dict) and row.get("id")]
+            candidates.sort(key=lambda row: (
+                _normalize_title(str(row.get("name") or "")) == target,
+                str(row.get("first_air_date") or "").startswith(str(year)),
+                float(row.get("popularity") or 0),
+            ), reverse=True)
+            if not candidates:
+                return fallback
+            item = candidates[0]
+            air_date = str(item.get("first_air_date") or "").strip()
+            year_match = re.match(r"^(\d{4})", air_date)
+            poster_path = str(item.get("poster_path") or "").strip()
+            backdrop_path = str(item.get("backdrop_path") or "").strip()
+            tmdb_id = int(item["id"])
+            return {
+                "id": tmdb_id, "title": title,
+                "year": int(year_match.group(1)) if year_match else year,
+                "releaseDate": air_date, "overview": str(item.get("overview") or "").strip(),
+                "posterUrl": TMDB_IMAGE_BASE + poster_path if poster_path else "",
+                "backdropUrl": "https://image.tmdb.org/t/p/w780" + backdrop_path if backdrop_path else "",
+                "rating": float(item.get("vote_average") or 0),
+                "tmdbUrl": f"https://www.themoviedb.org/tv/{tmdb_id}",
+                "streamingProviders": await _tv_streaming_providers(tmdb_id),
+                "providerLink": "", "source": "TMDB",
+            }
+
+    results = await asyncio.gather(*(resolve_series(title, year) for title, year in titles))
+    results.sort(key=lambda row: (str(row.get("releaseDate") or row.get("year") or ""), str(row.get("title") or "")), reverse=True)
+    result = {
+        "catalogue": catalogue_key, "page": 1, "totalPages": 1,
+        "totalResults": len(results), "provider": "TMDB + curated Classics list", "results": results,
+    }
+    _CLASSICS_TV_CATALOGUE_CACHE[catalogue_key] = result
+    return result
+
+
+@app.get("/api/tv/catalogue/classics-web-series")
+async def api_tmdb_classics_web_series_catalogue():
+    return await _get_classics_tv_catalogue("classics-web-series")
+
+
+@app.get("/api/tv/catalogue/classics-anime")
+async def api_tmdb_classics_anime_catalogue():
+    return await _get_classics_tv_catalogue("classics-anime")
+
+
 def _read_regional_tv_prebuilt_page(catalogue_key: str, page: int) -> dict[str, Any] | None:
     """Read one page from the persistent TV catalogue built by scripts/build_regional_movie_cache.py."""
     try:
