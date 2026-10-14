@@ -9424,6 +9424,12 @@ async def _resolve_marvel_tmdb_movie_id(title: str, year: int) -> tuple[int | No
     except (OSError, ValueError, TypeError, AttributeError):
         pass
 
+    # Render's OTT cache-only mode must not resolve unknown movie IDs over TMDB.
+    # The reviewed manifest above remains the allowed offline ID source.
+    if os.getenv("OTT_CACHE_ONLY", "false").strip().casefold() in {"1", "true", "yes", "on"}:
+        _record_cache_event("marvel_ott_backfill", "cache_only_id_miss_blocked")
+        return None, "cache_only_no_saved_id"
+
     errors = []
     for params in (
         {"query": title, "year": year, "include_adult": "false", "language": "en-US", "page": 1},
@@ -9743,6 +9749,53 @@ async def api_search_saved_ott(titles: list[str] = Query(..., min_length=1, max_
                 "tmdbId": tmdb_id or row.get("tmdbId"),
                 "ottAvailability": availability,
             })
+
+    # Also use title-to-TMDB-ID mappings in the general saved metadata/catalogue
+    # cache. This makes OTT entries reusable even when their title is not in a
+    # Marvel/DC/Classics catalogue snapshot.
+    try:
+        ott_disk = json.loads(TMDB_OTT_CACHE_FILE.read_text(encoding="utf-8"))
+        ott_items = ott_disk.get("items", {}) if isinstance(ott_disk, dict) else {}
+        if not isinstance(ott_items, dict):
+            ott_items = {}
+    except (OSError, ValueError, TypeError):
+        ott_items = {}
+
+    for row in _read_search_metadata_catalogue_rows():
+        if not isinstance(row, dict):
+            continue
+        raw_title = str(
+            row.get("catalogueTitle") or row.get("marvelCatalogueTitle")
+            or row.get("mediaTitle") or row.get("title") or row.get("name") or ""
+        ).strip()
+        if not raw_title:
+            continue
+        try:
+            tmdb_id = int(row.get("tmdbId") or row.get("id") or 0)
+        except (TypeError, ValueError):
+            tmdb_id = 0
+        if tmdb_id <= 0:
+            continue
+        availability = row.get("ottAvailability")
+        if not isinstance(availability, dict):
+            envelope = ott_items.get(_tmdb_ott_disk_key((tmdb_id, "IN")))
+            availability = envelope.get("payload") if isinstance(envelope, dict) else None
+        if not isinstance(availability, dict):
+            continue
+        year_value = row.get("year")
+        title_identity = (
+            _normalize_title(re.sub(r"\\s*\\(?((?:19|20)\\d{2})\\)?\\s*$", "", raw_title)),
+            str(year_value or ""),
+        )
+        if title_identity in seen_rows:
+            continue
+        seen_rows.add(title_identity)
+        saved_rows.append({
+            "title": raw_title,
+            "year": str(year_value or "") or None,
+            "tmdbId": tmdb_id,
+            "ottAvailability": availability,
+        })
 
     requested = []
     for raw in titles:
