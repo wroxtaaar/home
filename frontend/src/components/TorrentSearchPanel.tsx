@@ -3296,9 +3296,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
   useEffect(() => {
     const quiet = window.setTimeout(() => {
-      const availabilityBusy = Object.values(searchAvailabilityByGroup).some(item => item?.status === 'loading');
+      const availabilityBusy = (Object.values(searchAvailabilityByGroup) as Array<{ status?: string }>).some(item => item?.status === 'loading');
       const ottBusy = ottQueueRef.current.length > 0 || ottActiveWorkersRef.current > 0 ||
-        Object.values(ottAvailability).some(item => item?.status === 'loading');
+        (Object.values(ottAvailability) as Array<{ status?: string }>).some(item => item?.status === 'loading');
       if (!availabilityBusy && !ottBusy && imdbInFlightRef.current === 0) {
         setHighQualityPostersReady(true);
       }
