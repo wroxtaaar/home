@@ -5662,6 +5662,7 @@ _CACHE_SEED_FILES = (
     "dc_live_action_catalogue.json",
     "dc_live_action_hindi_catalogue.json",
     "classics_catalogue.json",
+    "regional_tv_prebuilt_cache.json",
     "latest_bollywood_catalogue.json",
     "latest_hollywood_catalogue.json",
     "marvel_catalogue.json",
@@ -5709,6 +5710,7 @@ def _seed_bundled_catalogue_caches() -> None:
             "BOLLYWOOD_TORRENT_CATALOGUE_PATH",
             str(Path(os.getenv("APP_DATA_DIR", "/app/data")) / "bollywood_torrent_matched_catalogue.json"),
         )),
+        "regional_tv_prebuilt_cache.json": REGIONAL_TV_PREBUILT_CACHE_FILE,
     }
     for filename in _CACHE_SEED_FILES:
         source = _CACHE_SEED_DIR / filename
