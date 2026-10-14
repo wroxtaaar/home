@@ -936,7 +936,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     setResolutionFilter(null);
     setSizeSort(null);
     setTimeSort(null);
-    setReleaseYearSort(null);
     void openMovieCatalogue(key, label, 1);
   };
 
@@ -1057,7 +1056,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [marvelFilmFilter, setMarvelFilmFilter] = useState<MarvelFilmFilter>('all');
   const [isMarvelEnglishResults, setIsMarvelEnglishResults] = useState(false);
   const [showMarvelWebSeries, setShowMarvelWebSeries] = useState(false);
-  const [releaseYearSort, setReleaseYearSort] = useState<'newest' | 'oldest' | null>(null);
   const [isDcLiveActionEnglishResults, setIsDcLiveActionEnglishResults] = useState(false);
 
   const visibleMovieCatalogueItems = useMemo(() => {
@@ -1103,20 +1101,18 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     if (isDcLiveActionEnglishResults) {
       movies = movies.filter(movie => !/batman\s*:\s*mask of the phantasm/i.test(String(movie.title || '')));
     }
-    if (releaseYearSort) {
-      movies = [...movies].sort((a, b) => {
-        const yearA = Number(a.year) || Number(String(a.title || '').match(/\b(?:19|20)\d{2}\b/)?.[0]) || 0;
-        const yearB = Number(b.year) || Number(String(b.title || '').match(/\b(?:19|20)\d{2}\b/)?.[0]) || 0;
-        if (!yearA && !yearB) return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true });
-        if (!yearA) return 1;
-        if (!yearB) return -1;
-        if (yearA !== yearB) return releaseYearSort === 'oldest' ? yearA - yearB : yearB - yearA;
-        return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true });
-      });
-    }
+    movies = [...movies].sort((a, b) => {
+      const yearA = Number(a.year) || Number(String(a.title || '').match(/\b(?:19|20)\d{2}\b/)?.[0]) || 0;
+      const yearB = Number(b.year) || Number(String(b.title || '').match(/\b(?:19|20)\d{2}\b/)?.[0]) || 0;
+      if (!yearA && !yearB) return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true });
+      if (!yearA) return 1;
+      if (!yearB) return -1;
+      if (yearA !== yearB) return yearB - yearA;
+      return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true });
+    });
     if (streamingOnly) movies = movies.filter(movie => ottAvailability[String(movie.id)]?.status === 'streaming');
     return movies;
-  }, [movieCatalogue, streamingOnly, ottAvailability, isMarvelEnglishResults, showMarvelWebSeries, marvelFilmFilter, isDcLiveActionEnglishResults, releaseYearSort]);
+  }, [movieCatalogue, streamingOnly, ottAvailability, isMarvelEnglishResults, showMarvelWebSeries, marvelFilmFilter, isDcLiveActionEnglishResults]);
 
   const ottPendingCount = movieCatalogue?.results.filter(movie => {
     const status = ottAvailability[String(movie.id)]?.status;
@@ -1894,7 +1890,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     setShowMarvelWebSeries(false);
     setShowDcWebSeries(false);
     const yearSortedFranchiseModes = new Set(['marvel', 'marvel-hindi', 'dc-live-action', 'dc-live-action-hindi', 'dc-animated']);
-    setReleaseYearSort(searchMode && yearSortedFranchiseModes.has(searchMode) ? 'newest' : null);
     setMovieTorrentSearchError('');
     setMovieTorrentPreviewCatalogueId(null);
     movieTorrentSearchControllerRef.current?.abort();
@@ -3012,7 +3007,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       });
     }
 
-    if (!releaseYearSort) return groups;
     // Sort whole movie groups, never individual torrent variants.
     return [...groups].sort((a, b) => {
       const yearA = torrentGroupReleaseYear(a);
@@ -3020,10 +3014,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       if (!yearA && !yearB) return normalizeGroupTitle(a.title).localeCompare(normalizeGroupTitle(b.title), undefined, { numeric: true });
       if (!yearA) return 1;
       if (!yearB) return -1;
-      if (yearA !== yearB) return releaseYearSort === 'newest' ? yearB - yearA : yearA - yearB;
+      if (yearA !== yearB) return yearB - yearA;
       return normalizeGroupTitle(a.title).localeCompare(normalizeGroupTitle(b.title), undefined, { numeric: true });
     });
-  }, [sortedResults, releaseYearSort, isMarvelEnglishResults, showMarvelWebSeries, marvelFilmFilter]);
+  }, [sortedResults, isMarvelEnglishResults, showMarvelWebSeries, marvelFilmFilter]);
 
   // Search cards can come from the prebuilt Marvel/DC/Bollywood/Hollywood
   // catalogues and therefore aren't necessarily related to the text the user
@@ -3212,7 +3206,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     setResolutionFilter(null);
     setSizeSort(null);
     setTimeSort(null);
-    setReleaseYearSort(null);
     setTmdbFranchiseKey(franchise);
     const mode = franchise === 'marvel' ? 'marvel' : 'dc-live-action';
     const category = franchise === 'marvel' ? 'Marvel' : 'DC';
@@ -3383,8 +3376,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               setResolutionFilter(null);
               setSizeSort(null);
               setTimeSort(null);
-              setReleaseYearSort(null);
-              void runSearch(undefined, 'DC Animated Movies', 'dc-animated');
+                        void runSearch(undefined, 'DC Animated Movies', 'dc-animated');
             }}
             className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
           >
@@ -3397,8 +3389,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               setResolutionFilter(null);
               setSizeSort(null);
               setTimeSort(null);
-              setReleaseYearSort(null);
-              void runSearch(undefined, 'Classics', 'classics');
+                        void runSearch(undefined, 'Classics', 'classics');
             }}
             className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-300"
           >
@@ -3483,8 +3474,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 setResolutionFilter(null);
                 setSizeSort(null);
                 setTimeSort(null);
-                setReleaseYearSort(null);
-                void openMovieCatalogue(tmdbFranchiseKey, tmdbFranchiseLabels[tmdbFranchiseKey], 1);
+                            void openMovieCatalogue(tmdbFranchiseKey, tmdbFranchiseLabels[tmdbFranchiseKey], 1);
               }}
               className="shrink-0 rounded-lg bg-cyan-500 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-50"
             >
@@ -4081,7 +4071,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         <div className="space-y-2">
           <div className="rounded-xl border border-slate-800 bg-slate-900 px-2.5 py-2.5">
             <div className="flex items-center gap-2 overflow-x-auto">
-              <button type="button" onClick={() => { setSizeSort(null); setTimeSort(null); setReleaseYearSort(current => current === null ? 'newest' : current === 'newest' ? 'oldest' : null); }} className={releaseYearSort ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950 shadow-[0_0_14px_rgba(34,211,238,0.45)]' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={Boolean(releaseYearSort)} title="Sort movie cards by release year: newest first, oldest first, then default ranking">{releaseYearSort === 'newest' ? 'Year ↓ Newest' : releaseYearSort === 'oldest' ? 'Year ↑ Oldest' : 'Year'}</button>
               {isDcLiveActionEnglishResults && (
                 <button type="button" onClick={() => { if (showDcWebSeries) setShowDcWebSeries(false); else void loadDcWebSeries(); }} className={showDcWebSeries ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={showDcWebSeries} title="Show DC live-action web series">📺 Web Series</button>
               )}
@@ -4208,7 +4197,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       if (yearA !== yearB) {
                         if (!yearA) return 1;
                         if (!yearB) return -1;
-                        return releaseYearSort === 'oldest' ? yearA - yearB : yearB - yearA;
+                        return yearB - yearA;
                       }
                       return a.title.localeCompare(b.title);
                     }).map(show => (
@@ -4286,7 +4275,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                         if (!yearA && !yearB) return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true });
                         if (!yearA) return 1;
                         if (!yearB) return -1;
-                        if (yearA !== yearB) return releaseYearSort === 'oldest' ? yearA - yearB : yearB - yearA;
+                        if (yearA !== yearB) return yearB - yearA;
                         return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true });
                       })
                       .map(show => (
@@ -4346,7 +4335,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       </article>
                     ))}
                   </div>
-                  {marvelWebSeriesCatalogue.page < marvelWebSeriesCatalogue.totalPages && <button type="button" disabled={marvelWebSeriesLoading} onClick={async () => { setMarvelWebSeriesLoading(true); setMarvelWebSeriesError(''); try { const nextPage = await api.getTvCatalogue('marvel', marvelWebSeriesCatalogue.page + 1); setMarvelWebSeriesCatalogue(current => current ? { ...nextPage, page: nextPage.page, results: [...current.results, ...nextPage.results.filter(item => !current.results.some(existing => String(existing.id) === String(item.id)))].sort((a, b) => { const yearA = Number(a.year) || Number(String(a.releaseDate || '').slice(0, 4)) || 0; const yearB = Number(b.year) || Number(String(b.releaseDate || '').slice(0, 4)) || 0; if (!yearA && !yearB) return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true }); if (!yearA) return 1; if (!yearB) return -1; if (yearA !== yearB) return releaseYearSort === 'oldest' ? yearA - yearB : yearB - yearA; return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true }); }) } : nextPage); } catch (error: any) { setMarvelWebSeriesError(String(error?.message || 'Could not load more series.')); } finally { setMarvelWebSeriesLoading(false); } }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-semibold text-slate-200 hover:border-cyan-500 disabled:opacity-50">Load more</button>}
+                  {marvelWebSeriesCatalogue.page < marvelWebSeriesCatalogue.totalPages && <button type="button" disabled={marvelWebSeriesLoading} onClick={async () => { setMarvelWebSeriesLoading(true); setMarvelWebSeriesError(''); try { const nextPage = await api.getTvCatalogue('marvel', marvelWebSeriesCatalogue.page + 1); setMarvelWebSeriesCatalogue(current => current ? { ...nextPage, page: nextPage.page, results: [...current.results, ...nextPage.results.filter(item => !current.results.some(existing => String(existing.id) === String(item.id)))].sort((a, b) => { const yearA = Number(a.year) || Number(String(a.releaseDate || '').slice(0, 4)) || 0; const yearB = Number(b.year) || Number(String(b.releaseDate || '').slice(0, 4)) || 0; if (!yearA && !yearB) return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true }); if (!yearA) return 1; if (!yearB) return -1; if (yearA !== yearB) return yearB - yearA; return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true }); }) } : nextPage); } catch (error: any) { setMarvelWebSeriesError(String(error?.message || 'Could not load more series.')); } finally { setMarvelWebSeriesLoading(false); } }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-semibold text-slate-200 hover:border-cyan-500 disabled:opacity-50">Load more</button>}
                 </>
               )}
             </div>
