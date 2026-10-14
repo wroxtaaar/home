@@ -351,6 +351,31 @@ function torrentGroupReleaseYear(group: TorrentQualityGroup): number {
   return 0;
 }
 
+function releaseDateSortValue(item: { releaseDate?: string | null; year?: number | string | null }): number {
+  const rawDate = String(item.releaseDate || '').trim();
+  // TMDB release dates are ISO YYYY-MM-DD. Use the full date so later months
+  // sort ahead of earlier months within the same year.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+    const timestamp = Date.parse(rawDate + 'T00:00:00Z');
+    if (Number.isFinite(timestamp)) return timestamp;
+  }
+  const year = Number(item.year) || Number(rawDate.slice(0, 4)) || 0;
+  return year ? Date.UTC(year, 0, 1) : 0;
+}
+
+function compareReleaseDateDescending(
+  a: { title?: string; releaseDate?: string | null; year?: number | string | null },
+  b: { title?: string; releaseDate?: string | null; year?: number | string | null },
+): number {
+  const dateA = releaseDateSortValue(a);
+  const dateB = releaseDateSortValue(b);
+  if (!dateA && !dateB) return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true });
+  if (!dateA) return 1;
+  if (!dateB) return -1;
+  if (dateA !== dateB) return dateB - dateA;
+  return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true });
+}
+
 function torrentResultKey(result: TorrentSearchResult): string {
   return String(result.guid || result.infoHash || result.magnetUrl || result.downloadUrl || result.title);
 }
@@ -4257,16 +4282,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 <>
                   <div className="px-1 text-xs text-slate-400">{dcWebSeriesCatalogue.totalResults.toLocaleString()} DC web series · Page {dcWebSeriesCatalogue.page} of {dcWebSeriesCatalogue.totalPages.toLocaleString()} · Metadata by TMDB</div>
                   <div className="grid grid-cols-2 items-stretch gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
-                    {[...dcWebSeriesCatalogue.results].sort((a, b) => {
-                      const yearA = Number(a.year) || 0;
-                      const yearB = Number(b.year) || 0;
-                      if (yearA !== yearB) {
-                        if (!yearA) return 1;
-                        if (!yearB) return -1;
-                        return yearB - yearA;
-                      }
-                      return a.title.localeCompare(b.title);
-                    }).map(show => (
+                    {[...dcWebSeriesCatalogue.results].sort(compareReleaseDateDescending).map(show => (
                       <article key={String(show.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-cyan-500/40 hover:bg-slate-900/95 flex flex-col">
                         <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} aria-label={`Find ${show.title} on NexStream`} className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950 text-left cursor-pointer">
                           {show.posterUrl ? <img src={lowQualityPosterUrl(show.posterUrl)} alt={show.title} loading="eager" onLoad={event => {
@@ -4335,15 +4351,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   <div className="px-1 text-xs text-slate-400">{marvelWebSeriesCatalogue.totalResults.toLocaleString()} Marvel web series · Page {marvelWebSeriesCatalogue.page} of {marvelWebSeriesCatalogue.totalPages.toLocaleString()} · Metadata by TMDB</div>
                   <div className="grid grid-cols-2 items-stretch gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
                     {[...marvelWebSeriesCatalogue.results]
-                      .sort((a, b) => {
-                        const yearA = Number(a.year) || Number(String(a.releaseDate || '').slice(0, 4)) || 0;
-                        const yearB = Number(b.year) || Number(String(b.releaseDate || '').slice(0, 4)) || 0;
-                        if (!yearA && !yearB) return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true });
-                        if (!yearA) return 1;
-                        if (!yearB) return -1;
-                        if (yearA !== yearB) return yearB - yearA;
-                        return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true });
-                      })
+                      .sort((a, b) => compareReleaseDateDescending)
                       .map(show => (
                       <article key={String(show.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-cyan-500/40 hover:bg-slate-900/95 flex flex-col">
                         <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} aria-label={`Find ${show.title} on NexStream`} className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950 text-left cursor-pointer">
@@ -4401,7 +4409,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       </article>
                     ))}
                   </div>
-                  {marvelWebSeriesCatalogue.page < marvelWebSeriesCatalogue.totalPages && <button type="button" disabled={marvelWebSeriesLoading} onClick={async () => { setMarvelWebSeriesLoading(true); setMarvelWebSeriesError(''); try { const nextPage = await api.getTvCatalogue('marvel', marvelWebSeriesCatalogue.page + 1); setMarvelWebSeriesCatalogue(current => current ? { ...nextPage, page: nextPage.page, results: [...current.results, ...nextPage.results.filter(item => !current.results.some(existing => String(existing.id) === String(item.id)))].sort((a, b) => { const yearA = Number(a.year) || Number(String(a.releaseDate || '').slice(0, 4)) || 0; const yearB = Number(b.year) || Number(String(b.releaseDate || '').slice(0, 4)) || 0; if (!yearA && !yearB) return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true }); if (!yearA) return 1; if (!yearB) return -1; if (yearA !== yearB) return yearB - yearA; return String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true }); }) } : nextPage); } catch (error: any) { setMarvelWebSeriesError(String(error?.message || 'Could not load more series.')); } finally { setMarvelWebSeriesLoading(false); } }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-semibold text-slate-200 hover:border-cyan-500 disabled:opacity-50">Load more</button>}
+                  {marvelWebSeriesCatalogue.page < marvelWebSeriesCatalogue.totalPages && <button type="button" disabled={marvelWebSeriesLoading} onClick={async () => { setMarvelWebSeriesLoading(true); setMarvelWebSeriesError(''); try { const nextPage = await api.getTvCatalogue('marvel', marvelWebSeriesCatalogue.page + 1); setMarvelWebSeriesCatalogue(current => current ? { ...nextPage, page: nextPage.page, results: [...current.results, ...nextPage.results.filter(item => !current.results.some(existing => String(existing.id) === String(item.id)))].sort(compareReleaseDateDescending) } : nextPage); } catch (error: any) { setMarvelWebSeriesError(String(error?.message || 'Could not load more series.')); } finally { setMarvelWebSeriesLoading(false); } }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-semibold text-slate-200 hover:border-cyan-500 disabled:opacity-50">Load more</button>}
                 </>
               )}
             </div>
