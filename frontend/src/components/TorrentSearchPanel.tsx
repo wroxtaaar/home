@@ -1216,7 +1216,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   };
 
   // Use w500 TMDB posters consistently across cards while keeping non-TMDB URLs unchanged.
-  const lowQualityPosterUrl = (value: unknown, size: 'w342' | 'w500' | 'w780' = 'w500') => {
+  const lowQualityPosterUrl = (value: unknown, size: 'w185' | 'w342' | 'w500' | 'w780' = 'w342') => {
     const url = String(value || '').trim();
     if (!url) return '';
     try {
@@ -3608,7 +3608,20 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               {nexStreamResults.filter(item => item.type === 'tv').map(item => (
                 <article key={'nexstream-tv-' + item.id} className="min-w-0 overflow-hidden rounded-xl border border-violet-500/25 bg-slate-950">
                   <div className="aspect-[2/3] bg-slate-900">
-                    {item.poster ? <img src={lowQualityPosterUrl(item.poster)} alt={item.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="flex h-full items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
+                    {item.poster ? <img src={lowQualityPosterUrl(item.poster)} alt={item.title} loading="eager" onLoad={event => {
+                            const image = event.currentTarget;
+                            if (!image.dataset.highQualityTried && image.currentSrc.includes('/t/p/w342/')) {
+                              image.dataset.highQualityTried = 'true';
+                              image.src = image.currentSrc.replace('/t/p/w342/', '/t/p/w780/');
+                            }
+                          }} className="h-full w-full object-cover" onError={event => {
+                            const image = event.currentTarget;
+                            if (image.dataset.highQualityTried === 'true' && image.src.includes('/t/p/w780/')) {
+                              image.src = image.src.replace('/t/p/w780/', '/t/p/w342/');
+                              return;
+                            }
+                            image.style.display = 'none';
+                          }} /> : <div className="flex h-full items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
                   </div>
                   <div className="flex flex-col gap-2 p-2.5">
                     <h4 className="line-clamp-2 text-sm font-bold text-slate-100">{item.title}</h4>
@@ -4142,7 +4155,20 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 {regionalWebSeriesCatalogue.results.map(show => (
                   <article key={String(show.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 flex flex-col">
                     <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} aria-label={`Find ${show.title} on NexStream`} className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950 text-left cursor-pointer">
-                      {show.posterUrl ? <img src={lowQualityPosterUrl(show.posterUrl)} alt={show.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="absolute inset-0 flex items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
+                      {show.posterUrl ? <img src={lowQualityPosterUrl(show.posterUrl)} alt={show.title} loading="eager" onLoad={event => {
+                            const image = event.currentTarget;
+                            if (!image.dataset.highQualityTried && image.currentSrc.includes('/t/p/w342/')) {
+                              image.dataset.highQualityTried = 'true';
+                              image.src = image.currentSrc.replace('/t/p/w342/', '/t/p/w780/');
+                            }
+                          }} className="h-full w-full object-cover" onError={event => {
+                            const image = event.currentTarget;
+                            if (image.dataset.highQualityTried === 'true' && image.src.includes('/t/p/w780/')) {
+                              image.src = image.src.replace('/t/p/w780/', '/t/p/w342/');
+                              return;
+                            }
+                            image.style.display = 'none';
+                          }} /> : <div className="absolute inset-0 flex items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
                       {show.rating ? <span className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300">⭐ {show.rating.toFixed(1)}/10</span> : null}
                     </button>
                     <div className="flex flex-1 flex-col gap-2 p-2.5">
@@ -4197,7 +4223,20 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     }).map(show => (
                       <article key={String(show.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-cyan-500/40 hover:bg-slate-900/95 flex flex-col">
                         <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} aria-label={`Find ${show.title} on NexStream`} className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950 text-left cursor-pointer">
-                          {show.posterUrl ? <img src={lowQualityPosterUrl(show.posterUrl)} alt={show.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="absolute inset-0 flex items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
+                          {show.posterUrl ? <img src={lowQualityPosterUrl(show.posterUrl)} alt={show.title} loading="eager" onLoad={event => {
+                            const image = event.currentTarget;
+                            if (!image.dataset.highQualityTried && image.currentSrc.includes('/t/p/w342/')) {
+                              image.dataset.highQualityTried = 'true';
+                              image.src = image.currentSrc.replace('/t/p/w342/', '/t/p/w780/');
+                            }
+                          }} className="h-full w-full object-cover" onError={event => {
+                            const image = event.currentTarget;
+                            if (image.dataset.highQualityTried === 'true' && image.src.includes('/t/p/w780/')) {
+                              image.src = image.src.replace('/t/p/w780/', '/t/p/w342/');
+                              return;
+                            }
+                            image.style.display = 'none';
+                          }} /> : <div className="absolute inset-0 flex items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
                           {show.rating ? <span className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow">⭐ {show.rating.toFixed(1)}/10</span> : null}
                         </button>
                         <div className="flex flex-1 flex-col gap-2 p-2.5">
@@ -4252,7 +4291,20 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                     {marvelWebSeriesCatalogue.results.map(show => (
                       <article key={String(show.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-cyan-500/40 hover:bg-slate-900/95 flex flex-col">
                         <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} aria-label={`Find ${show.title} on NexStream`} className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950 text-left cursor-pointer">
-                          {show.posterUrl ? <img src={lowQualityPosterUrl(show.posterUrl)} alt={show.title} loading="lazy" className="h-full w-full object-cover" onError={event => { event.currentTarget.style.display = 'none'; }} /> : <div className="absolute inset-0 flex items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
+                          {show.posterUrl ? <img src={lowQualityPosterUrl(show.posterUrl)} alt={show.title} loading="eager" onLoad={event => {
+                            const image = event.currentTarget;
+                            if (!image.dataset.highQualityTried && image.currentSrc.includes('/t/p/w342/')) {
+                              image.dataset.highQualityTried = 'true';
+                              image.src = image.currentSrc.replace('/t/p/w342/', '/t/p/w780/');
+                            }
+                          }} className="h-full w-full object-cover" onError={event => {
+                            const image = event.currentTarget;
+                            if (image.dataset.highQualityTried === 'true' && image.src.includes('/t/p/w780/')) {
+                              image.src = image.src.replace('/t/p/w780/', '/t/p/w342/');
+                              return;
+                            }
+                            image.style.display = 'none';
+                          }} /> : <div className="absolute inset-0 flex items-center justify-center text-slate-600"><Film className="h-8 w-8" /></div>}
                           {show.rating ? <span className="absolute left-2 top-2 rounded-md border border-amber-300/60 bg-slate-950/95 px-2 py-1 text-[10px] font-bold text-amber-300 shadow">⭐ {show.rating.toFixed(1)}/10</span> : null}
                         </button>
                         <div className="flex flex-1 flex-col gap-2 p-2.5">
