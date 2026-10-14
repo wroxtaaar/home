@@ -23,6 +23,7 @@ CATALOGUES = [
     "dc_live_action_catalogue.json",
     "dc_live_action_hindi_catalogue.json",
     "dc_animated_catalogue.json",
+    "classics_catalogue.json",
 ]
 
 STATE_FILE = BASE / "ott_enrichment_state.json"

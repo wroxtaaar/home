@@ -89,6 +89,7 @@ jobs:
             dc_live_action_catalogue.json \
             dc_live_action_hindi_catalogue.json \
             dc_animated_catalogue.json \
+            classics_catalogue.json \
             latest_hollywood_catalogue.json \
             latest_bollywood_catalogue.json; do
             if test -f "$DATA_DIR/$name"; then sudo -n chmod 644 "$DATA_DIR/$name"; fi
@@ -113,6 +114,7 @@ jobs:
             dc_live_action_catalogue.json \
             dc_live_action_hindi_catalogue.json \
             dc_animated_catalogue.json \
+            classics_catalogue.json \
             latest_hollywood_catalogue.json \
             latest_bollywood_catalogue.json; do
             echo "Downloading enriched $name"
@@ -128,7 +130,8 @@ jobs:
             backend/cache-seed/marvel_hindi_catalogue.json \
             backend/cache-seed/dc_live_action_catalogue.json \
             backend/cache-seed/dc_live_action_hindi_catalogue.json \
-            backend/cache-seed/dc_animated_catalogue.json
+            backend/cache-seed/dc_animated_catalogue.json \
+            backend/cache-seed/classics_catalogue.json
 
           if git diff --cached --quiet; then
             echo "Bundled cache snapshots already match the enriched VPS files."

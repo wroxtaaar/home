@@ -27,6 +27,7 @@ CATALOGUES = (
     ("dc-live-action", main._EXTRA_CATALOGUE_PATHS["dc-live-action"]),
     ("dc-live-action-hindi", main._EXTRA_CATALOGUE_PATHS["dc-live-action-hindi"]),
     ("dc-animated", main._EXTRA_CATALOGUE_PATHS["dc-animated"]),
+    ("classics", main._EXTRA_CATALOGUE_PATHS["classics"]),
 )
 THREED_RE = re.compile(r"(?:^|[^a-z0-9])3[ ._-]*d(?:$|[^a-z0-9])", re.I)
 EXCLUDED_KEYS = ("avengersconfidentialblackwidowpunisher", "ironmanrisetechnovore")
