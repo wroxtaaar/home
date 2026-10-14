@@ -4089,29 +4089,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
       {(results.length > 0 || regionalWebSeriesLoading || Boolean(regionalWebSeriesError) || Boolean(regionalWebSeriesCatalogue)) && (
         <div className="space-y-2">
-          <div className="rounded-xl border border-slate-800 bg-slate-900 px-2.5 py-2.5">
-            <div className="flex items-center gap-2 overflow-x-auto">
-              {isDcLiveActionEnglishResults && (
-                <button type="button" onClick={() => { if (showDcWebSeries) setShowDcWebSeries(false); else void loadDcWebSeries(); }} className={showDcWebSeries ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={showDcWebSeries} title="Show DC live-action web series">📺 Web Series</button>
-              )}
-              {isMarvelEnglishResults && showMarvelWebSeries && (
-                <button type="button" onClick={() => setShowMarvelWebSeries(false)} className="shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200" title="Return to Marvel movies">🎬 Movies</button>
-              )}
-              {isMarvelEnglishResults && !showMarvelWebSeries && (
-                <>
-                  {([
-                    ['all', 'All'],
-                    ['mcu', 'MCU'],
-                    ['x-men', 'X-Men'],
-                    ['sony', 'Spiderman'],
-                  ] as [MarvelFilmFilter, string][]).map(([filter, label]) => (
-                    <button key={filter} type="button" onClick={() => setMarvelFilmFilter(filter)} className={marvelFilmFilter === filter ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950 shadow-[0_0_14px_rgba(34,211,238,0.25)]' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={marvelFilmFilter === filter}>{label}</button>
-                  ))}
-                  <button type="button" onClick={() => { if (showMarvelWebSeries) setShowMarvelWebSeries(false); else void loadMarvelWebSeries(); }} className={showMarvelWebSeries ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={showMarvelWebSeries} title="Show Marvel web series">📺 Web Series</button>
-                </>
-              )}
-            </div>
-          </div>
+          <div className="px-1 text-[11px] text-slate-500">Use the subsection buttons above to switch catalogue views.</div>
 
           <div className="flex items-center justify-between gap-2 px-1">
             <div className="text-xs text-slate-400">
