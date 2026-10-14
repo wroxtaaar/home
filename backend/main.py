@@ -36,8 +36,12 @@ _CACHE_DIAGNOSTICS: dict[str, Any] = {
     "upstream_failures": 0,
     "upstream_by_provider": {},
     "upstream_by_endpoint": {},
+    "upstream_by_feature": {},
     "upstream_status_codes": {},
 }
+
+
+_UPSTREAM_FEATURE = contextvars.ContextVar("cache_diagnostics_feature", default="background")
 
 
 def _record_cache_event(store: str, event: str, count: int = 1) -> None:
@@ -92,6 +96,9 @@ def _record_upstream_request(url: Any, status_code: int | None = None, failed: b
         parsed = urlsplit(str(url))
         provider = _upstream_provider_name(parsed.hostname or "")
         endpoint = _upstream_endpoint_group(parsed.path)
+        feature_key = str(_UPSTREAM_FEATURE.get()) + " | " + provider + " " + endpoint
+        by_feature = _CACHE_DIAGNOSTICS["upstream_by_feature"]
+        by_feature[feature_key] = int(by_feature.get(feature_key) or 0) + 1
         _CACHE_DIAGNOSTICS["upstream_requests"] += 1
         if failed:
             _CACHE_DIAGNOSTICS["upstream_failures"] += 1
@@ -482,6 +489,22 @@ class SeedrError(Exception):
 
 
 app = FastAPI(title=APP_NAME)
+
+
+def _diagnostic_feature_for_path(path: str) -> str:
+    cleaned = re.sub(r"/movie-\d+(?=/|$)", "/movie-{id}", path or "/")
+    cleaned = re.sub(r"(?<=/)\d+(?=/|$)", "{id}", cleaned)
+    return "request:" + cleaned[:120]
+
+
+@app.middleware("http")
+async def _set_upstream_diagnostic_feature(request: Request, call_next):
+    token = _UPSTREAM_FEATURE.set(_diagnostic_feature_for_path(request.url.path))
+    try:
+        return await call_next(request)
+    finally:
+        _UPSTREAM_FEATURE.reset(token)
+
 
 @app.exception_handler(SeedrError)
 async def handle_seedr_error(request: Request, exc: SeedrError):
@@ -8255,6 +8278,10 @@ def _save_persistent_tv_catalogue(path: Path, payload: dict[str, Any]) -> None:
 
 async def _tv_streaming_providers(tmdb_id: int) -> list[dict[str, Any]]:
     """Resolve India streaming/rent/buy providers for one TMDB TV series."""
+    if os.getenv("OTT_CACHE_ONLY", "false").strip().casefold() in {"1", "true", "yes", "on"}:
+        _record_cache_event("tv_streaming_availability", "cache_only_miss_blocked")
+        return []
+    _record_cache_event("tv_streaming_availability", "live_provider_lookup")
     try:
         payload = await _tmdb_get_json(f"tv/{tmdb_id}/watch/providers", {})
     except Exception as exc:
@@ -9597,6 +9624,12 @@ async def _enrich_classics_movie_ott_cache() -> None:
                             changed = True
                             return
 
+                    # In cache-only mode, a missing OTT entry must not fan out into
+                    # Watchmode/TMDB title-search calls just to obtain an ID for a backfill.
+                    if os.getenv("OTT_CACHE_ONLY", "false").strip().casefold() in {"1", "true", "yes", "on"}:
+                        _record_cache_event("classics_ott_enrichment", "cache_only_miss_skipped")
+                        return
+
                     # Only resolve metadata when there is no usable cached OTT entry.
                     metadata = await asyncio.wait_for(_lookup_catalogue_synopsis(title, year, tmdb_id), timeout=15)
                     resolved_id = int((metadata or {}).get("tmdbId") or (metadata or {}).get("id") or tmdb_id)
@@ -9942,6 +9975,78 @@ async def _api_search_availability_impl(q: str) -> dict[str, Any]:
         return cached[1]
 
     _record_cache_event("availability_search", "miss")
+    if os.getenv("OTT_CACHE_ONLY", "false").strip().casefold() in {"1", "true", "yes", "on"}:
+        # This endpoint previously searched Watchmode/TMDB directly, bypassing the
+        # movie-ID OTT cache-only guard. Reuse saved, title-matched OTT enrichment.
+        try:
+            saved_payload = await api_search_saved_ott(titles=[query])
+        except Exception:
+            saved_payload = {"results": []}
+        saved_results = saved_payload.get("results") if isinstance(saved_payload, dict) else []
+        saved_match = next((
+            item for item in saved_results
+            if isinstance(item, dict) and _availability_normalize_title(item.get("query")) == _availability_normalize_title(query)
+        ), {})
+        saved_entries = saved_match.get("entries") if isinstance(saved_match, dict) else []
+        matches: list[dict[str, Any]] = []
+        merged_providers: list[dict[str, Any]] = []
+        seen_providers: set[tuple[str, str]] = set()
+        for entry in saved_entries if isinstance(saved_entries, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            availability = entry.get("ottAvailability")
+            if not isinstance(availability, dict):
+                continue
+            providers: list[dict[str, Any]] = []
+            for source_field, kind in (
+                ("streamingProviders", "subscription"),
+                ("rentProviders", "rent"),
+                ("buyProviders", "buy"),
+            ):
+                for provider in availability.get(source_field) or []:
+                    if not isinstance(provider, dict):
+                        continue
+                    name = str(provider.get("name") or "").strip()
+                    if not name:
+                        continue
+                    normalized_provider = {
+                        "providerId": provider.get("providerId"),
+                        "name": name,
+                        "region": str(availability.get("region") or "IN").upper(),
+                        "type": kind,
+                        "webUrl": str(provider.get("webUrl") or availability.get("providerLink") or ""),
+                        "logoUrl": str(provider.get("logoUrl") or ""),
+                    }
+                    providers.append(normalized_provider)
+                    identity = (name.casefold(), kind)
+                    if identity not in seen_providers:
+                        seen_providers.add(identity)
+                        merged_providers.append(normalized_provider)
+            matches.append({
+                "id": str(entry.get("tmdbId") or ""),
+                "tmdbId": entry.get("tmdbId"),
+                "title": str(entry.get("title") or query),
+                "year": entry.get("year"),
+                "type": "movie",
+                "providers": providers[:24],
+                "status": "ready" if providers else "not_confirmed",
+                "source": str(availability.get("source") or "Saved OTT cache"),
+            })
+        result = {
+            "status": "ready" if merged_providers else ("not_confirmed" if matches else "not_cached"),
+            "query": query,
+            "title": matches[0].get("title", query) if matches else query,
+            "year": matches[0].get("year") if matches else None,
+            "matches": matches[:10],
+            "providers": merged_providers[:24],
+            "source": "Saved OTT cache",
+            "cacheOnly": True,
+            "message": "" if matches else "No saved OTT entry matched this title; live provider lookups are disabled on this service.",
+        }
+        _watchmode_search_cache[cache_key] = (time.time(), result)
+        _record_cache_event("availability_search", "cache_only_saved_hit" if matches else "cache_only_miss_blocked")
+        return result
+
     timeout = httpx.Timeout(8.0, connect=3.0)
     target = _availability_normalize_title(query)
     primary_matches: list[dict[str, Any]] = []
@@ -11357,6 +11462,10 @@ async def api_cache_report():
         os.getenv("BOLLYWOOD_TORRENT_CATALOGUE_PATH", str(Path(os.getenv("APP_DATA_DIR", "/app/data")) / "bollywood_torrent_matched_catalogue.json"))
     )
     runtime_paths["torrent_metadata_cache"] = TORRENT_METADATA_CACHE_FILE
+    runtime_paths["regional_tv_prebuilt_cache.json"] = REGIONAL_TV_PREBUILT_CACHE_FILE
+    runtime_paths["regional_movie_prebuilt_cache.json"] = REGIONAL_MOVIE_PREBUILT_CACHE_PATH
+    runtime_paths["classics_web_series_tv_catalogue.json"] = Path(os.getenv("APP_DATA_DIR", "/app/data")) / "classics_web_series_tv_catalogue.json"
+    runtime_paths["classics_anime_tv_catalogue.json"] = Path(os.getenv("APP_DATA_DIR", "/app/data")) / "classics_anime_tv_catalogue.json"
     for key, path in _EXTRA_CATALOGUE_PATHS.items():
         runtime_paths["catalogue:" + key] = path
     runtime_files = [
@@ -11415,6 +11524,11 @@ async def api_cache_report():
             key=lambda pair: pair[1],
             reverse=True,
         )[:100]),
+        "byFeature": dict(sorted(
+            _CACHE_DIAGNOSTICS["upstream_by_feature"].items(),
+            key=lambda pair: pair[1],
+            reverse=True,
+        )[:150]),
         "statusCodes": dict(sorted(_CACHE_DIAGNOSTICS["upstream_status_codes"].items())),
     }
     now = time.time()
