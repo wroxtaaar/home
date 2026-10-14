@@ -1145,7 +1145,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         const rawTitle = String(movie.title || '');
         const title = rawTitle.replace(/\s*\(?((?:19|20)\d{2})\)?\s*$/, '').trim();
         const year = Number(movie.year || rawTitle.match(/\b(?:19|20)\d{2}\b/)?.[0] || 0);
-        return !(year === 1977 && /^the amazing spider[- ]?man$/i.test(title));
+        return !(year === 1977 && /^(?:the )?amazing spider[- ]?man$/i.test(title));
       });
     }
     if (isMarvelEnglishResults && !showMarvelWebSeries && marvelFilmFilter !== 'all') {
@@ -3068,7 +3068,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         const rawTitle = String(group.title || '');
         const title = normalizeGroupTitle(rawTitle.replace(/\s*\(?((?:19|20)\d{2})\)?\s*$/, ''));
         const year = Number(group.year || rawTitle.match(/\b(?:19|20)\d{2}\b/)?.[0] || 0);
-        return !(year === 1977 && /^the amazing spider man$/i.test(title));
+        return !(year === 1977 && /^(?:the )?amazing spider man$/i.test(title));
       });
     }
     if (isMarvelEnglishResults && !showMarvelWebSeries && marvelFilmFilter !== 'all') {
