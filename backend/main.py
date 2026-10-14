@@ -9395,7 +9395,28 @@ async def _enrich_classics_movie_ott_cache() -> None:
                     resolved_id = int((metadata or {}).get("tmdbId") or (metadata or {}).get("id") or tmdb_id)
                     if resolved_id <= 0:
                         return
-                    availability = await asyncio.wait_for(_tmdb_fetch_movie_ott_availability(resolved_id, "IN"), timeout=18)
+                    cache_key = (resolved_id, "IN")
+                    availability = None
+                    # Prefer the shared OTT cache before making any provider request.
+                    # This also lets Favourites reuse data fetched by movie cards and
+                    # other catalogue sections instead of re-querying Watchmode/TMDB.
+                    memory = _tmdb_ott_cache.get(cache_key)
+                    if memory and isinstance(memory[1], dict):
+                        age = max(0.0, time.monotonic() - memory[0])
+                        if age < _tmdb_ott_ttl(memory[1]):
+                            availability = memory[1]
+                    if availability is None:
+                        persistent = _read_tmdb_ott_persistent_cache(cache_key)
+                        if persistent and isinstance(persistent[1], dict):
+                            age = max(0.0, time.time() - persistent[0])
+                            if age < _tmdb_ott_ttl(persistent[1]):
+                                availability = persistent[1]
+                                _tmdb_ott_cache[cache_key] = (time.monotonic() - age, availability)
+                    if availability is None:
+                        availability = await asyncio.wait_for(_tmdb_fetch_movie_ott_availability(resolved_id, "IN"), timeout=18)
+                        if isinstance(availability, dict):
+                            _write_tmdb_ott_persistent_cache(cache_key, availability)
+                            _tmdb_ott_cache[cache_key] = (time.monotonic(), availability)
                     if not isinstance(availability, dict) or str(availability.get("status") or "").casefold() in {"unknown", "error", "pending"}:
                         return
                     row["tmdbId"] = resolved_id
@@ -9449,7 +9470,7 @@ async def api_search_saved_ott(titles: list[str] = Query(..., min_length=1, max_
             continue
         rows = payload.get("results", []) if isinstance(payload, dict) else []
         for row in rows if isinstance(rows, list) else []:
-            if not isinstance(row, dict) or not isinstance(row.get("ottAvailability"), dict):
+            if not isinstance(row, dict):
                 continue
             title = str(row.get("catalogueTitle") or row.get("marvelCatalogueTitle") or row.get("mediaTitle") or row.get("title") or "").strip()
             if not title:
@@ -9458,12 +9479,32 @@ async def api_search_saved_ott(titles: list[str] = Query(..., min_length=1, max_
             identity = (_normalize_title(re.sub(r"\s*\(?((?:19|20)\d{2})\)?\s*$", "", title)), year)
             if identity in seen_rows:
                 continue
+            availability = row.get("ottAvailability")
+            tmdb_id = row.get("tmdbId")
+            try:
+                tmdb_id = int(tmdb_id or 0)
+            except (TypeError, ValueError):
+                tmdb_id = 0
+            # Catalogue rows are not the only source of saved OTT data. The shared
+            # runtime cache is bundled into the image and may already contain a
+            # result for this TMDB ID even when the catalogue row predates enrichment.
+            if not isinstance(availability, dict) and tmdb_id > 0:
+                cached = _tmdb_ott_cache.get((tmdb_id, "IN"))
+                if cached and isinstance(cached[1], dict):
+                    availability = cached[1]
+                if not isinstance(availability, dict):
+                    persistent = _read_tmdb_ott_persistent_cache((tmdb_id, "IN"))
+                    if persistent and isinstance(persistent[1], dict):
+                        availability = persistent[1]
+                        _tmdb_ott_cache[(tmdb_id, "IN")] = (time.monotonic(), availability)
+            if not isinstance(availability, dict):
+                continue
             seen_rows.add(identity)
             saved_rows.append({
                 "title": title,
                 "year": year or None,
-                "tmdbId": row.get("tmdbId"),
-                "ottAvailability": row.get("ottAvailability"),
+                "tmdbId": tmdb_id or row.get("tmdbId"),
+                "ottAvailability": availability,
             })
 
     requested = []
