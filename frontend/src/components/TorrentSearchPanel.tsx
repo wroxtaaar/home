@@ -101,7 +101,9 @@ function writePersistentNexStreamEpisodeCache(key: string, payload: NexStreamEpi
     // Storage can be unavailable or full. In-memory caching still works.
   }
 }
-const POSTER_TITLE_CACHE_STORAGE_KEY = 'home_poster_title_cache_v1';
+// v2: v1 also stored year-less keys, which let a poster for one year (e.g. The Crow 1994)
+// be reused for a different year of the same title (The Crow 2024).
+const POSTER_TITLE_CACHE_STORAGE_KEY = 'home_poster_title_cache_v2';
 const POSTER_TITLE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 type CachedTitlePoster = { url: string; expiresAt: number };
 const posterByTitleCache = new Map<string, CachedTitlePoster>();
@@ -121,7 +123,8 @@ function posterTitleCacheKeys(result: TorrentSearchResult): string[] {
   if (!title) return [];
   const rawYear = String(result.year || (String(result.title || '').match(/\\b((?:19|20)\\d{2})\\b/) || [])[1] || '').trim();
   const year = /^\\d{4}$/.test(rawYear) ? rawYear : '';
-  return year ? [title + '|' + year, title + '|'] : [title + '|'];
+  // With a known year only the exact title+year key is valid; never fall back to another year.
+  return year ? [title + '|' + year] : [title + '|'];
 }
 
 function readPosterTitleCache(): void {
@@ -1160,7 +1163,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
       const checkedMs = Date.parse(String((state as any)?.checkedAt || ''));
       const savedIsFreshMiss = !!state && state.status !== 'loading' && state.status !== 'error' &&
-        !hasProviders(state) && Number.isFinite(checkedMs) && Date.now() - checkedMs < recheckAfterMs;
+        !hasProviders(state) && !(state as any).incomplete && !(saved as any)?.incomplete && Number.isFinite(checkedMs) && Date.now() - checkedMs < recheckAfterMs;
       const needsLive = isRetry || !state || state.status === 'loading' || state.status === 'error' ||
         (!hasProviders(state) && !savedIsFreshMiss);
       if (!needsLive) {
@@ -1289,6 +1292,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   // Results are queued in seed order, but only two background resolutions run
   // at once so this never becomes a search bottleneck.
   const [posterOverrides, setPosterOverrides] = useState<Record<string, string>>({});
+  const [metadataPosterFailed, setMetadataPosterFailed] = useState<Record<string, boolean>>({});
   const posterTitleCacheLoadedRef = useRef(false);
   if (!posterTitleCacheLoadedRef.current) {
     readPosterTitleCache();
@@ -2431,7 +2435,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             if (hasProviders) continue;
             // No provider names saved: re-check live unless the saved miss is recent.
             const checkedMs = Date.parse(String(saved.checkedAt || ''));
-            if (Number.isFinite(checkedMs) && Date.now() - checkedMs < recheckAfterMs) continue;
+            if (!saved.incomplete && Number.isFinite(checkedMs) && Date.now() - checkedMs < recheckAfterMs) continue;
             if (liveLookupCount >= liveLookupLimit) continue;
             liveLookupCount += 1;
             const savedTmdbId = Number(cachedRow.tmdbId);
@@ -4516,7 +4520,12 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               // resolver result (exact title match) or the card's own metadata poster.
               // While that resolver is still working, show the poster of the same TMDB
               // title the card's synopsis comes from, so no card sits blank.
-              const resolvedPosterUrl = posterOverrides[groupPosterKey] || mediaMetadata?.posterUrl || '';
+              // TMDB-id based metadata poster first (same title as the synopsis), then the
+              // title+year resolver. If the metadata poster fails to load, the resolver takes over.
+              const metadataPosterUrl = mediaMetadata?.posterUrl && !metadataPosterFailed[groupPosterKey]
+                ? mediaMetadata.posterUrl
+                : '';
+              const resolvedPosterUrl = metadataPosterUrl || posterOverrides[groupPosterKey] || '';
 
               // Normal searches use a poster-first two-state card. Clicking the poster
               // opens the Prepare/details card; clicking it again returns here.
@@ -4572,6 +4581,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                       // title-and-year resolver instead.
                       const key = posterKeyFor(posterResult);
                       posterLoadedRef.current.delete(key);
+                      setMetadataPosterFailed(previous => previous[key] ? previous : { ...previous, [key]: true });
                       image.style.display = 'none';
                       image.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.remove('hidden');
 
@@ -4619,6 +4629,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   onPosterError={event => {
                     const key = posterKeyFor(posterResult);
                     posterLoadedRef.current.delete(key);
+                    setMetadataPosterFailed(previous => previous[key] ? previous : { ...previous, [key]: true });
                     event.currentTarget.style.display = 'none';
                     event.currentTarget.parentElement?.querySelector('[data-poster-placeholder="true"]')?.classList.remove('hidden');
 

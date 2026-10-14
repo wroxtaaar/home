@@ -208,6 +208,7 @@ SYNOPSIS_CACHE_RETRY_INTERVAL_SECONDS = max(300, int(os.getenv("SYNOPSIS_CACHE_R
 TMDB_OTT_CACHE_SECONDS = max(3600, int(os.getenv("TMDB_OTT_CACHE_SECONDS", str(24 * 60 * 60))))
 # Results with no provider names (not_confirmed, release dates only) may just mean the
 # upstream lookup missed or failed, so they are re-checked much sooner than hits.
+TMDB_OTT_INCOMPLETE_CACHE_SECONDS = max(300, int(os.getenv("TMDB_OTT_INCOMPLETE_CACHE_SECONDS", "1800")))
 TMDB_OTT_MISSING_CACHE_SECONDS = max(900, int(os.getenv("TMDB_OTT_MISSING_CACHE_SECONDS", str(6 * 60 * 60))))
 TMDB_OTT_CACHE_FILE = Path(os.getenv("TMDB_OTT_CACHE_FILE", "/app/data/tmdb_ott_availability_cache.json"))
 MARVEL_TV_CATALOGUE_CACHE_FILE = Path(os.getenv("MARVEL_TV_CATALOGUE_CACHE_FILE", "/app/data/marvel_tv_catalogue_cache.json"))
@@ -7248,6 +7249,9 @@ def _tmdb_ott_disk_key(cache_key: tuple[int, str]) -> str:
 
 def _tmdb_ott_ttl(payload: Any) -> float:
     """Providers found -> long cache; nothing found -> short cache so it self-heals."""
+    if isinstance(payload, dict) and payload.get("incomplete"):
+        # A provider (e.g. Streaming Availability) errored or hit its quota: retry soon.
+        return TMDB_OTT_INCOMPLETE_CACHE_SECONDS
     if isinstance(payload, dict) and any(
         payload.get(key) for key in ("streamingProviders", "rentProviders", "buyProviders")
     ):
@@ -7642,6 +7646,11 @@ async def _tmdb_fetch_movie_ott_availability(movie_id: int, region: str) -> dict
         "digitalReleaseDate": digital_release_date,
         "providerLink": provider_link,
         "checkedAt": datetime.now(timezone.utc).isoformat(),
+        # True when no providers were found AND an upstream lookup failed, so "nothing
+        # found" may just be a provider error/quota; it is re-checked within minutes.
+        "incomplete": bool(
+            not (streaming or rent or buy) and (availability_failed or tmdb_provider_lookup_failed)
+        ),
         "source": availability_source,
         "providerAttribution": ("Streaming availability data powered by Watchmode." if availability_source == "Watchmode" else "Streaming availability data powered by Streaming Availability API." if availability_source == "Streaming Availability API" else "Streaming availability data powered by JustWatch via TMDB."),
         "attribution": "This product uses the TMDB API but is not endorsed or certified by TMDB.",
