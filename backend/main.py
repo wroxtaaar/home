@@ -5776,14 +5776,69 @@ def _seed_bundled_runtime_caches() -> None:
     for filename, destination in _RUNTIME_CACHE_SEED_FILES.items():
         source = seed_dir / filename
         if not source.is_file() or source.stat().st_size == 0:
+            logger.info("No bundled runtime snapshot for %s at %s", filename, source)
             continue
         try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+
+            # OTT is a shared, append-only lookup cache. Merge the bundled VPS
+            # snapshot into the runtime file even when the latter already exists;
+            # otherwise an old/non-empty Render file can silently hide thousands
+            # of useful entries shipped with the deployment.
+            if filename == "tmdb_ott_availability_cache.json":
+                bundled = json.loads(source.read_text(encoding="utf-8"))
+                bundled_items = bundled.get("items") if isinstance(bundled, dict) else None
+                if not isinstance(bundled_items, dict):
+                    logger.warning("Ignoring invalid bundled OTT cache snapshot: %s", source)
+                    continue
+
+                try:
+                    runtime = json.loads(destination.read_text(encoding="utf-8"))
+                except (OSError, ValueError, TypeError):
+                    runtime = {}
+                if not isinstance(runtime, dict):
+                    runtime = {}
+                runtime_items = runtime.get("items")
+                if not isinstance(runtime_items, dict):
+                    runtime_items = {}
+
+                added = 0
+                replaced = 0
+                for key, bundled_row in bundled_items.items():
+                    if not isinstance(bundled_row, dict) or not isinstance(bundled_row.get("payload"), dict):
+                        continue
+                    current_row = runtime_items.get(key)
+                    try:
+                        bundled_saved_at = float(bundled_row.get("savedAt") or 0)
+                        current_saved_at = float(current_row.get("savedAt") or 0) if isinstance(current_row, dict) else 0
+                    except (TypeError, ValueError):
+                        bundled_saved_at = 0
+                        current_saved_at = 0
+                    if not isinstance(current_row, dict):
+                        runtime_items[key] = bundled_row
+                        added += 1
+                    elif bundled_saved_at > current_saved_at:
+                        runtime_items[key] = bundled_row
+                        replaced += 1
+
+                runtime["items"] = runtime_items
+                if added or replaced or not destination.is_file() or destination.stat().st_size == 0:
+                    temp_path = destination.with_name(destination.name + "." + uuid.uuid4().hex + ".tmp")
+                    temp_path.write_text(json.dumps(runtime, ensure_ascii=False), encoding="utf-8")
+                    os.replace(temp_path, destination)
+                    logger.info(
+                        "Merged bundled OTT cache snapshot: %s added, %s newer entries applied, %s total entries",
+                        added, replaced, len(runtime_items),
+                    )
+                else:
+                    logger.info("OTT cache snapshot already represented in runtime cache (%s entries)", len(runtime_items))
+                continue
+
             if destination.is_file() and destination.stat().st_size > 0:
                 continue
-            destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
             logger.info("Seeded runtime cache %s from GitHub snapshot", filename)
-        except OSError as exc:
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
             logger.warning("Could not seed runtime cache %s: %s", filename, exc)
 
 
