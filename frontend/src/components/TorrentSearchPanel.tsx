@@ -1903,6 +1903,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       } else {
         setNexStreamPlayer({
           title: item.title,
+          year: String(item.date || '').slice(0, 4),
           sourceName: String(source.name || 'NexStream'),
           url: String(source.url),
           type: item.type,
@@ -3731,10 +3732,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               <div className="relative flex max-h-[96vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-violet-400/40 bg-slate-950 shadow-2xl">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-4 py-3 pr-14">
                 <div className="min-w-0">
-                  <div className="truncate text-xs font-bold text-slate-100">Playing with NexStream: {nexStreamPlayer.title}</div>
-                  <div className="text-[10px] text-slate-400">
-                    {nexStreamPlayer.type === 'tv' ? 'Season ' + nexStreamPlayer.season + ', Episode ' + nexStreamPlayer.episode + ' · ' : ''}{nexStreamPlayer.sourceName}
-                  </div>
+                  <div className="truncate text-xs font-bold text-slate-100">{nexStreamPlayer.title}{nexStreamPlayer.year ? ' (' + nexStreamPlayer.year + ')' : ''}</div>
                 </div>
                 <button
                   type="button"
