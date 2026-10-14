@@ -7887,6 +7887,60 @@ async def _tmdb_fetch_movie_catalogue(catalogue_key: str, page: int, released_on
         raise HTTPException(status_code=404, detail="Unknown movie catalogue.")
 
     raw_results = payload.get("results") or []
+
+    # TMDB's company-based Marvel Discover feed can omit this special even
+    # though it is an officially released Marvel title. Resolve it by exact
+    # title/year and merge it into page 1 so it is visible in the main catalogue.
+    if catalogue_key == "marvel" and page == 1:
+        def punisher_special_key(value: Any) -> str:
+            key = re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
+            presentation_prefix = "a marvel television special presentation "
+            if key.startswith(presentation_prefix):
+                key = key[len(presentation_prefix):]
+            return key
+
+        expected_punisher_key = "the punisher one last kill"
+        already_in_page = any(
+            isinstance(item, dict)
+            and punisher_special_key(item.get("title") or item.get("original_title")) == expected_punisher_key
+            for item in raw_results
+        )
+        if not already_in_page:
+            try:
+                special_search = await _tmdb_get_json("search/movie", {
+                    "query": "The Punisher: One Last Kill",
+                    "year": 2026,
+                    "include_adult": "false",
+                    "language": "en-US",
+                    "page": 1,
+                })
+            except HTTPException as exc:
+                logger.info("Could not resolve The Punisher: One Last Kill for Marvel catalogue: %s", exc.detail)
+            else:
+                special_item = next((
+                    item for item in (special_search.get("results") or [])
+                    if isinstance(item, dict)
+                    and punisher_special_key(item.get("title") or item.get("original_title")) == expected_punisher_key
+                    and re.match(r"^2026", str(item.get("release_date") or ""))
+                    and (not released_only or _tmdb_release_date_is_released(item.get("release_date"), today))
+                ), None)
+                if special_item:
+                    raw_results = list(raw_results)
+                    raw_results.append(special_item)
+                    payload = dict(payload)
+                    payload["results"] = raw_results
+                    payload["total_results"] = int(payload.get("total_results") or (len(raw_results) - 1)) + 1
+                    payload["total_pages"] = max(
+                        int(payload.get("total_pages") or 1),
+                        (int(payload["total_results"]) + 19) // 20,
+                    )
+                    # Keep the injected title in the same newest-first order as
+                    # the Discover response, including the fast first-paint path.
+                    raw_results.sort(key=lambda item: (
+                        str(item.get("release_date") or ""),
+                        float(item.get("popularity") or 0),
+                    ), reverse=True)
+
     results: list[dict[str, Any]] = []
     regional = regional_modes.get(catalogue_key)
     for item in raw_results:
@@ -8737,7 +8791,10 @@ async def api_tmdb_movie_catalogue(
     if basic:
         # Fast first paint for deep pages: return basic source metadata immediately;
         # the frontend replaces this with the fully eligible/enriched page.
-        fast_key = (catalogue_key + "|fast-basic-v2", page)
+        fast_key = (
+            catalogue_key + ("|fast-basic-v3" if catalogue_key == "marvel" else "|fast-basic-v2"),
+            page,
+        )
         fast_cached = _tmdb_movie_catalogue_cache.get(fast_key)
         if fast_cached and time.monotonic() - fast_cached[0] < 900:
             return fast_cached[1]
@@ -8787,10 +8844,12 @@ async def api_tmdb_movie_catalogue(
 
     # Keep released-only and include-upcoming responses in separate cache slots.
     is_trending_catalogue = catalogue_key.startswith("trending-")
-    cache_key = (catalogue_key + (
-        ("|trending-v4" if is_trending_catalogue else "|released-v6")
-        if released_only else "|upcoming-v3"
-    ), page)
+    cache_variant = (
+        "|trending-v4" if is_trending_catalogue
+        else ("|released-v7" if catalogue_key == "marvel" else "|released-v6") if released_only
+        else ("|upcoming-v4" if catalogue_key == "marvel" else "|upcoming-v3")
+    )
+    cache_key = (catalogue_key + cache_variant, page)
     now = time.monotonic()
     is_regional_movie_catalogue = catalogue_key in {
         "popular-bollywood", "trending-bollywood", "latest-bollywood",
