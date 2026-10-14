@@ -1052,7 +1052,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   };
 
   // Initialize state used by visibleMovieCatalogueItems before evaluating its memo dependencies.
-  type MarvelFilmFilter = 'all' | 'mcu' | 'spider-man' | 'x-men' | 'sony' | 'old-marvel';
+  type MarvelFilmFilter = 'all' | 'mcu' | 'x-men' | 'sony';
   const [marvelFilmFilter, setMarvelFilmFilter] = useState<MarvelFilmFilter>('all');
   const [isMarvelEnglishResults, setIsMarvelEnglishResults] = useState(false);
   const [showMarvelWebSeries, setShowMarvelWebSeries] = useState(false);
@@ -1060,6 +1060,14 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
   const visibleMovieCatalogueItems = useMemo(() => {
     let movies = movieCatalogue?.results || [];
+    if (isMarvelEnglishResults) {
+      movies = movies.filter(movie => {
+        const rawTitle = String(movie.title || '');
+        const title = rawTitle.replace(/\s*\(?((?:19|20)\d{2})\)?\s*$/, '').trim();
+        const year = Number(movie.year || rawTitle.match(/\b(?:19|20)\d{2}\b/)?.[0] || 0);
+        return !(year === 1977 && /^the amazing spider[- ]?man$/i.test(title));
+      });
+    }
     if (isMarvelEnglishResults && !showMarvelWebSeries && marvelFilmFilter !== 'all') {
       const titleOf = (movie: MovieCatalogueItem) => String(movie.title || '').replace(/\s*\(?((?:19|20)\d{2})\)?\s*$/, '').trim().toLowerCase();
       const yearOf = (movie: MovieCatalogueItem) => Number(movie.year || String(movie.title || '').match(/\b(?:19|20)\d{2}\b/)?.[0] || 0);
@@ -1076,12 +1084,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       const isSpiderMan = (title: string) => /spider[- ]?man|spider[- ]verse|into the spider|across the spider/i.test(title);
       const isXMen = (title: string) => /x[- ]?men|wolverine|deadpool|new mutants|dark phoenix/i.test(title);
       const isSony = (title: string) => isSpiderMan(title) || /venom|morbius|kraven|madame web/i.test(title);
-      const oldMarvelTitles = new Set([
-        'blade','blade ii','blade: trinity','captain america','captain america ii: death too soon',
-        'captain america (1990)','dr. strange','dr. strange (1978)','dr. strange (tv movie)',
-        'man-thing','man-thing (tv movie)','the incredible hulk returns','the trial of the incredible hulk',
-        'hulk','howard the duck','iron man: rise of technovore','fantastic four','fantastic four: rise of the silver surfer'
-      ]);
       movies = movies.filter(movie => {
         const title = titleOf(movie);
         const year = yearOf(movie);
@@ -1089,17 +1091,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           case 'mcu': return mcuTitles.has(title) ||
             /^the punisher:?\s+one last kill$/i.test(title) ||
             /^(?:a\s+)?marvel television special presentation:?\s+the punisher:?\s+one last kill$/i.test(title);
-          case 'spider-man': return isSpiderMan(title);
           case 'x-men': return isXMen(title);
           case 'sony': return isSony(title);
-          case 'old-marvel': {
-            const normalized = title.replace(/[^a-z0-9]+/g, ' ').trim();
-            const legacyTitles = new Set(Array.from(oldMarvelTitles, value =>
-              value.replace(/\b(?:19|20)\d{2}\b/g, '').replace(/[^a-z0-9]+/g, ' ').trim().toLowerCase()
-            ));
-            return legacyTitles.has(normalized) ||
-              /^(?:the punisher|the trial of the incredible hulk|the incredible hulk returns|howard the duck|captain america ii death too soon|dr strange)(?:\s|$)/i.test(normalized);
-          }
           default: return true;
         }
       });
@@ -2987,6 +2980,14 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
 
     // The Marvel buttons are shown on torrent-search results as well as
     // catalogue cards, so apply the selected franchise to the actual groups.
+    if (isMarvelEnglishResults) {
+      groups = groups.filter(group => {
+        const rawTitle = String(group.title || '');
+        const title = normalizeGroupTitle(rawTitle.replace(/\s*\(?((?:19|20)\d{2})\)?\s*$/, ''));
+        const year = Number(group.year || rawTitle.match(/\b(?:19|20)\d{2}\b/)?.[0] || 0);
+        return !(year === 1977 && /^the amazing spider man$/i.test(title));
+      });
+    }
     if (isMarvelEnglishResults && !showMarvelWebSeries && marvelFilmFilter !== 'all') {
       const normalize = (value: string) => normalizeGroupTitle(String(value || '').replace(/\s*\(?((?:19|20)\d{2})\)?\s*$/, ''));
       const mcuTitles = new Set([
@@ -3010,13 +3011,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         switch (marvelFilmFilter) {
           case 'mcu': return mcuTitles.has(title) || [...mcuTitles].some(item => title.startsWith(item + ' ')) ||
             /^(?:marvel television special presentation )?(?:the )?punisher one last kill$/.test(title);
-          case 'spider-man': return isSpiderMan(title);
           case 'x-men': return isXMen(title);
           case 'sony': return isSony(title);
-          case 'old-marvel': {
-            const normalized = title.replace(/[^a-z0-9]+/g, ' ').trim();
-            return /^(?:the punisher|the trial of the incredible hulk|the incredible hulk returns|howard the duck|captain america ii death too soon|dr strange)(?:\s|$)/i.test(normalized);
-          }
           default: return true;
         }
       });
@@ -4110,10 +4106,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   {([
                     ['all', 'All'],
                     ['mcu', 'MCU'],
-                    ['spider-man', 'Spider-Man'],
                     ['x-men', 'X-Men'],
-                    ['sony', 'Sony'],
-                    ['old-marvel', 'Old Marvel'],
+                    ['sony', 'Spiderman'],
                   ] as [MarvelFilmFilter, string][]).map(([filter, label]) => (
                     <button key={filter} type="button" onClick={() => setMarvelFilmFilter(filter)} className={marvelFilmFilter === filter ? 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950 shadow-[0_0_14px_rgba(34,211,238,0.25)]' : 'shrink-0 rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={marvelFilmFilter === filter}>{label}</button>
                   ))}
