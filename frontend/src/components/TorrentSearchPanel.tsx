@@ -20,6 +20,48 @@ import { formatBytes } from '../utils/formatters.ts';
 import { MovieCompactCard, MoviePrepareCard, imdbTitleLink, type MovieCardProvider } from './MovieCards.tsx';
 import searchLimits from '../../search_limits.json';
 
+const CROW_2024_POSTER_URL = 'https://m.media-amazon.com/images/M/MV5BNjYyZjJjMzQtNmNlMS00NmE4LTljZTEtZDI5ZjIxYjE1MzI2XkEyXkFqcGc%40._V1_.jpg';
+
+function isWonderWoman1984(movie: { title?: string; year?: number | string | null }): boolean {
+  return /^wonder woman 1984$/i.test(String(movie.title || '').trim()) &&
+    Number(movie.year || 0) === 2020;
+}
+
+function isTheCrow2024(movie: { title?: string; year?: number | string | null }): boolean {
+  return /^the crow$/i.test(String(movie.title || '').trim()) &&
+    Number(movie.year || 0) === 2024;
+}
+
+function imdbFallbackForCatalogueMovie(movie: { title?: string; year?: number | string | null }): ImdbRatingResult | undefined {
+  if (isWonderWoman1984(movie)) {
+    return {
+      title: 'Wonder Woman 1984',
+      year: 2020,
+      mediaType: 'movie',
+      status: 'found',
+      imdbRating: 5.3,
+      imdbId: 'tt7126948',
+      imdbUrl: 'https://www.imdb.com/title/tt7126948/',
+    };
+  }
+  if (isTheCrow2024(movie)) {
+    return {
+      title: 'The Crow',
+      year: 2024,
+      mediaType: 'movie',
+      status: 'found',
+      imdbRating: 4.7,
+      imdbId: 'tt1340094',
+      imdbUrl: 'https://www.imdb.com/title/tt1340094/',
+    };
+  }
+  return undefined;
+}
+
+function cataloguePosterOverride(movie: { title?: string; year?: number | string | null; posterUrl?: string | null }): string {
+  return isTheCrow2024(movie) ? CROW_2024_POSTER_URL : String(movie.posterUrl || '').trim();
+}
+
 type MovieOttCardState = MovieOttAvailability | { status: 'loading' | 'error'; message?: string };
 
 type NexStreamEpisode = { episodeNumber: number; name: string; overview: string; airDate: string; still: string | null };
@@ -3835,7 +3877,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               const previewGroup = previewMatchesMovie ? movieTorrentPreviewGroup : null;
               const isPunisherSpecial = /punisher.*one last kill|one last kill.*punisher/i.test(String(movie.title || ''));
               const movieImdb = imdbRatingsByKey[imdbRatingKey(movie.title, movie.year)] ||
-                (isPunisherSpecial ? imdbRatingsByKey[imdbRatingKey(movie.title, movie.year, 'tv')] : undefined);
+                (isPunisherSpecial ? imdbRatingsByKey[imdbRatingKey(movie.title, movie.year, 'tv')] : undefined) ||
+                imdbFallbackForCatalogueMovie(movie);
               const movieTitleHref = imdbTitleLink(movieImdb, movie.title, movie.year);
 
               if (previewGroup) {
@@ -3846,9 +3889,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 // inline Prepare card; torrent-result poster metadata is often absent
                 // or delayed and must not replace the movie's known poster.
                 const isRegionalMoviePreview = /^(popular|trending|latest)-(bollywood|hollywood)$/.test(String(movieCatalogue?.catalogue || ''));
-                const cataloguePosterUrl = movieTorrentPreviewPosterUrl ||
-                  cataloguePosterUrlsRef.current[String(movie.id)] ||
-                  String(movie.posterUrl || '').trim();
+                const posterOverride = cataloguePosterOverride(movie);
+                const cataloguePosterUrl = (isTheCrow2024(movie) ? posterOverride : movieTorrentPreviewPosterUrl) ||
+                  (isTheCrow2024(movie) ? posterOverride : cataloguePosterUrlsRef.current[String(movie.id)]) ||
+                  posterOverride;
                 const posterSrc = lowQualityPosterUrl(
                   cataloguePosterUrl ||
                   (isRegionalMoviePreview ? '' : posterUrlFor(previewGroup.posterResult) || previewGroup.posterResult?.posterUrl || '')
@@ -3960,7 +4004,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   imdb={movieImdb}
                   tmdbRating={movie.rating}
                   overview={movie.overview || 'No synopsis available from TMDB for this title.'}
-                  posterSrc={lowQualityPosterUrl(movie.posterUrl)}
+                  posterSrc={lowQualityPosterUrl(cataloguePosterOverride(movie))}
                   posterAlt={movie.title}
                   onPosterClick={() => { if (!isSearching && !movieTorrentSearchLoading) void searchMovieTorrents(movie); }}
                   onPosterLoad={event => {
@@ -3971,7 +4015,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   }}
                   onPosterError={event => {
                     const image = event.currentTarget;
-                    const originalUrl = String(movie.posterUrl || '').trim();
+                    const originalUrl = cataloguePosterOverride(movie);
                     // If the optimized w500 URL fails, retry the catalogue's
                     // original poster URL once before showing the placeholder.
                     if (originalUrl && image.dataset.originalFallbackTried !== 'true' && image.src !== new URL(originalUrl, window.location.origin).toString()) {
