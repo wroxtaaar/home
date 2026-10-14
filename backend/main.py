@@ -6548,11 +6548,62 @@ async def api_catalogue_synopsis_enrichment_status():
     return dict(_CATALOGUE_SYNOPSIS_ENRICHMENT_STATE)
 
 
+def _warm_tmdb_ott_memory_cache() -> None:
+    """Load persisted OTT entries once so each cache miss does not reparse the entire JSON file."""
+    try:
+        disk = json.loads(TMDB_OTT_CACHE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        logger.warning("Could not warm in-memory OTT cache from %s", TMDB_OTT_CACHE_FILE, exc_info=True)
+        return
+
+    items = disk.get("items") if isinstance(disk, dict) else None
+    if not isinstance(items, dict) or not items:
+        logger.warning("Persistent OTT cache has no readable items at %s", TMDB_OTT_CACHE_FILE)
+        return
+
+    now_wall = time.time()
+    now_monotonic = time.monotonic()
+    warmed = 0
+    invalid = 0
+    for disk_key, row in items.items():
+        if not isinstance(row, dict) or not isinstance(row.get("payload"), dict):
+            invalid += 1
+            continue
+        parts = str(disk_key).split(":", 1)
+        if len(parts) != 2:
+            invalid += 1
+            continue
+        try:
+            movie_id = int(parts[0])
+            saved_at = float(row.get("savedAt") or 0)
+        except (TypeError, ValueError):
+            invalid += 1
+            continue
+        region = parts[1].strip().upper()
+        if movie_id < 1 or not re.fullmatch(r"[A-Z]{2}", region) or saved_at <= 0:
+            invalid += 1
+            continue
+
+        cache_key = (movie_id, region)
+        if cache_key in _tmdb_ott_cache:
+            continue
+        # Translate the saved wall-clock age to monotonic time. Expired entries
+        # remain available as stale fallbacks instead of being marked fresh again.
+        age_seconds = max(0.0, now_wall - saved_at)
+        _tmdb_ott_cache[cache_key] = (now_monotonic - age_seconds, row["payload"])
+        warmed += 1
+
+    logger.info(
+        "Warm-loaded persistent OTT cache into memory: %s entries warmed, %s valid disk entries, %s invalid rows",
+        warmed, len(items) - invalid, invalid,
+    )
+
+
 def _initialize_catalogue_caches() -> None:
-    # Seed missing runtime metadata and catalogue files first, then normalize the real persistent JSON files
-    # before the API starts serving catalogue requests. The readers write sorted
-    # results back atomically whenever the on-disk order needs to change.
+    # Seed bundled snapshots first; warm OTT entries into memory before serving requests,
+    # then normalize the curated catalogue files on disk.
     _seed_bundled_runtime_caches()
+    _warm_tmdb_ott_memory_cache()
     _seed_bundled_catalogue_caches()
     _read_marvel_catalogue()
     for key in ("marvel-hindi", "dc-live-action", "dc-live-action-hindi", "dc-animated"):
