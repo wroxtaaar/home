@@ -893,6 +893,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const [openMainCatalogueMenu, setOpenMainCatalogueMenu] = useState<MainCatalogueMenu | null>(null);
   type ActiveTopSection = 'marvel' | 'dc' | 'hollywood' | 'bollywood' | 'classics' | null;
   const [activeTopSection, setActiveTopSection] = useState<ActiveTopSection>(null);
+  const [dcContentTab, setDcContentTab] = useState<'movies' | 'animated' | 'web-series'>('movies');
   type RegionalContentTab = 'movies' | 'web-series' | null;
   const [regionalContentTabs, setRegionalContentTabs] = useState<Record<RegionalCatalogueGroup, RegionalContentTab>>({ bollywood: null, hollywood: null });
   const [marvelContentTab, setMarvelContentTab] = useState<RegionalContentTab>(null);
@@ -3466,9 +3467,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               <button type="button" onClick={() => { setMarvelContentTab('web-series'); if (!showMarvelWebSeries || marvelWebSeriesCatalogue?.catalogue !== 'marvel-web-series') void loadMarvelWebSeries(); }} className={marvelContentTab === 'web-series' ? 'rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'}>📺 Marvel Web Series</button>
             </>}
             {activeTopSection === 'dc' && <>
-              <button type="button" onClick={() => { setShowDcWebSeries(false); selectCachedFranchise('dc-live-action'); }} className={!showDcWebSeries ? 'rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800'}>DC Movies</button>
-              <button type="button" onClick={() => { setResolutionFilter(null); setSizeSort(null); setTimeSort(null); setShowDcWebSeries(false); void runSearch(undefined, 'DC Animated Movies', 'dc-animated'); }} className="rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200">DC Animated</button>
-              <button type="button" onClick={() => { if (showDcWebSeries) setShowDcWebSeries(false); else void loadDcWebSeries(); }} className={showDcWebSeries ? 'rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800'}>📺 DC Web Series</button>
+              <button type="button" onClick={() => { setDcContentTab('movies'); setShowDcWebSeries(false); selectCachedFranchise('dc-live-action'); }} className={dcContentTab === 'movies' ? 'rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={dcContentTab === 'movies'}>DC Movies</button>
+              <button type="button" onClick={() => { setDcContentTab('animated'); setResolutionFilter(null); setSizeSort(null); setTimeSort(null); setShowDcWebSeries(false); void runSearch(undefined, 'DC Animated Movies', 'dc-animated'); }} className={dcContentTab === 'animated' ? 'rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={dcContentTab === 'animated'}>DC Animated</button>
+              <button type="button" onClick={() => { setDcContentTab('web-series'); if (showDcWebSeries) setShowDcWebSeries(false); else void loadDcWebSeries(); }} className={dcContentTab === 'web-series' ? 'rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800 hover:text-slate-200'} aria-pressed={dcContentTab === 'web-series'}>📺 DC Web Series</button>
             </>}
             {(activeTopSection === 'hollywood' || activeTopSection === 'bollywood') && <>
               <button type="button" onClick={() => { setRegionalContentTabs(previous => ({ ...previous, [activeTopSection]: 'movies' })); openRegionalCatalogue(activeTopSection, regionalCatalogueModes[activeTopSection]); }} className={regionalContentTabs[activeTopSection] === 'movies' ? 'rounded-lg px-3 py-2 text-xs font-bold bg-cyan-500 text-slate-950' : 'rounded-lg px-3 py-2 text-xs font-bold bg-slate-950 text-slate-400 border border-slate-800'}>{activeTopSection === 'hollywood' ? '🎬 Hollywood Movies' : '🎬 Bollywood Movies'}</button>
@@ -3802,26 +3803,6 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             >
               Next
             </button>
-          </div>
-
-          <div className="flex flex-col gap-2 rounded-xl border border-slate-800 bg-slate-900/80 px-3 py-2.5">
-            <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-              <span className="text-xs font-semibold text-emerald-300">OTT available now, or released at least 7 days ago</span>
-              <label className="flex cursor-pointer select-none items-center gap-2 text-xs font-semibold text-slate-200">
-                <input
-                  type="checkbox"
-                  checked={streamingOnly}
-                  onChange={(event) => setStreamingOnly(event.target.checked)}
-                  className="h-4 w-4 accent-cyan-400"
-                />
-                Streaming now in India
-              </label>
-            </div>
-            <div className="text-[11px] leading-relaxed text-slate-500">
-              {releasedOnly ? 'Hides future and unconfirmed release dates.' : 'Includes upcoming releases.'}
-              {' '}OTT status, provider names and India digital-release dates are checked in the background.
-              {' '}Availability is checked with Watchmode when configured, with TMDB/JustWatch as a fallback; listings may be incomplete.
-            </div>
           </div>
 
           {movieTorrentSearchLoading && (
