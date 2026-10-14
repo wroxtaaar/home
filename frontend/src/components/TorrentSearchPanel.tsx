@@ -1086,7 +1086,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         const title = titleOf(movie);
         const year = yearOf(movie);
         switch (marvelFilmFilter) {
-          case 'mcu': return mcuTitles.has(title);
+          case 'mcu': return mcuTitles.has(title) ||
+            /^the punisher:?\s+one last kill$/i.test(title) ||
+            /^(?:a\s+)?marvel television special presentation:?\s+the punisher:?\s+one last kill$/i.test(title);
           case 'spider-man': return isSpiderMan(title);
           case 'x-men': return isXMen(title);
           case 'sony': return isSony(title);
@@ -2998,7 +3000,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       groups = groups.filter(group => {
         const title = normalize(group.title);
         switch (marvelFilmFilter) {
-          case 'mcu': return mcuTitles.has(title) || [...mcuTitles].some(item => title.startsWith(item + ' '));
+          case 'mcu': return mcuTitles.has(title) || [...mcuTitles].some(item => title.startsWith(item + ' ')) ||
+            /^(?:marvel television special presentation )?(?:the )?punisher one last kill$/.test(title);
           case 'spider-man': return isSpiderMan(title);
           case 'x-men': return isXMen(title);
           case 'sony': return isSony(title);
