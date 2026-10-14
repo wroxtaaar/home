@@ -1035,6 +1035,12 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const ottActiveWorkersRef = useRef(0);
   const ottLookupGenerationRef = useRef(0);
   const ottQueuePumpRef = useRef<() => void>(() => {});
+  // Movies seen by the card grid, live lookups already made this session, and
+  // failed-lookup retry counts. Missing streaming info is re-checked automatically.
+  const ottKnownMoviesRef = useRef(new Map<string, MovieCatalogueItem>());
+  const ottLiveCheckedRef = useRef(new Set<string>());
+  const ottRetryAttemptsRef = useRef(new Map<string, number>());
+  const ottRetryTimerRef = useRef<number | null>(null);
 
   const setOttState = (movieId: string, state: MovieOttCardState) => {
     const next = { ...ottAvailabilityRef.current, [movieId]: state };
@@ -1042,7 +1048,24 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     setOttAvailability(next);
   };
 
-  // Limit upstream load. The backend also caches each movie/region response for 24 hours
+  // Failed lookups are retried automatically (bounded) instead of staying on an error forever.
+  const scheduleOttRetry = () => {
+    if (ottRetryTimerRef.current !== null) return;
+    const generation = ottLookupGenerationRef.current;
+    ottRetryTimerRef.current = window.setTimeout(() => {
+      ottRetryTimerRef.current = null;
+      if (generation !== ottLookupGenerationRef.current) return;
+      const retry = [...ottKnownMoviesRef.current.values()].filter(movie => {
+        const id = String(movie.id);
+        const state = ottAvailabilityRef.current[id];
+        const hasData = !!state && state.status !== 'error' && state.status !== 'loading';
+        return !hasData && (ottRetryAttemptsRef.current.get(id) || 0) < 5;
+      });
+      if (retry.length) queueOttLookups(retry, true);
+    }, 30000);
+  };
+
+  // Limit upstream load. The backend caches provider hits for 24 hours and misses for 6 hours,
   // and coalesces simultaneous requests, so repeated visitors reuse the same result.
   const pumpOttQueue = () => {
     while (ottActiveWorkersRef.current < 3 && ottQueueRef.current.length > 0) {
@@ -1058,10 +1081,15 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           }
         } catch (error: any) {
           if (lookupGeneration === ottLookupGenerationRef.current) {
-            setOttState(movieId, {
-              status: 'error',
-              message: String(error?.message || 'OTT availability could not be checked.'),
-            });
+            const current = ottAvailabilityRef.current[movieId];
+            // Keep saved/cached provider info on screen if the live re-check fails.
+            if (!current || current.status === 'loading' || current.status === 'error') {
+              setOttState(movieId, {
+                status: 'error',
+                message: String(error?.message || 'OTT availability could not be checked.'),
+              });
+            }
+            scheduleOttRetry();
           }
         } finally {
           if (lookupGeneration === ottLookupGenerationRef.current) {
@@ -1078,22 +1106,34 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   const queueOttLookups = (movies: MovieCatalogueItem[], retryErrors = false) => {
     const next = { ...ottAvailabilityRef.current };
     let changed = false;
+    const hasProviders = (state?: MovieOttCardState) => {
+      const value = state as any;
+      return !!value && (
+        (value.streamingProviders?.length || 0) + (value.rentProviders?.length || 0) + (value.buyProviders?.length || 0) > 0
+      );
+    };
+    const recheckAfterMs = 6 * 60 * 60 * 1000;
     for (const movie of movies) {
       const movieId = String(movie.id);
-      if (!/^\d+$/.test(movieId) || ottQueuedIdsRef.current.has(movieId)) continue;
+      if (!/^\d+$/.test(movieId)) continue;
+      ottKnownMoviesRef.current.set(movieId, movie);
+      if (ottQueuedIdsRef.current.has(movieId)) continue;
       const existing = next[movieId];
-      if (existing && !(retryErrors && existing.status === 'error')) continue;
+      const isRetry = retryErrors && (!existing || existing.status === 'error' || existing.status === 'loading');
+      if (existing && !isRetry && ottLiveCheckedRef.current.has(movieId)) continue;
 
       // The backend merges the already-enriched Marvel/DC catalogue data into
-      // these cards. Render it immediately and never queue a redundant OTT scan.
+      // these cards. Render it immediately; when it has no provider names, also
+      // re-check live below so missing streaming info fills itself in.
+      let state = existing && !isRetry ? existing : undefined;
       const saved = movie.ottAvailability;
-      if (saved && typeof saved === 'object') {
+      if (!state && saved && typeof saved === 'object') {
         const savedStatus = String(saved.status || '').toLowerCase();
         const region = String(saved.region || 'IN');
         const streamingProviders = normalizeSavedOttProviders(saved.streamingProviders, 'streaming', region);
         const rentProviders = normalizeSavedOttProviders(saved.rentProviders, 'rent', region);
         const buyProviders = normalizeSavedOttProviders(saved.buyProviders, 'buy', region);
-        next[movieId] = {
+        state = {
           movieId: Number(movie.tmdbId || movie.id),
           region,
           status: (
@@ -1114,15 +1154,29 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           providerAttribution: String(saved.providerAttribution || ''),
           attribution: String(saved.attribution || ''),
         };
+        next[movieId] = state;
         changed = true;
-        continue;
       }
 
-      if (existing && !(retryErrors && existing.status === 'error')) continue;
+      const checkedMs = Date.parse(String((state as any)?.checkedAt || ''));
+      const savedIsFreshMiss = !!state && state.status !== 'loading' && state.status !== 'error' &&
+        !hasProviders(state) && Number.isFinite(checkedMs) && Date.now() - checkedMs < recheckAfterMs;
+      const needsLive = isRetry || !state || state.status === 'loading' || state.status === 'error' ||
+        (!hasProviders(state) && !savedIsFreshMiss);
+      if (!needsLive) {
+        ottLiveCheckedRef.current.add(movieId);
+        continue;
+      }
+      const attempts = ottRetryAttemptsRef.current.get(movieId) || 0;
+      if (isRetry && attempts >= 5) continue;
+      ottRetryAttemptsRef.current.set(movieId, attempts + 1);
+      ottLiveCheckedRef.current.add(movieId);
       ottQueuedIdsRef.current.add(movieId);
       ottQueueRef.current.push(movieId);
-      next[movieId] = { status: 'loading' };
-      changed = true;
+      if (!state) {
+        next[movieId] = { status: 'loading' };
+        changed = true;
+      }
     }
     if (changed) {
       ottAvailabilityRef.current = next;
@@ -2254,11 +2308,12 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         // UI reorders results by quality/seeds. Only live lookups remain capped below.
         const availabilityGroups = groupTorrentResults(data);
         const pendingLiveLookups: typeof availabilityGroups = [];
-        const savedOnlyCatalogueModes = new Set([
-          'marvel', 'marvel-hindi', 'dc-live-action', 'dc-live-action-hindi', 'dc-animated'
-        ]);
+        // Titles with no provider info are re-checked live (3 at a time, bounded per search),
+        // and the backend stores each answer, so every card ends up with streaming info.
         let liveLookupCount = 0;
-        const liveLookupLimit = 3;
+        const liveLookupLimit = 150;
+        const pendingLiveTmdbIds = new Map<string, number>();
+        const recheckAfterMs = 6 * 60 * 60 * 1000;
 
         // The torrent-search cache and enriched OTT cache are separate files.
         // Fetch saved OTT entries by title once, so normal text searches can use
@@ -2373,29 +2428,20 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                 ),
               }
             }));
+            if (hasProviders) continue;
+            // No provider names saved: re-check live unless the saved miss is recent.
+            const checkedMs = Date.parse(String(saved.checkedAt || ''));
+            if (Number.isFinite(checkedMs) && Date.now() - checkedMs < recheckAfterMs) continue;
+            if (liveLookupCount >= liveLookupLimit) continue;
+            liveLookupCount += 1;
+            const savedTmdbId = Number(cachedRow.tmdbId);
+            if (Number.isInteger(savedTmdbId) && savedTmdbId > 0) pendingLiveTmdbIds.set(group.key, savedTmdbId);
+            pendingLiveLookups.push(group);
             continue;
           }
 
-          // Franchise shortcut results are backed by persistent enriched catalogues.
-          // Do not start a live title scan when a cached row has no saved OTT data.
-          if (searchMode && savedOnlyCatalogueModes.has(searchMode)) {
-            setSearchAvailabilityByGroup(previous => ({
-              ...previous,
-              [group.key]: {
-                status: 'not_confirmed',
-                query: group.title,
-                title: group.title,
-                year: group.year,
-                providers: [],
-                matches: [],
-                message: 'No saved streaming details are available for this cached title.'
-              }
-            }));
-            continue;
-          }
-
-          // Keep arbitrary live searches bounded so this path cannot fan out
-          // provider queries for the entire result set.
+          // Keep live searches bounded so this path cannot fan out
+          // provider queries for an unlimited result set.
           if (liveLookupCount >= liveLookupLimit) continue;
           liveLookupCount += 1;
           setSearchAvailabilityByGroup(previous => ({
@@ -2405,23 +2451,67 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           pendingLiveLookups.push(group);
         }
 
-        void Promise.allSettled(pendingLiveLookups.map(async group => {
-          try {
+        const runLiveLookup = async (group: typeof availabilityGroups[number]) => {
+          const tmdbId = pendingLiveTmdbIds.get(group.key);
+          const lookup = async () => {
+            if (tmdbId) {
+              const value = await api.getMovieOttAvailability(tmdbId, 'IN');
+              const region = String(value.region || 'IN');
+              const providers = [
+                ...normalizeSavedOttProviders(value.streamingProviders, 'streaming', region),
+                ...normalizeSavedOttProviders(value.rentProviders, 'rent', region),
+                ...normalizeSavedOttProviders(value.buyProviders, 'buy', region),
+              ];
+              const title = group.title.replace(/\s*\(?(?:19|20)\d{2}\)?\s*$/, '').trim();
+              return {
+                status: providers.length ? 'ready' : 'not_confirmed',
+                query: title,
+                title,
+                year: group.year,
+                providers,
+                matches: providers.length ? [{
+                  id: String(tmdbId), tmdbId, title, year: group.year, type: 'movie', status: 'ready', providers,
+                }] : [],
+                message: providers.length ? undefined : 'No streaming providers were found when re-checked.',
+              } as any;
+            }
             const providerLookupTitle = episodeSeriesTitle(group.title) || group.title;
             const availabilityQuery = providerLookupTitle
               .replace(/\s+\(\d{4}\)\s*$/, '')
               .trim();
-            const value = await api.searchAvailability(availabilityQuery);
-            if (generation === searchGenerationRef.current) {
-              setSearchAvailabilityByGroup(previous => ({ ...previous, [group.key]: value }));
+            return await api.searchAvailability(availabilityQuery);
+          };
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            if (generation !== searchGenerationRef.current) return;
+            try {
+              const value = await lookup();
+              if (generation === searchGenerationRef.current) {
+                setSearchAvailabilityByGroup(previous => {
+                  // A re-check that finds nothing must not erase saved info.
+                  const existing = previous[group.key] as any;
+                  if (existing?.providers?.length && !(value as any)?.providers?.length) return previous;
+                  return { ...previous, [group.key]: value };
+                });
+              }
+              return;
+            } catch {
+              if (attempt === 0) await new Promise<void>(resolve => window.setTimeout(resolve, 8000));
             }
-          } catch {
-            if (generation === searchGenerationRef.current) {
-              setSearchAvailabilityByGroup(previous => ({
-                ...previous,
-                [group.key]: { status: 'unavailable', query: group.title, providers: [] }
-              }));
-            }
+          }
+          if (generation === searchGenerationRef.current) {
+            setSearchAvailabilityByGroup(previous => {
+              const existing = previous[group.key] as any;
+              // Keep a saved "no details" card as is; only a pending lookup becomes unavailable.
+              if (existing && existing.status !== 'loading') return previous;
+              return { ...previous, [group.key]: { status: 'unavailable', query: group.title, providers: [] } };
+            });
+          }
+        };
+        const liveQueue = [...pendingLiveLookups];
+        void Promise.allSettled(Array.from({ length: Math.min(3, liveQueue.length) }, async () => {
+          while (liveQueue.length > 0 && generation === searchGenerationRef.current) {
+            const group = liveQueue.shift();
+            if (group) await runLiveLookup(group);
           }
         }));
       }
@@ -3295,6 +3385,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
       ottLookupGenerationRef.current += 1;
       ottQueueRef.current = [];
       ottQueuedIdsRef.current.clear();
+      ottLiveCheckedRef.current.clear();
+      ottRetryAttemptsRef.current.clear();
       ottAvailabilityRef.current = {};
       setOttAvailability({});
       setTmdbCacheMessage('TMDB catalogue and OTT caches cleared. Reloading the selected catalogue…');

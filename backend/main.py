@@ -206,6 +206,9 @@ _IMDB_RATING_INFLIGHT: dict[str, asyncio.Task[dict[str, Any]]] = {}
 TMDB_SYNOPSIS_LOOKUP_VERSION = 5
 SYNOPSIS_CACHE_RETRY_INTERVAL_SECONDS = max(300, int(os.getenv("SYNOPSIS_CACHE_RETRY_INTERVAL_SECONDS", "900")))
 TMDB_OTT_CACHE_SECONDS = max(3600, int(os.getenv("TMDB_OTT_CACHE_SECONDS", str(24 * 60 * 60))))
+# Results with no provider names (not_confirmed, release dates only) may just mean the
+# upstream lookup missed or failed, so they are re-checked much sooner than hits.
+TMDB_OTT_MISSING_CACHE_SECONDS = max(900, int(os.getenv("TMDB_OTT_MISSING_CACHE_SECONDS", str(6 * 60 * 60))))
 TMDB_OTT_CACHE_FILE = Path(os.getenv("TMDB_OTT_CACHE_FILE", "/app/data/tmdb_ott_availability_cache.json"))
 MARVEL_TV_CATALOGUE_CACHE_FILE = Path(os.getenv("MARVEL_TV_CATALOGUE_CACHE_FILE", "/app/data/marvel_tv_catalogue_cache.json"))
 DC_TV_CATALOGUE_CACHE_FILE = Path(os.getenv("DC_TV_CATALOGUE_CACHE_FILE", "/app/data/dc_tv_catalogue_cache.json"))
@@ -7243,6 +7246,15 @@ def _tmdb_ott_disk_key(cache_key: tuple[int, str]) -> str:
     return "v2:" + str(cache_key[0]) + ":" + cache_key[1]
 
 
+def _tmdb_ott_ttl(payload: Any) -> float:
+    """Providers found -> long cache; nothing found -> short cache so it self-heals."""
+    if isinstance(payload, dict) and any(
+        payload.get(key) for key in ("streamingProviders", "rentProviders", "buyProviders")
+    ):
+        return TMDB_OTT_CACHE_SECONDS
+    return TMDB_OTT_MISSING_CACHE_SECONDS
+
+
 def _read_tmdb_ott_persistent_cache(cache_key: tuple[int, str]) -> tuple[float, dict[str, Any]] | None:
     try:
         payload = json.loads(TMDB_OTT_CACHE_FILE.read_text(encoding="utf-8"))
@@ -8833,13 +8845,13 @@ async def _apply_movie_release_eligibility(payload: dict[str, Any], *, enabled: 
                     cached_ott = _tmdb_ott_cache.get(ott_key)
                     availability = None
                     stale_availability = cached_ott[1] if cached_ott else None
-                    if cached_ott and now_monotonic - cached_ott[0] < TMDB_OTT_CACHE_SECONDS:
+                    if cached_ott and now_monotonic - cached_ott[0] < _tmdb_ott_ttl(cached_ott[1]):
                         availability = cached_ott[1]
                     if availability is None:
                         persistent_ott = _read_tmdb_ott_persistent_cache(ott_key)
                         if persistent_ott:
                             saved_at, persistent_payload = persistent_ott
-                            if 0 <= time.time() - saved_at < TMDB_OTT_CACHE_SECONDS:
+                            if 0 <= time.time() - saved_at < _tmdb_ott_ttl(persistent_payload):
                                 availability = persistent_payload
                                 _tmdb_ott_cache[ott_key] = (time.monotonic(), availability)
                             elif stale_availability is None:
@@ -9115,13 +9127,13 @@ async def api_tmdb_movie_ott_availability(
     cache_key = (movie_id, region)
     cached = _tmdb_ott_cache.get(cache_key)
     stale_payload = cached[1] if cached else None
-    if cached and not force and time.monotonic() - cached[0] < TMDB_OTT_CACHE_SECONDS:
+    if cached and not force and time.monotonic() - cached[0] < _tmdb_ott_ttl(cached[1]):
         return cached[1]
 
     persistent = None if force else _read_tmdb_ott_persistent_cache(cache_key)
     if persistent:
         saved_at, persistent_payload = persistent
-        if 0 <= time.time() - saved_at < TMDB_OTT_CACHE_SECONDS:
+        if 0 <= time.time() - saved_at < _tmdb_ott_ttl(persistent_payload):
             _tmdb_ott_cache[cache_key] = (time.monotonic(), persistent_payload)
             return persistent_payload
         if stale_payload is None:
@@ -9350,7 +9362,7 @@ async def _enrich_classics_movie_ott_cache() -> None:
                     checked = datetime.fromisoformat(checked_at.replace("Z", "+00:00"))
                     if checked.tzinfo is None:
                         checked = checked.replace(tzinfo=timezone.utc)
-                    fresh = 0 <= (datetime.now(timezone.utc) - checked).total_seconds() < TMDB_OTT_CACHE_SECONDS
+                    fresh = 0 <= (datetime.now(timezone.utc) - checked).total_seconds() < _tmdb_ott_ttl(existing)
                 except (TypeError, ValueError):
                     fresh = False
                 if fresh and status not in {"unknown", "error", "pending"}:
@@ -9375,6 +9387,8 @@ async def _enrich_classics_movie_ott_cache() -> None:
                         return
                     row["tmdbId"] = resolved_id
                     row["ottAvailability"] = availability
+                    _tmdb_ott_cache[(resolved_id, "IN")] = (time.monotonic(), availability)
+                    _write_tmdb_ott_persistent_cache((resolved_id, "IN"), availability)
                     row["ottEnrichedAt"] = datetime.now(timezone.utc).isoformat()
                     if metadata:
                         for field in ("tmdbUrl", "releaseDate", "rating", "posterUrl", "backdropUrl", "overview", "genres"):
