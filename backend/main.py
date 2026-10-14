@@ -7539,6 +7539,20 @@ def _streaming_availability_provider_rows(rows: list[dict[str, Any]], accepted_t
 
 
 async def _tmdb_fetch_movie_ott_availability(movie_id: int, region: str) -> dict[str, Any]:
+    # Render serves OTT availability from the bundled/persistent cache only.
+    # Never spend provider API quota refreshing streaming information at runtime.
+    if os.getenv("OTT_CACHE_ONLY", "false").strip().casefold() in {"1", "true", "yes", "on"}:
+        cached = _tmdb_ott_cache.get((movie_id, region.upper()))
+        if cached and isinstance(cached[1], dict):
+            return cached[1]
+        persistent = _read_tmdb_ott_persistent_cache((movie_id, region.upper()))
+        if persistent and isinstance(persistent[1], dict):
+            return persistent[1]
+        raise HTTPException(
+            status_code=503,
+            detail="OTT availability is not present in the local cache; live provider lookups are disabled.",
+        )
+
     # Prefer Watchmode for legal platform availability when configured. Keep TMDB
     # as a fallback and as the source of regional release-date metadata.
     watchmode_rows, release_result = await asyncio.gather(
