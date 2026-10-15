@@ -154,7 +154,7 @@ export interface ImdbRatingResult {
   title: string;
   year?: number | null;
   mediaType?: 'movie' | 'tv';
-  status: 'found' | 'not_found' | 'unavailable' | 'rate_limited';
+  status: 'found' | 'not_found' | 'unavailable' | 'rate_limited' | 'pending';
   imdbRating?: number | null;
   imdbVotes?: string | null;
   imdbId?: string | null;

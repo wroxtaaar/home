@@ -4568,7 +4568,14 @@ async def _poster_lookup_uncached(clean_title: str, clean_year: str, cache_key: 
         poster = await _cinemeta_poster_lookup(clean_title, clean_year)
 
     _poster_cache[cache_key] = (now, poster)
+    if poster:
+        _mark_poster_cache_dirty()
     return poster
+
+
+def _poster_cache_key(title: str, year: str = "") -> str:
+    clean_year = str(year or "").strip()
+    return f"{_poster_normalize_title(_poster_prepare_lookup_title(title, clean_year))}|{clean_year}"
 
 
 async def _poster_lookup(title: str, year: str = "") -> str | None:
@@ -4577,10 +4584,10 @@ async def _poster_lookup(title: str, year: str = "") -> str | None:
     if not clean_title:
         return None
 
-    cache_key = f"{_poster_normalize_title(clean_title)}|{clean_year}"
+    cache_key = _poster_cache_key(title, year)
     now = time.time()
     cached = _poster_cache.get(cache_key)
-    cache_ttl = _POSTER_CACHE_SECONDS if cached and cached[1] else _POSTER_NEGATIVE_CACHE_SECONDS
+    cache_ttl = _POSTER_HIT_CACHE_SECONDS if cached and cached[1] else _POSTER_NEGATIVE_CACHE_SECONDS
     if cached and now - cached[0] < cache_ttl:
         return cached[1]
 
@@ -7247,16 +7254,41 @@ def _tmdb_ott_disk_key(cache_key: tuple[int, str]) -> str:
     return "v2:" + str(cache_key[0]) + ":" + cache_key[1]
 
 
-def _tmdb_ott_ttl(payload: Any) -> float:
-    """Providers found -> long cache; nothing found -> short cache so it self-heals."""
-    if isinstance(payload, dict) and payload.get("incomplete"):
-        # A provider (e.g. Streaming Availability) errored or hit its quota: retry soon.
-        return TMDB_OTT_INCOMPLETE_CACHE_SECONDS
-    if isinstance(payload, dict) and any(
+def _ott_has_providers(payload: Any) -> bool:
+    return isinstance(payload, dict) and any(
         payload.get(key) for key in ("streamingProviders", "rentProviders", "buyProviders")
-    ):
+    )
+
+
+def _tmdb_ott_ttl(payload: Any) -> float:
+    """Providers found -> long cache. Nothing found -> short cache that backs off
+    (6h, 12h, 24h ... up to 7 days) so permanently-empty titles stop costing API calls."""
+    if _ott_has_providers(payload):
         return TMDB_OTT_CACHE_SECONDS
-    return TMDB_OTT_MISSING_CACHE_SECONDS
+    base = TMDB_OTT_INCOMPLETE_CACHE_SECONDS if isinstance(payload, dict) and payload.get("incomplete") \
+        else TMDB_OTT_MISSING_CACHE_SECONDS
+    try:
+        count = max(0, min(int((payload or {}).get("recheckCount") or 0), 6))
+    except (TypeError, ValueError):
+        count = 0
+    return min(base * (2 ** count), 7 * 24 * 60 * 60)
+
+
+def _store_tmdb_ott_result(cache_key: tuple[int, str], payload: dict[str, Any]) -> None:
+    """Save an OTT result to memory + the permanent disk cache, tracking empty re-checks."""
+    previous = (_tmdb_ott_cache.get(cache_key) or (0, None))[1]
+    if previous is None:
+        saved = _read_tmdb_ott_persistent_cache(cache_key)
+        previous = saved[1] if saved else None
+    if not _ott_has_providers(payload) and isinstance(previous, dict) and not _ott_has_providers(previous):
+        try:
+            payload["recheckCount"] = int(previous.get("recheckCount") or 0) + 1
+        except (TypeError, ValueError):
+            payload["recheckCount"] = 1
+    else:
+        payload["recheckCount"] = 0
+    _tmdb_ott_cache[cache_key] = (time.monotonic(), payload)
+    _write_tmdb_ott_persistent_cache(cache_key, payload)
 
 
 def _read_tmdb_ott_persistent_cache(cache_key: tuple[int, str]) -> tuple[float, dict[str, Any]] | None:
@@ -9148,6 +9180,18 @@ async def api_tmdb_movie_ott_availability(
         if stale_payload is None:
             stale_payload = persistent_payload
 
+    if not force:
+        # Opening a section must never spend API quota. Serve whatever the permanent
+        # cache has (even if expired) and let the background worker fill or refresh it.
+        _enqueue_ott_enrichment(movie_id, region, urgent=True)
+        if stale_payload:
+            return {**stale_payload, "stale": True}
+        return JSONResponse(
+            {"movieId": movie_id, "region": region, "status": "pending",
+             "streamingProviders": [], "rentProviders": [], "buyProviders": []},
+            status_code=202,
+        )
+
     # force=true bypasses both caches for a fresh provider lookup.
     task = _tmdb_ott_inflight.get(cache_key)
     owns_inflight_task = False
@@ -9159,8 +9203,7 @@ async def api_tmdb_movie_ott_availability(
         owns_inflight_task = True
     try:
         payload = await task
-        _tmdb_ott_cache[cache_key] = (time.monotonic(), payload)
-        _write_tmdb_ott_persistent_cache(cache_key, payload)
+        _store_tmdb_ott_result(cache_key, payload)
         return payload
     except HTTPException as exc:
         if stale_payload:
@@ -9396,8 +9439,7 @@ async def _enrich_classics_movie_ott_cache() -> None:
                         return
                     row["tmdbId"] = resolved_id
                     row["ottAvailability"] = availability
-                    _tmdb_ott_cache[(resolved_id, "IN")] = (time.monotonic(), availability)
-                    _write_tmdb_ott_persistent_cache((resolved_id, "IN"), availability)
+                    _store_tmdb_ott_result((resolved_id, "IN"), availability)
                     row["ottEnrichedAt"] = datetime.now(timezone.utc).isoformat()
                     if metadata:
                         for field in ("tmdbUrl", "releaseDate", "rating", "posterUrl", "backdropUrl", "overview", "genres"):
@@ -10763,41 +10805,54 @@ async def _fetch_imdb_rating(
 
     return {**base, "status": "unavailable", "reason": "No usable OMDb key or transient upstream error", "cacheable": False}
 
+def _imdb_record_has_rating(record: Any) -> bool:
+    return isinstance(record, dict) and record.get("status") == "found" and record.get("imdbRating") is not None
+
+
+def _imdb_record_ttl(record: dict[str, Any]) -> float:
+    """Ratings last a month. Misses back off (1d, 2d, 4d ... up to 7d) so titles OMDb
+    simply doesn't have stop costing API calls."""
+    if _imdb_record_has_rating(record):
+        return IMDB_RATING_CACHE_TTL_SECONDS
+    try:
+        count = max(0, min(int(record.get("recheckCount") or 0), 6))
+    except (TypeError, ValueError):
+        count = 0
+    return min(IMDB_RATING_NOT_FOUND_TTL_SECONDS * (2 ** count), 7 * 24 * 60 * 60)
+
+
+def _imdb_record_is_fresh(record: dict[str, Any] | None, tmdb_id: int = 0) -> bool:
+    if not record:
+        return False
+    # A miss recorded before a TMDB id was available deserves one retry with the id.
+    if tmdb_id > 0 and not record.get("tmdbIdTried") and not _imdb_record_has_rating(record):
+        return False
+    try:
+        checked_at = int(record.get("checkedAt") or 0)
+        lookup_version = int(record.get("lookupVersion") or 0)
+    except (TypeError, ValueError):
+        return False
+    min_version = IMDB_RATING_LOOKUP_VERSION if not _imdb_record_has_rating(record) else 4
+    return lookup_version >= min_version and checked_at > 0 and int(time.time()) - checked_at < _imdb_record_ttl(record)
+
+
 async def _get_imdb_rating_record(
-    title: str, year: int, media_type: str = "movie", tmdb_id: int = 0
+    title: str, year: int, media_type: str = "movie", tmdb_id: int = 0, cache_only: bool = False
 ) -> dict[str, Any]:
     normalized_type = "tv" if str(media_type or "movie").casefold() in {"tv", "series"} else "movie"
     cache_key = _imdb_rating_cache_key(title, year, normalized_type)
     cached = _load_imdb_rating_cache().get(cache_key)
-    now = int(time.time())
-    # A miss recorded before a TMDB id was available deserves one retry with the id.
-    if (
-        cached
-        and tmdb_id > 0
-        and not cached.get("tmdbIdTried")
-        and (cached.get("status") != "found" or cached.get("imdbRating") is None)
-    ):
-        cached = None
-    if cached:
-        try:
-            checked_at = int(cached.get("checkedAt") or 0)
-            lookup_version = int(cached.get("lookupVersion") or 0)
-        except (TypeError, ValueError):
-            checked_at = lookup_version = 0
-        if (
-            lookup_version >= (
-                IMDB_RATING_LOOKUP_VERSION
-                if cached.get("status") != "found" or cached.get("imdbRating") is None
-                else 4
-            )
-            and checked_at
-            and now - checked_at < (
-                IMDB_RATING_NOT_FOUND_TTL_SECONDS
-                if cached.get("status") != "found" or cached.get("imdbRating") is None
-                else IMDB_RATING_CACHE_TTL_SECONDS
-            )
-        ):
+    if _imdb_record_is_fresh(cached, tmdb_id):
+        return cached  # type: ignore[return-value]
+
+    if cache_only:
+        # Opening a section must never spend OMDb quota: serve the cached record (even if
+        # expired) and let the background worker fetch/refresh it.
+        _enqueue_imdb_enrichment(title, year, normalized_type, tmdb_id)
+        if cached:
             return cached
+        return {"cacheKey": cache_key, "title": title, "year": year or None,
+                "mediaType": normalized_type, "status": "pending"}
 
     task = _IMDB_RATING_INFLIGHT.get(cache_key)
     if task is None or task.done():
@@ -10805,6 +10860,13 @@ async def _get_imdb_rating_record(
             result = await _fetch_imdb_rating(title, year, cache_key, normalized_type, tmdb_id)
             if result.get("status") in {"found", "not_found"} and result.get("cacheable", True):
                 result.pop("cacheable", None)
+                if _imdb_record_has_rating(result):
+                    result["recheckCount"] = 0
+                else:
+                    try:
+                        result["recheckCount"] = int((cached or {}).get("recheckCount") or 0) + (1 if cached else 0)
+                    except (TypeError, ValueError):
+                        result["recheckCount"] = 1
                 await _save_imdb_rating_cache_record(result)
             return result
 
@@ -10815,6 +10877,302 @@ async def _get_imdb_rating_record(
     finally:
         if task.done() and _IMDB_RATING_INFLIGHT.get(cache_key) is task:
             _IMDB_RATING_INFLIGHT.pop(cache_key, None)
+
+# ---------------------------------------------------------------------------
+# Background catalogue enrichment
+#
+# Opening a section only READS the permanent caches (streaming info, IMDb ratings,
+# posters). Anything missing or expired is queued here and filled by one slow worker,
+# so page views never spend API quota. The worker also scans every saved section for
+# missing details on a schedule, with daily budgets per API and a pause when an
+# upstream starts failing, and writes the results back into the permanent caches.
+# ---------------------------------------------------------------------------
+ENRICH_SCAN_INTERVAL_SECONDS = max(300, int(os.getenv("ENRICH_SCAN_INTERVAL_SECONDS", "1800")))
+ENRICH_REQUEST_GAP_SECONDS = max(0.2, float(os.getenv("ENRICH_REQUEST_GAP_SECONDS", "0.8")))
+ENRICH_OTT_PER_DAY = max(0, int(os.getenv("ENRICH_OTT_PER_DAY", "400")))
+ENRICH_IMDB_PER_DAY = max(0, int(os.getenv("ENRICH_IMDB_PER_DAY", "700")))
+ENRICH_POSTER_PER_DAY = max(0, int(os.getenv("ENRICH_POSTER_PER_DAY", "600")))
+ENRICH_ENABLED = os.getenv("ENRICH_WORKER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+POSTER_CACHE_FILE = Path(os.getenv("POSTER_CACHE_FILE", "/app/data/poster_cache.json"))
+_POSTER_HIT_CACHE_SECONDS = 30 * 24 * 60 * 60
+
+_ENRICH_OTT_URGENT: dict[tuple[int, str], bool] = {}
+_ENRICH_OTT_BACKGROUND: dict[tuple[int, str], bool] = {}
+_ENRICH_IMDB_URGENT: dict[str, tuple[str, int, str, int]] = {}
+_ENRICH_IMDB_BACKGROUND: dict[str, tuple[str, int, str, int]] = {}
+_ENRICH_POSTER_BACKGROUND: dict[str, tuple[str, str]] = {}
+_ENRICH_POSTER_MISS: dict[str, float] = {}
+_ENRICH_BUDGET: dict[str, Any] = {"day": "", "ott": 0, "imdb": 0, "poster": 0}
+_ENRICH_PAUSED_UNTIL: dict[str, float] = {"ott": 0.0, "imdb": 0.0, "poster": 0.0}
+_ENRICH_FAILURES: dict[str, int] = {"ott": 0, "imdb": 0, "poster": 0}
+_enrichment_worker_task: asyncio.Task | None = None
+_poster_cache_dirty = False
+_poster_cache_save_task: asyncio.Task | None = None
+
+
+def _enrich_budget_available(kind: str) -> bool:
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if _ENRICH_BUDGET["day"] != today:
+        _ENRICH_BUDGET.update({"day": today, "ott": 0, "imdb": 0, "poster": 0})
+    limit = {"ott": ENRICH_OTT_PER_DAY, "imdb": ENRICH_IMDB_PER_DAY, "poster": ENRICH_POSTER_PER_DAY}[kind]
+    return int(_ENRICH_BUDGET[kind]) < limit
+
+
+def _enrich_note_result(kind: str, ok: bool) -> None:
+    """Pause a kind of lookup for a while after repeated failures (quota/outage)."""
+    if ok:
+        _ENRICH_FAILURES[kind] = 0
+        return
+    _ENRICH_FAILURES[kind] += 1
+    if _ENRICH_FAILURES[kind] >= 5:
+        _ENRICH_FAILURES[kind] = 0
+        _ENRICH_PAUSED_UNTIL[kind] = time.time() + 20 * 60
+        logger.info("Enrichment worker pausing %s lookups for 20 minutes after repeated failures", kind)
+
+
+def _enqueue_ott_enrichment(movie_id: int, region: str = "IN", urgent: bool = False) -> None:
+    key = (int(movie_id), str(region or "IN").upper())
+    if movie_id < 1:
+        return
+    if urgent:
+        if len(_ENRICH_OTT_URGENT) < 3000:
+            _ENRICH_OTT_URGENT[key] = True
+        _ENRICH_OTT_BACKGROUND.pop(key, None)
+    elif key not in _ENRICH_OTT_URGENT and len(_ENRICH_OTT_BACKGROUND) < 3000:
+        _ENRICH_OTT_BACKGROUND[key] = True
+
+
+def _enqueue_imdb_enrichment(title: str, year: int, media_type: str, tmdb_id: int = 0, urgent: bool = True) -> None:
+    key = _imdb_rating_cache_key(title, year, media_type)
+    item = (title, int(year or 0), media_type, int(tmdb_id or 0))
+    if urgent:
+        if len(_ENRICH_IMDB_URGENT) < 3000:
+            _ENRICH_IMDB_URGENT[key] = item
+        _ENRICH_IMDB_BACKGROUND.pop(key, None)
+    elif key not in _ENRICH_IMDB_URGENT and len(_ENRICH_IMDB_BACKGROUND) < 3000:
+        _ENRICH_IMDB_BACKGROUND[key] = item
+
+
+def _enrichment_catalogue_items() -> list[dict[str, Any]]:
+    """Unique movies across every saved section: {title, year, tmdbId}."""
+    seen: dict[str, dict[str, Any]] = {}
+
+    def add(title: Any, year: Any, tmdb_id: Any) -> None:
+        clean = re.sub(r"\s*\(?(?:19|20)\d{2}\)?\s*$", "", str(title or "")).strip()
+        if not clean:
+            return
+        try:
+            year_value = int(str(year or "")[:4])
+        except (TypeError, ValueError):
+            year_value = 0
+        try:
+            tmdb_value = int(tmdb_id or 0)
+        except (TypeError, ValueError):
+            tmdb_value = 0
+        key = f"id:{tmdb_value}" if tmdb_value > 0 else f"t:{_normalize_title(clean)}|{year_value}"
+        if key not in seen:
+            seen[key] = {"title": clean, "year": year_value, "tmdbId": tmdb_value}
+
+    paths = [MARVEL_CATALOGUE_PATH, *_EXTRA_CATALOGUE_PATHS.values()]
+    for path in paths:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        for row in (payload.get("results") if isinstance(payload, dict) else None) or []:
+            if isinstance(row, dict):
+                add(row.get("mediaTitle") or row.get("catalogueTitle") or row.get("title"),
+                    row.get("year") or _extra_item_year(row), row.get("tmdbId"))
+    try:
+        payload = json.loads(TMDB_CATALOGUE_CACHE_FILE.read_text(encoding="utf-8"))
+        for entry in (payload.get("catalogues") or {}).values():
+            for row in ((entry or {}).get("payload") or {}).get("results") or []:
+                if isinstance(row, dict):
+                    add(row.get("title"), row.get("year"), row.get("tmdbId") or row.get("id"))
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return list(seen.values())
+
+
+def _scan_catalogues_for_missing_details() -> dict[str, int]:
+    """Queue every saved movie whose streaming info, IMDb rating or poster is missing/expired."""
+    items = _enrichment_catalogue_items()
+    try:
+        disk_ott = (json.loads(TMDB_OTT_CACHE_FILE.read_text(encoding="utf-8")).get("items") or {})
+    except (OSError, ValueError, TypeError, AttributeError):
+        disk_ott = {}
+    imdb_cache = _load_imdb_rating_cache()
+    missing_ott: list[tuple[int, int]] = []   # (priority, id) - 0 = never looked up
+    missing_imdb: list[tuple[int, dict[str, Any]]] = []
+    missing_poster: list[dict[str, Any]] = []
+    for item in items:
+        tmdb_id = item["tmdbId"]
+        if tmdb_id > 0:
+            row = disk_ott.get(_tmdb_ott_disk_key((tmdb_id, "IN")))
+            payload = row.get("payload") if isinstance(row, dict) else None
+            saved_at = float((row or {}).get("savedAt") or 0) if isinstance(row, dict) else 0.0
+            if not isinstance(payload, dict):
+                missing_ott.append((0, tmdb_id))
+            elif not 0 <= time.time() - saved_at < _tmdb_ott_ttl(payload):
+                missing_ott.append((1, tmdb_id))
+        record = imdb_cache.get(_imdb_rating_cache_key(item["title"], item["year"], "movie"))
+        if not _imdb_record_is_fresh(record, tmdb_id):
+            missing_imdb.append((0 if not record else 1, item))
+        pkey = _poster_cache_key(item["title"], str(item["year"] or ""))
+        cached_poster = _poster_cache.get(pkey)
+        if not (cached_poster and cached_poster[1]) and time.time() - _ENRICH_POSTER_MISS.get(pkey, 0.0) > 24 * 3600:
+            missing_poster.append(item)
+    missing_ott.sort()
+    missing_imdb.sort(key=lambda pair: pair[0])
+    for _priority, movie_id in missing_ott[:600]:
+        _enqueue_ott_enrichment(movie_id, "IN")
+    for _priority, item in missing_imdb[:800]:
+        _enqueue_imdb_enrichment(item["title"], item["year"], "movie", item["tmdbId"], urgent=False)
+    for item in missing_poster[:600]:
+        _ENRICH_POSTER_BACKGROUND[_poster_cache_key(item["title"], str(item["year"] or ""))] = (
+            item["title"], str(item["year"] or ""))
+    return {"titles": len(items), "ott": len(missing_ott), "imdb": len(missing_imdb), "poster": len(missing_poster)}
+
+
+async def _enrich_one_ott(key: tuple[int, str]) -> None:
+    movie_id, region = key
+    saved = _read_tmdb_ott_persistent_cache(key)
+    if saved and 0 <= time.time() - saved[0] < _tmdb_ott_ttl(saved[1]):
+        return  # already filled (e.g. by an earlier queue entry)
+    _ENRICH_BUDGET["ott"] += 1
+    try:
+        payload = await asyncio.wait_for(_tmdb_fetch_movie_ott_availability(movie_id, region), timeout=25)
+    except Exception as exc:
+        _enrich_note_result("ott", False)
+        logger.info("Enrichment: streaming info lookup failed for %s (%s)", movie_id, type(exc).__name__)
+        return
+    _store_tmdb_ott_result(key, payload)
+    # An empty result caused by an upstream error counts toward pausing; a clean one resets it.
+    _enrich_note_result("ott", not (isinstance(payload, dict) and payload.get("incomplete")))
+
+
+async def _enrich_one_imdb(item: tuple[str, int, str, int]) -> None:
+    title, year, media_type, tmdb_id = item
+    cache_key = _imdb_rating_cache_key(title, year, media_type)
+    if _imdb_record_is_fresh(_load_imdb_rating_cache().get(cache_key), tmdb_id):
+        return
+    _ENRICH_BUDGET["imdb"] += 1
+    result = await _get_imdb_rating_record(title, year, media_type, tmdb_id, cache_only=False)
+    status = str(result.get("status") or "")
+    _enrich_note_result("imdb", status in {"found", "not_found"})
+
+
+async def _enrich_one_poster(title: str, year: str) -> None:
+    key = _poster_cache_key(title, year)
+    cached = _poster_cache.get(key)
+    if cached and cached[1]:
+        return
+    _ENRICH_BUDGET["poster"] += 1
+    try:
+        poster = await _poster_lookup(title, year)
+    except Exception:
+        _enrich_note_result("poster", False)
+        return
+    _enrich_note_result("poster", True)
+    if not poster:
+        # No artwork found: don't retry this title for a day.
+        _ENRICH_POSTER_MISS[key] = time.time()
+
+
+async def _catalogue_enrichment_worker() -> None:
+    await asyncio.sleep(45)
+    last_scan = 0.0
+    while True:
+        try:
+            if time.time() - last_scan >= ENRICH_SCAN_INTERVAL_SECONDS:
+                last_scan = time.time()
+                summary = await asyncio.to_thread(_scan_catalogues_for_missing_details)
+                logger.info("Enrichment scan: %s", summary)
+
+            now = time.time()
+            job = None
+            # User-requested items first, then the slow background backlog.
+            if now >= _ENRICH_PAUSED_UNTIL["ott"] and _enrich_budget_available("ott"):
+                queue = _ENRICH_OTT_URGENT or _ENRICH_OTT_BACKGROUND
+                if queue:
+                    key = next(iter(queue)); queue.pop(key, None)
+                    job = ("ott", key)
+            if job is None and now >= _ENRICH_PAUSED_UNTIL["imdb"] and now >= _OMDB_RATE_LIMITED_UNTIL \
+                    and _enrich_budget_available("imdb"):
+                queue = _ENRICH_IMDB_URGENT or _ENRICH_IMDB_BACKGROUND
+                if queue:
+                    key = next(iter(queue)); item = queue.pop(key)
+                    job = ("imdb", item)
+            if job is None and now >= _ENRICH_PAUSED_UNTIL["poster"] and _enrich_budget_available("poster") \
+                    and _ENRICH_POSTER_BACKGROUND:
+                key = next(iter(_ENRICH_POSTER_BACKGROUND))
+                job = ("poster", _ENRICH_POSTER_BACKGROUND.pop(key))
+            if job is None:
+                await asyncio.sleep(5)
+                continue
+            kind, payload = job
+            if kind == "ott":
+                await _enrich_one_ott(payload)
+            elif kind == "imdb":
+                await _enrich_one_imdb(payload)
+            else:
+                await _enrich_one_poster(*payload)
+            await asyncio.sleep(ENRICH_REQUEST_GAP_SECONDS)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Catalogue enrichment worker error")
+            await asyncio.sleep(30)
+
+
+def _load_poster_cache_from_disk() -> None:
+    try:
+        payload = json.loads(POSTER_CACHE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return
+    for key, row in (payload.get("items") or {}).items() if isinstance(payload, dict) else []:
+        try:
+            url, saved_at = str(row.get("url") or ""), float(row.get("savedAt") or 0)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if url and saved_at > 0:
+            _poster_cache.setdefault(key, (saved_at, url))
+
+
+async def _save_poster_cache_soon() -> None:
+    global _poster_cache_dirty, _poster_cache_save_task
+    await asyncio.sleep(20)
+    _poster_cache_dirty = False
+    items = {key: {"url": value[1], "savedAt": value[0]} for key, value in list(_poster_cache.items()) if value[1]}
+    try:
+        POSTER_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temp = POSTER_CACHE_FILE.with_name(POSTER_CACHE_FILE.name + "." + uuid.uuid4().hex + ".tmp")
+        temp.write_text(json.dumps({"version": 1, "items": items}, ensure_ascii=False), encoding="utf-8")
+        os.replace(temp, POSTER_CACHE_FILE)
+    except OSError as exc:
+        logger.info("Could not write poster cache: %s", exc)
+    _poster_cache_save_task = None
+
+
+def _mark_poster_cache_dirty() -> None:
+    global _poster_cache_dirty, _poster_cache_save_task
+    _poster_cache_dirty = True
+    if _poster_cache_save_task is None or _poster_cache_save_task.done():
+        _poster_cache_save_task = asyncio.create_task(_save_poster_cache_soon())
+
+
+async def _start_catalogue_enrichment_worker() -> None:
+    global _enrichment_worker_task
+    _load_poster_cache_from_disk()
+    if not ENRICH_ENABLED:
+        logger.info("Catalogue enrichment worker disabled (ENRICH_WORKER_ENABLED=0)")
+        return
+    if _enrichment_worker_task is None or _enrichment_worker_task.done():
+        _enrichment_worker_task = asyncio.create_task(_catalogue_enrichment_worker())
+
+
+app.router.add_event_handler("startup", _start_catalogue_enrichment_worker)
+
 
 @app.get("/api/catalogue/imdb-ratings")
 async def api_catalogue_imdb_ratings(
@@ -10841,7 +11199,7 @@ async def api_catalogue_imdb_ratings(
 
     results = await asyncio.gather(
         *(
-            _get_imdb_rating_record(title, year, media_type, tmdb_id)
+            _get_imdb_rating_record(title, year, media_type, tmdb_id, cache_only=True)
             for title, year, media_type, _raw, tmdb_id in requested.values()
         ),
         return_exceptions=True,

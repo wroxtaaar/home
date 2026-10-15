@@ -1053,7 +1053,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
   };
 
   // Failed lookups are retried automatically (bounded) instead of staying on an error forever.
-  const scheduleOttRetry = () => {
+  const scheduleOttRetry = (delayMs = 30000) => {
     if (ottRetryTimerRef.current !== null) return;
     const generation = ottLookupGenerationRef.current;
     ottRetryTimerRef.current = window.setTimeout(() => {
@@ -1063,10 +1063,18 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         const id = String(movie.id);
         const state = ottAvailabilityRef.current[id];
         const hasData = !!state && state.status !== 'error' && state.status !== 'loading';
-        return !hasData && (ottRetryAttemptsRef.current.get(id) || 0) < 5;
+        return !hasData && (ottRetryAttemptsRef.current.get(id) || 0) < 8;
       });
       if (retry.length) queueOttLookups(retry, true);
-    }, 30000);
+      // Titles still unanswered after every attempt stop saying "checking".
+      for (const movie of ottKnownMoviesRef.current.values()) {
+        const id = String(movie.id);
+        const state = ottAvailabilityRef.current[id];
+        if (state?.status === 'loading' && (ottRetryAttemptsRef.current.get(id) || 0) >= 8 && !ottQueuedIdsRef.current.has(id)) {
+          setOttState(id, { status: 'error', message: 'Streaming info is still being collected.' });
+        }
+      }
+    }, delayMs);
   };
 
   // Limit upstream load. The backend caches provider hits for 24 hours and misses for 6 hours,
@@ -1081,7 +1089,15 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         try {
           const availability = await api.getMovieOttAvailability(Number(movieId), 'IN');
           if (lookupGeneration === ottLookupGenerationRef.current) {
-            setOttState(movieId, availability);
+            if ((availability as any).status === 'pending') {
+              // The server fills streaming info in the background (it never spends API
+              // quota on a page view). Keep showing "checking" and ask again shortly.
+              const current = ottAvailabilityRef.current[movieId];
+              if (!current || current.status === 'error') setOttState(movieId, { status: 'loading' });
+              scheduleOttRetry(12000);
+            } else {
+              setOttState(movieId, availability);
+            }
           }
         } catch (error: any) {
           if (lookupGeneration === ottLookupGenerationRef.current) {
@@ -1172,7 +1188,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         continue;
       }
       const attempts = ottRetryAttemptsRef.current.get(movieId) || 0;
-      if (isRetry && attempts >= 5) continue;
+      if (isRetry && attempts >= 8) continue;
       ottRetryAttemptsRef.current.set(movieId, attempts + 1);
       ottLiveCheckedRef.current.add(movieId);
       ottQueuedIdsRef.current.add(movieId);
@@ -2438,13 +2454,29 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
             const checkedMs = Date.parse(String(saved.checkedAt || ''));
             if (!saved.incomplete && Number.isFinite(checkedMs) && Date.now() - checkedMs < recheckAfterMs) continue;
             if (liveLookupCount >= liveLookupLimit) continue;
-            liveLookupCount += 1;
             const savedTmdbId = Number(cachedRow.tmdbId);
-            if (Number.isInteger(savedTmdbId) && savedTmdbId > 0) pendingLiveTmdbIds.set(group.key, savedTmdbId);
+            const hasSavedTmdbId = Number.isInteger(savedTmdbId) && savedTmdbId > 0;
+            // Catalogue sections only read the server's cache (by TMDB id); they never start
+            // title searches against provider APIs.
+            if (searchMode && !hasSavedTmdbId) continue;
+            liveLookupCount += 1;
+            if (hasSavedTmdbId) pendingLiveTmdbIds.set(group.key, savedTmdbId);
             pendingLiveLookups.push(group);
             continue;
           }
 
+          // Catalogue sections never trigger provider title searches from a page view.
+          if (searchMode) {
+            setSearchAvailabilityByGroup(previous => ({
+              ...previous,
+              [group.key]: {
+                status: 'not_confirmed', query: group.title, title: group.title, year: group.year,
+                providers: [], matches: [],
+                message: 'Streaming details for this title are still being collected.',
+              }
+            }));
+            continue;
+          }
           // Keep live searches bounded so this path cannot fan out
           // provider queries for an unlimited result set.
           if (liveLookupCount >= liveLookupLimit) continue;
@@ -2461,6 +2493,8 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
           const lookup = async () => {
             if (tmdbId) {
               const value = await api.getMovieOttAvailability(tmdbId, 'IN');
+              // Server is still filling its cache for this title: wait and ask again.
+              if ((value as any).status === 'pending') throw new Error('pending');
               const region = String(value.region || 'IN');
               const providers = [
                 ...normalizeSavedOttProviders(value.streamingProviders, 'streaming', region),
@@ -2486,7 +2520,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               .trim();
             return await api.searchAvailability(availabilityQuery);
           };
-          for (let attempt = 0; attempt < 2; attempt += 1) {
+          for (let attempt = 0; attempt < 5; attempt += 1) {
             if (generation !== searchGenerationRef.current) return;
             try {
               const value = await lookup();
@@ -2500,7 +2534,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
               }
               return;
             } catch {
-              if (attempt === 0) await new Promise<void>(resolve => window.setTimeout(resolve, 8000));
+              if (attempt < 4) await new Promise<void>(resolve => window.setTimeout(resolve, 12000));
             }
           }
           if (generation === searchGenerationRef.current) {
@@ -3363,9 +3397,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     const requestItems = requests.map(([, item]) => item);
     const scheduleImdbRetry = () => {
       // Bounded so a missing OMDb key doesn't poll forever.
-      if (imdbRetryCountRef.current >= 5) return;
+      if (imdbRetryCountRef.current >= 12) return;
       imdbRetryCountRef.current += 1;
-      window.setTimeout(() => setImdbRetryTick(tick => tick + 1), 20000);
+      window.setTimeout(() => setImdbRetryTick(tick => tick + 1), 12000);
     };
     imdbInFlightRef.current += 1;
     void api.getImdbRatings(
@@ -3382,7 +3416,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         for (const rating of ratings) {
           // Transient failures (rate limit / upstream error) are not answers:
           // don't store them and let the lookup be retried below.
-          if (rating.status === 'rate_limited' || rating.status === 'unavailable') {
+          if (rating.status === 'rate_limited' || rating.status === 'unavailable' || rating.status === 'pending') {
             needsRetry = true;
             continue;
           }
@@ -3398,7 +3432,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
         // Forget keys that never got a real answer, then re-run this effect later.
         requests.forEach(([key]) => {
           const done = ratings.some(rating => {
-            if (rating.status === 'rate_limited' || rating.status === 'unavailable') return false;
+            if (rating.status === 'rate_limited' || rating.status === 'unavailable' || rating.status === 'pending') return false;
             const mediaType = rating.mediaType === 'tv' ? 'tv' : 'movie';
             return imdbRatingKey(rating.query || rating.title, undefined, mediaType) === key;
           });
