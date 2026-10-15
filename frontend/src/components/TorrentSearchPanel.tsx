@@ -2933,7 +2933,43 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
     setMarvelWebSeriesLoading(true);
     setMarvelWebSeriesError('');
     try {
-      setMarvelWebSeriesCatalogue(await api.getTvCatalogue(catalogueKey));
+      const catalogue = await api.getTvCatalogue(catalogueKey);
+      if (catalogueKey === 'classics-web-series') {
+        // Add the requested shows using TMDB metadata for posters, summaries and IDs.
+        const requestedShows = [
+          { title: 'Suits', year: 2011 },
+          { title: 'The Sandman', year: 2022 },
+        ];
+        const additions: TvCatalogueItem[] = [];
+        for (const requested of requestedShows) {
+          if (catalogue.results.some(show => normalizeGroupTitle(show.title) === normalizeGroupTitle(requested.title))) continue;
+          try {
+            const metadata = await api.searchMediaMetadata(requested.title + ' ' + requested.year);
+            const match = (metadata.results || []).find(item =>
+              item.mediaType === 'tv' &&
+              normalizeGroupTitle(item.title) === normalizeGroupTitle(requested.title) &&
+              Number(item.year || 0) === requested.year
+            );
+            if (match) additions.push({
+              id: Number(match.tmdbId || match.id),
+              title: match.title,
+              year: match.year || requested.year,
+              releaseDate: String(match.year || requested.year) + '-01-01',
+              overview: match.overview || '',
+              posterUrl: match.posterUrl || '',
+              backdropUrl: match.backdropUrl || '',
+              rating: match.rating,
+              tmdbUrl: match.tmdbUrl,
+              source: 'TMDB',
+            });
+          } catch {
+            // Optional enrichment must not prevent the existing catalogue from loading.
+          }
+        }
+        catalogue.results = [...catalogue.results, ...additions];
+        catalogue.totalResults = catalogue.results.length;
+      }
+      setMarvelWebSeriesCatalogue(catalogue);
     } catch (error: any) {
       setMarvelWebSeriesError(String(error?.message || 'Could not load Classics catalogue.'));
     } finally {
@@ -4258,7 +4294,20 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onPrepar
                   <div className="px-1 text-xs text-slate-400">{marvelWebSeriesCatalogue.totalResults.toLocaleString()} {classicsContentTab === 'anime' ? 'anime titles' : 'web series'} · Metadata by TMDB</div>
                   {renderFranchisePagination(marvelWebSeriesCatalogue.results.length)}
                   <div className="grid grid-cols-2 items-stretch gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 lg:gap-4">
-                    {[...marvelWebSeriesCatalogue.results].sort(compareReleaseDateDescending).slice((franchiseGridPage - 1) * franchiseGridPageSize, franchiseGridPage * franchiseGridPageSize).map(show => (
+                    {[...marvelWebSeriesCatalogue.results].sort((a, b) => {
+                      if (classicsContentTab === 'web-series' && marvelWebSeriesCatalogue.catalogue === 'classics-web-series') {
+                        const fallbackImdb: Record<string, number> = { 'suits': 8.4, 'the sandman': 7.4 };
+                        const score = (show: TvCatalogueItem) => {
+                          const result = imdbRatingsByKey[imdbRatingKey(show.title, show.year, 'tv')];
+                          if (result?.status === 'found' && Number.isFinite(Number(result.imdbRating))) return Number(result.imdbRating);
+                          return fallbackImdb[normalizeGroupTitle(show.title)] ?? -1;
+                        };
+                        const difference = score(b) - score(a);
+                        if (difference !== 0) return difference;
+                        return String(a.title || '').localeCompare(String(b.title || ''));
+                      }
+                      return compareReleaseDateDescending(a, b);
+                    }).slice((franchiseGridPage - 1) * franchiseGridPageSize, franchiseGridPage * franchiseGridPageSize).map(show => (
                       <article key={String(show.id)} className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 transition hover:border-violet-400/50 hover:bg-slate-900/95 flex flex-col">
                         <button type="button" onClick={() => playCatalogueTvWithNexStream(show)} aria-label={`Play ${show.title} with NexStream`} className="relative aspect-[2/3] w-full overflow-hidden bg-slate-950 text-left cursor-pointer">
                           {show.posterUrl ? <img src={lowQualityPosterUrl(show.posterUrl)} alt={show.title} loading="eager" onLoad={event => {
